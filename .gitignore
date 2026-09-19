@@ -1,0 +1,6 @@
+asset_cache3/*
+asset_cache/*
+market_data_cache3/*
+market_data_cache/*
+__pycache__/*
+assets_cache/

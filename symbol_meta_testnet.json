@@ -1,0 +1,128 @@
+{
+  "ATOM/USDT": {
+    "leverage": 50,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789790639.3470376
+  },
+  "DOT/USDT": {
+    "leverage": 50,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789794112.9588895
+  },
+  "DOGE/USDT": {
+    "leverage": 50,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789801302.2110178
+  },
+  "AVAX/USDT": {
+    "leverage": 50,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789804539.3422036
+  },
+  "ETC/USDT": {
+    "leverage": 50,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789806299.1748183
+  },
+  "SOL/USDT": {
+    "leverage": 50,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789808754.5362592
+  },
+  "MYX/USDT:USDT": {
+    "leverage": 50,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789815614.6348453
+  },
+  "F/USDT:USDT": {
+    "leverage": 50,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789814988.8738556
+  },
+  "XRP/USDT:USDT": {
+    "leverage": 50,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789815734.5646925
+  },
+  "BCH/USDT": {
+    "leverage": 35,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789844915.2626314
+  },
+  "OP/USDT": {
+    "leverage": 35,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789832842.456416
+  },
+  "LINK/USDT": {
+    "leverage": 31,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789830461.1535087
+  },
+  "GRT/USDT": {
+    "leverage": 31,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789848116.2318416
+  },
+  "KAS/USDT": {
+    "leverage": 34,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789833671.7973568
+  },
+  "APT/USDT": {
+    "leverage": 34,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789836640.4722655
+  },
+  "ALGO/USDT": {
+    "leverage": 34,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789840876.3477726
+  },
+  "AAVE/USDT": {
+    "leverage": 32,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789845596.6130478
+  },
+  "THETA/USDT": {
+    "leverage": 31,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789851733.725414
+  }
+}
