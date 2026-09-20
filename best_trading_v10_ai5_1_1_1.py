@@ -260,6 +260,10 @@ class Config:
     LIVE_ASSET_CACHE_MAX: int = 40           # max entries (safety)
     # ══ [FIXED PRICE ENTRY — no chasing] ══
     PO_FIXED_PRICE: bool = True              # use sig.price, hold it fixed
+    # ══ [ATOMIC FILL ACCOUNTING] ══
+    PO_MAX_ATTEMPTS: int = 5              # max cancel/replace cycles
+    PO_MAX_DRIFT_BPS: float = 5.0         # abort if drift exceeds
+    PO_MIN_ACCEPT_RATIO: float = 0.15     # accept partial if >= 50%
 
 CFG = Config()
 
@@ -273,17 +277,71 @@ CFG = Config()
 #            "DOGE/USDT","AVAX/USDT","LINK/USDT","DOT/USDT",
 #            "LTC/USDT","UNI/USDT","ATOM/USDT","ETC/USDT","POL/USDT"]
 
+#def _default_assets():
+#    return ["BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT","XRP/USDT",
+#            "DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT","DOT/USDT",
+#            "LTC/USDT","UNI/USDT","ATOM/USDT","ETC/USDT","POL/USDT",
+#            "XAG/USDT","TRX/USDT","TON/USDT","BCH/USDT","NEAR/USDT",
+#            "APT/USDT","HBAR/USDT","VET/USDT",
+#            "STX/USDT","AAVE/USDT","ARB/USDT",
+#            "OP/USDT","INJ/USDT","SUI/USDT","TIA/USDT","SEI/USDT",
+#            "ALGO/USDT","GRT/USDT","FET/USDT","RENDER/USDT",
+#            "LDO/USDT","KAS/USDT","WIF/USDT","THETA/USDT","EGLD/USDT",
+#            "SAND/USDT","MANA/USDT","AXS/USDT","XLM/USDT","CHZ/USDT"]
 def _default_assets():
-    return ["BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT","XRP/USDT",
-            "DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT","DOT/USDT",
-            "LTC/USDT","UNI/USDT","ATOM/USDT","ETC/USDT","POL/USDT",
-            "XAG/USDT","TRX/USDT","TON/USDT","BCH/USDT","NEAR/USDT",
-            "APT/USDT","HBAR/USDT","VET/USDT",
-            "STX/USDT","AAVE/USDT","ARB/USDT",
-            "OP/USDT","INJ/USDT","SUI/USDT","TIA/USDT","SEI/USDT",
-            "ALGO/USDT","GRT/USDT","FET/USDT","RENDER/USDT",
-            "LDO/USDT","KAS/USDT","WIF/USDT","THETA/USDT","EGLD/USDT",
-            "SAND/USDT","MANA/USDT","AXS/USDT","XLM/USDT","CHZ/USDT"]
+    # أعلى 50 عملة من حيث القيمة السوقية مع قبول رافعة 50x على Binance Futures
+    return [
+        "BTC/USDT",   # بيتكوين - أعلى سيولة، رافعة 125x
+        "ETH/USDT",   # إيثيريوم - ثاني أعلى سيولة، رافعة 100x
+        "BNB/USDT",   # بيнанс كوين - رافعة 75x
+        "SOL/USDT",   # سولانا - رافعة 50x
+        "XRP/USDT",   # ريبل - رافعة 50x
+        "DOGE/USDT",  # دوجكوين - رافعة 50x
+        "ADA/USDT",   # كاردانو - رافعة 50x
+        "AVAX/USDT",  # أفالانش - رافعة 50x
+        "LINK/USDT",  # تشين لينك - رافعة 50x
+        "DOT/USDT",   # بولكادوت - رافعة 50x
+        "LTC/USDT",   # لايتكوين - رافعة 50x
+        "UNI/USDT",   # يونيسواب - رافعة 50x
+        "ATOM/USDT",  # كوزموس - رافعة 50x
+        "ETC/USDT",   # إيثيريوم كلاسيك - رافعة 50x
+        "TRX/USDT",   # ترون - رافعة 50x
+        "TON/USDT",   # تون كوين - رافعة 50x
+        "BCH/USDT",   # بيتكوين كاش - رافعة 50x
+        "NEAR/USDT",  # نير بروتوكول - رافعة 50x
+        "APT/USDT",   # أبتوس - رافعة 50x
+        "HBAR/USDT",  # هيدرا - رافعة 50x
+        "VET/USDT",   # في تشين - رافعة 50x
+        "STX/USDT",   # ستاكس - رافعة 50x
+        "AAVE/USDT",  # آفي - رافعة 50x
+        "ARB/USDT",   # أربيتروم - رافعة 50x
+        "OP/USDT",    # أوبتيميزم - رافعة 50x
+        "INJ/USDT",   # إنجكتيف - رافعة 50x
+        "SUI/USDT",   # سوي - رافعة 50x
+        "TIA/USDT",   # سيليستيا - رافعة 50x
+        "SEI/USDT",   # ساي - رافعة 50x
+        "ALGO/USDT",  # ألجوراند - رافعة 50x
+        "GRT/USDT",   # ذا غراف - رافعة 50x
+        "FET/USDT",   # فيتشد أيه آي - رافعة 50x
+        "RENDER/USDT",# ريندر - رافعة 50x
+        "LDO/USDT",   # ليدو داو - رافعة 50x
+        "KAS/USDT",   # كاسبا - رافعة 50x
+        "WIF/USDT",   # دوج ويف هات - رافعة 50x
+        "THETA/USDT", # ثيتا - رافعة 50x
+        "EGLD/USDT",  # مولتي فيرس إكس - رافعة 50x
+        "SAND/USDT",  # ذا ساندبوكس - رافعة 50x
+        "MANA/USDT",  # ديسنترالاند - رافعة 50x
+        "AXS/USDT",   # أكسي إنفينيتي - رافعة 50x
+        "XLM/USDT",   # ستيلر - رافعة 50x
+        "CHZ/USDT",   # تشيليز - رافعة 50x
+        "POL/USDT",   # بوليجون (سابقاً MATIC) - رافعة 50x
+        "FIL/USDT",   # فيل كوين - رافعة 50x
+        "QNT/USDT",   # كوانت - رافعة 50x
+        "DASH/USDT",  # داش - رافعة 50x
+        "ZEC/USDT",   # زدكاش - رافعة 50x
+        "XMR/USDT",   # مونيرو - رافعة 50x
+#        "EOS/USDT"    # إيوس - رافعة 50x
+    ]
 
 # "ADA/USDT"
 def scan_top_assets(exchange, n=None) -> List[str]:
@@ -3260,20 +3318,14 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
                       fallback_market: bool = False,
                       fixed_target: Optional[float] = None):
     """
-    Post-Only limit execution with cancel/replace and optional market fallback.
+    Post-Only execution with ATOMIC fill accounting.
 
-    Places GTX limit at best_bid*(1-pen) for BUY, best_ask*(1+pen) for SELL.
-    Cancel/replaces when target drifts > PO_DRIFT_BPS.
-    Verifies fill via fetch_order.
-
-    Returns:
-      {
-        'filled_qty': float,
-        'avg_price':  float,   # 0.0 if none filled
-        'fill_ratio': float,   # 0..1
-        'reason':     str,     # 'filled' | 'partial' | 'no_fill' | 'market_fallback' | 'error'
-        'market_price': float, # last seen best ask (BUY) or best bid (SELL)
-      }
+    Key invariants:
+      - total_filled ALWAYS reflects sum of exchange-confirmed fills.
+      - remaining = qty - total_filled ALWAYS.
+      - Every cancel is preceded by a fresh fetch_order.
+      - Bounded chasing: max PO_MAX_ATTEMPTS cancel/replace cycles.
+      - Aborts when drift > PO_MAX_DRIFT_BPS or attempts exhausted.
     """
     pen = (penetration_bps if penetration_bps is not None
            else CFG.PO_PENETRATION_BPS) * 1e-4
@@ -3281,16 +3333,20 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
             else CFG.PO_MAX_WAIT_S)
     rep = reprice_s if reprice_s is not None else CFG.PO_REPRICE_S
     drift_bps = CFG.PO_DRIFT_BPS
+    max_attempts = int(getattr(CFG, 'PO_MAX_ATTEMPTS', 3))
+    max_drift = float(getattr(CFG, 'PO_MAX_DRIFT_BPS', 5.0))
 
     t0 = time.time()
-    active = None          # {'id', 'price', 'qty'}
+    active = None           # {'id','price','qty','counted_fill','counted_cost','terminal'}
     total_filled = 0.0
     total_cost = 0.0
     remaining = qty
+    attempts = 0
     last_bid = 0.0
     last_ask = 0.0
 
-    def _sweep_active():
+    def _refresh_active():
+        """Fetch latest order state; update total_filled via DELTA only."""
         nonlocal active, total_filled, total_cost, remaining
         if active is None:
             return
@@ -3299,85 +3355,136 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
         except Exception:
             return
         status = st.get('status')
+        fq = float(st.get('filled') or 0.0)
+        fp = float(st.get('average') or st.get('price') or active['price'])
+
+        # ══ DELTA-BASED update: never double-count, never miss ══
+        prev_f = float(active.get('counted_fill', 0.0))
+        prev_c = float(active.get('counted_cost', 0.0))
+        delta_f = fq - prev_f
+        if delta_f > 0.0:
+            cur_cost = fq * fp
+            delta_c = max(0.0, cur_cost - prev_c)
+            total_filled += delta_f
+            total_cost += delta_c
+            active['counted_fill'] = fq
+            active['counted_cost'] = cur_cost
+            remaining = max(0.0, qty - total_filled)
+
         if status == 'closed':
-            fq = float(st.get('filled') or 0.0)
-            fp = float(st.get('average') or st.get('price') or active['price'])
-            total_filled += fq
-            total_cost += fq * fp
-            remaining = qty - total_filled
-            active = None
+            active['terminal'] = True
         elif status in ('canceled', 'expired', 'rejected'):
-            active = None
+            active['terminal'] = True
 
     try:
         while time.time() - t0 < wait:
-            # 1. Fresh book
+            # 1. Book
             try:
                 ob = exchange.fetch_order_book(symbol, limit=5)
                 last_bid = float(ob['bids'][0][0])
                 last_ask = float(ob['asks'][0][0])
-            except Exception as e:
-                log.debug(f"[PostOnly] book fetch {symbol}: {e}")
+            except Exception:
                 time.sleep(1.0)
                 continue
 
-            # ══ [FIXED PRICE] Use fixed_target if provided; else compute from book ══
+            # 2. Target
             _fixed = (fixed_target is not None and fixed_target > 0)
             if _fixed:
                 target = float(fixed_target)
             else:
-                if side == 'buy':
-                    target = last_bid * (1.0 - pen)
-                else:
-                    target = last_ask * (1.0 + pen)
+                target = (last_bid * (1.0 - pen)) if side == 'buy' \
+                         else (last_ask * (1.0 + pen))
 
-            # 3. Sweep status
-            _sweep_active()
+            # 3. Refresh active state (handles ALL statuses)
+            _refresh_active()
 
-            # 4. Done?
-            if total_filled >= qty * CFG.PO_FILL_THRESHOLD:
-                break
+            # 4. Handle terminal
+            if active is not None and active.get('terminal'):
+                if active['counted_fill'] >= active['qty'] * 0.99:
+                    active = None
+                    break   # complete
+                # Was canceled externally → drop and decide below
+                active = None
+
+            # 5. Exit conditions
             if remaining <= qty * 0.02:
                 break
+            if total_filled >= qty * CFG.PO_FILL_THRESHOLD:
+                break
 
-            # ══ [FIXED PRICE] Skip drift reprice when fixed_target is set ══
+            # 6. Drift + cancel/replace decision
             if active is not None and not _fixed:
                 drift = abs(active['price'] - target) / max(target, 1e-12) * 1e4
                 if drift > drift_bps:
+                    # ══ MANDATORY: sweep before cancel ══
+                    _refresh_active()
+                    # Decide: replace or abort?
+                    abort = (
+                        attempts >= max_attempts
+                        or drift > max_drift
+                        or total_filled >= qty * 0.90
+                    )
+                    if abort:
+                        log.info(f"[PostOnly] {symbol} ABORT "
+                                 f"(attempts={attempts}, drift={drift:.2f}bps, "
+                                 f"filled={total_filled:.6f}/{qty:.6f})")
+                        # Cancel + final sweep
+                        try:
+                            exchange.cancel_order(active['id'], symbol)
+                        except Exception:
+                            pass
+                        active = None
+                        break
+                    # REPLACE
                     try:
                         exchange.cancel_order(active['id'], symbol)
                     except Exception:
                         pass
+                    time.sleep(0.2)
+                    _refresh_active()   # catch fills that arrived during cancel
                     active = None
+                    attempts += 1
+                    log.debug(f"[PostOnly] {symbol} re-place "
+                              f"#{attempts} (drift={drift:.2f}bps, "
+                              f"remaining={remaining:.6f})")
 
-            # 6. Place new if none active
+            # 7. Place new order (only if there is meaningful remaining)
             if active is None and remaining > 0:
+                if total_filled >= qty * 0.90:
+                    break
                 try:
                     o = exchange.create_order(
                         symbol, 'limit', side, remaining, target,
-                        params={'timeInForce': 'GTX'}  # ← Post-Only
+                        params={'timeInForce': 'GTX'}
                     )
-                    active = {'id': o['id'], 'price': target, 'qty': remaining}
+                    active = {
+                        'id': o['id'],
+                        'price': target,
+                        'qty': remaining,
+                        'counted_fill': 0.0,
+                        'counted_cost': 0.0,
+                        'terminal': False,
+                    }
                 except Exception as e:
-                    # GTX rejected (would cross) — wait briefly
-                    log.debug(f"[PostOnly] {symbol} GTX rejected at {target:.6f}: {e}")
+                    log.debug(f"[PostOnly] {symbol} GTX rejected: {e}")
                     time.sleep(0.5)
                     continue
 
             time.sleep(rep)
 
-        # Final sweep
-        _sweep_active()
-
-        # Cancel any still-active order
+        # ── FINAL SWEEP (mandatory) ──
         if active is not None:
-            try:
-                exchange.cancel_order(active['id'], symbol)
-            except Exception:
-                pass
+            _refresh_active()
+            if not active.get('terminal'):
+                try:
+                    exchange.cancel_order(active['id'], symbol)
+                except Exception:
+                    pass
+                time.sleep(0.3)
+                _refresh_active()
             active = None
 
-        # Handle result
+        # ── Result ──
         if total_filled <= 0:
             if fallback_market:
                 try:
@@ -3386,18 +3493,21 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
                     fp = float(o.get('average') or mp)
                     return {
                         'filled_qty': qty, 'avg_price': fp, 'fill_ratio': 1.0,
-                        'reason': 'market_fallback', 'market_price': mp
+                        'reason': 'market_fallback', 'market_price': mp,
+                        'attempts': attempts,
                     }
                 except Exception as e:
                     log.error(f"[PostOnly] market fallback failed {symbol}: {e}")
             return {'filled_qty': 0.0, 'avg_price': 0.0, 'fill_ratio': 0.0,
                     'reason': 'no_fill',
-                    'market_price': last_ask if side == 'buy' else last_bid}
+                    'market_price': last_ask if side == 'buy' else last_bid,
+                    'attempts': attempts}
 
         avg = total_cost / total_filled
         fill_ratio = total_filled / qty
+        reason = 'filled' if fill_ratio >= 0.98 else 'partial'
 
-        # Partial → market remainder if requested
+        # Optional market top-up for remainder
         if fill_ratio < 0.98 and fallback_market and remaining > 0:
             try:
                 mp = last_ask if side == 'buy' else last_bid
@@ -3409,23 +3519,39 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
                 return {
                     'filled_qty': total_filled, 'avg_price': avg,
                     'fill_ratio': total_filled / qty,
-                    'reason': 'market_fallback',
-                    'market_price': mp
+                    'reason': 'market_fallback', 'market_price': mp,
+                    'attempts': attempts,
                 }
             except Exception as e:
-                log.warning(f"[PostOnly] partial market fallback failed {symbol}: {e}")
+                log.warning(f"[PostOnly] partial top-up failed {symbol}: {e}")
 
         return {
-            'filled_qty': total_filled, 'avg_price': avg,
+            'filled_qty': total_filled,
+            'avg_price': avg,
             'fill_ratio': fill_ratio,
-            'reason': 'filled' if fill_ratio >= 0.98 else 'partial',
-            'market_price': last_ask if side == 'buy' else last_bid
+            'reason': reason,
+            'market_price': last_ask if side == 'buy' else last_bid,
+            'attempts': attempts,
         }
 
     except Exception as e:
         log.error(f"[PostOnly] {symbol} fatal: {e}")
+        # Emergency: sweep whatever we can
+        try:
+            _refresh_active()
+        except Exception:
+            pass
+        if total_filled > 0:
+            return {
+                'filled_qty': total_filled,
+                'avg_price': total_cost / total_filled,
+                'fill_ratio': total_filled / qty,
+                'reason': 'partial_error',
+                'market_price': last_ask if side == 'buy' else last_bid,
+                'attempts': attempts,
+            }
         return {'filled_qty': 0.0, 'avg_price': 0.0, 'fill_ratio': 0.0,
-                'reason': 'error', 'market_price': 0.0}
+                'reason': 'error', 'market_price': 0.0, 'attempts': attempts}
 
 # ════════════════════════════════════════════════════════════════
 # § 18.7b  AdaptiveFillEngine — Microstructure-Aware Maker Execution
@@ -3819,9 +3945,9 @@ def check_thermodynamic_apex(pos_action, entry_price, current_price, ad, fi):
     # الشرط: الفعل التراكمي يثبت تراجع الزخم (استقرار طاقي)
     energy_exhausted = (sum_dF > 0.005)
 
-    if pos_action == "BUY" and energy_exhausted and accel_mean < 0.005:
+    if pos_action == "BUY" and energy_exhausted and accel_mean < 0.003:
         return True, "Apex: Action Integral Exhaustion"
-    if pos_action == "SELL" and energy_exhausted and accel_mean > -0.005:
+    if pos_action == "SELL" and energy_exhausted and accel_mean > -0.003:
         return True, "Apex: Action Integral Exhaustion"
 
     return False, ""
@@ -4684,6 +4810,23 @@ def run_live(cfg, exchange):
                         actual_qty = result['filled_qty']
                         fill_ratio = result['fill_ratio']
 
+                        # ══ [ATOMIC] Reject too-small partial fills ══
+                        _min_accept = float(getattr(CFG, 'PO_MIN_ACCEPT_RATIO', 0.50))
+                        if fill_ratio < _min_accept:
+                            log.warning(
+                                f"[PostOnly] {sym} rejecting partial "
+                                f"{fill_ratio*100:.1f}% < {_min_accept*100:.0f}% "
+                                f"(qty={actual_qty:.6f})"
+                            )
+                            # Close the tiny partial position
+                            try:
+                                _s_close = 'sell' if sig.action == 'BUY' else 'buy'
+                                exchange.create_order(sym, 'market', _s_close, actual_qty)
+                                log.info(f"[PostOnly] closed tiny partial {sym}")
+                            except Exception as _e:
+                                log.error(f"[PostOnly] failed to close partial: {_e}")
+                            continue
+
                         # ══ 4. Verify fill via fetch_order (safety) ══
                         if entry_price <= 0:
                             log.warning(f"[Entry] {sym} fill reported but price=0 — closing")
@@ -4859,6 +5002,12 @@ def main():
                    help="Max Live cache entries (default 40)")
     p.add_argument("--no-fixed-price", action="store_true",
                    help="Disable fixed-price entry (allow reprice chasing)")
+    p.add_argument("--po-max-attempts", type=int, default=None,
+                   help="Max cancel/replace cycles (default 3)")
+    p.add_argument("--po-max-drift-bps", type=float, default=None,
+                   help="Abort if drift exceeds this (default 5.0)")
+    p.add_argument("--po-min-accept", type=float, default=None,
+                   help="Min fill ratio to accept partial (default 0.50)")
     args = p.parse_args()
 
     CFG.mode = args.mode
@@ -4947,6 +5096,12 @@ def main():
         CFG.LIVE_ASSET_CACHE_MAX = int(args.live_cache_size)
     if args.no_fixed_price:
         CFG.PO_FIXED_PRICE = False
+    if args.po_max_attempts is not None:
+        CFG.PO_MAX_ATTEMPTS = int(args.po_max_attempts)
+    if args.po_max_drift_bps is not None:
+        CFG.PO_MAX_DRIFT_BPS = float(args.po_max_drift_bps)
+    if args.po_min_accept is not None:
+        CFG.PO_MIN_ACCEPT_RATIO = float(args.po_min_accept)
 
     print("╔"+"═"*70+"╗")
     print(f"  [Level-1] Parallel: {CFG.PARALLEL_PROCESSING}  "

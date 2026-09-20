@@ -1,128 +1,99 @@
 {
-  "ATOM/USDT": {
-    "leverage": 50,
+  "ALGO/USDT": {
+    "leverage": 30,
     "margin_mode": "isolated",
     "setup_done": true,
     "reason": "fresh_setup",
-    "updated_ts": 1789790639.3470376
-  },
-  "DOT/USDT": {
-    "leverage": 50,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789794112.9588895
-  },
-  "DOGE/USDT": {
-    "leverage": 50,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789801302.2110178
-  },
-  "AVAX/USDT": {
-    "leverage": 50,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789804539.3422036
-  },
-  "ETC/USDT": {
-    "leverage": 50,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789806299.1748183
-  },
-  "SOL/USDT": {
-    "leverage": 50,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789808754.5362592
-  },
-  "MYX/USDT:USDT": {
-    "leverage": 50,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789815614.6348453
-  },
-  "F/USDT:USDT": {
-    "leverage": 50,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789814988.8738556
-  },
-  "XRP/USDT:USDT": {
-    "leverage": 50,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789815734.5646925
-  },
-  "BCH/USDT": {
-    "leverage": 35,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789844915.2626314
+    "updated_ts": 1789857787.1791415
   },
   "OP/USDT": {
-    "leverage": 35,
+    "leverage": 30,
     "margin_mode": "isolated",
     "setup_done": true,
     "reason": "fresh_setup",
-    "updated_ts": 1789832842.456416
+    "updated_ts": 1789857894.7074258
   },
-  "LINK/USDT": {
-    "leverage": 31,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789830461.1535087
-  },
-  "GRT/USDT": {
-    "leverage": 31,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789848116.2318416
-  },
-  "KAS/USDT": {
-    "leverage": 34,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789833671.7973568
-  },
-  "APT/USDT": {
-    "leverage": 34,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789836640.4722655
-  },
-  "ALGO/USDT": {
-    "leverage": 34,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789840876.3477726
-  },
-  "AAVE/USDT": {
+  "LDO/USDT": {
     "leverage": 32,
     "margin_mode": "isolated",
     "setup_done": true,
     "reason": "fresh_setup",
-    "updated_ts": 1789845596.6130478
+    "updated_ts": 1789859260.3903856
   },
-  "THETA/USDT": {
+  "ATOM/USDT": {
+    "leverage": 32,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789864707.5829701
+  },
+  "WIF/USDT": {
+    "leverage": 32,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789863488.0190172
+  },
+  "RENDER/USDT": {
     "leverage": 31,
     "margin_mode": "isolated",
     "setup_done": true,
     "reason": "fresh_setup",
-    "updated_ts": 1789851733.725414
+    "updated_ts": 1789864068.4639778
+  },
+  "FIL/USDT": {
+    "leverage": 49,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "position_exists"
+  },
+  "LTC/USDT": {
+    "leverage": 41,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789866654.1241345
+  },
+  "APT/USDT": {
+    "leverage": 40,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789866855.2729118
+  },
+  "BTC/USDT": {
+    "leverage": 47,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789915229.7752988
+  },
+  "ARB/USDT": {
+    "leverage": 47,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789915238.2999065
+  },
+  "POL/USDT": {
+    "leverage": 47,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789916595.7968614
+  },
+  "VET/USDT": {
+    "leverage": 48,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789917113.0851011
+  },
+  "XMR/USDT": {
+    "leverage": 49,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789920457.0577455
   }
 }

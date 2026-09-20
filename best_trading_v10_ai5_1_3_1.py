@@ -202,7 +202,7 @@ class Config:
     # ══ [POST-ONLY EXECUTION] ══
     PO_PENETRATION_BPS: float = 1.0      # match backtest's FILL_PENETRATION_BPS
     PO_MAX_WAIT_S: int = 30              # entry wait time
-    PO_EXIT_MAX_WAIT_S: int = 180         # exit wait time
+    PO_EXIT_MAX_WAIT_S: int = 45         # exit wait time
     PO_REPRICE_S: float = 3.0            # cancel/replace interval
     PO_FILL_THRESHOLD: float = 0.50      # accept partial if ≥ 50%
     PO_EXIT_FALLBACK_MARKET: bool = True # exit → market after timeout
@@ -260,6 +260,41 @@ class Config:
     LIVE_ASSET_CACHE_MAX: int = 40           # max entries (safety)
     # ══ [FIXED PRICE ENTRY — no chasing] ══
     PO_FIXED_PRICE: bool = True              # use sig.price, hold it fixed
+    # ══ [MULTI-FACTOR TRAIL] ══
+    # Stage 1: MFE-Graduated
+    TRAIL_MFE_GRADUATED: bool = True
+    TRAIL_MFE_BREAKPOINTS: Tuple = (1.0, 2.0, 3.0)
+    TRAIL_MFE_FACTORS: Tuple = (1.00, 0.70, 0.45, 0.30)
+
+    # Stage 2: Age-Decayed
+    TRAIL_AGE_DECAY: bool = True
+    TRAIL_AGE_BETA: float = 0.30
+    TRAIL_AGE_FLOOR: float = 0.50
+
+    # Stage 3: Regime-Aware
+    TRAIL_REGIME_AWARE: bool = True
+    TRAIL_REGIME_CLIP_MIN: float = 0.70
+    TRAIL_REGIME_CLIP_MAX: float = 1.50
+    TRAIL_REGIME_WINDOW: int = 500
+
+    # Stage 4: Structure-Anchored (default OFF)
+    TRAIL_STRUCTURE_ANCHORED: bool = False
+    TRAIL_STRUCTURE_WINDOW: int = 20
+    TRAIL_STRUCTURE_BUFFER_KAPPA: float = 0.30
+    TRAIL_STRUCTURE_TREND_THRESHOLD: float = 0.80
+
+    # Safety bounds (in σ units)
+    TRAIL_DYNAMIC_MIN_SIGMA: float = 0.15
+    TRAIL_DYNAMIC_MAX_SIGMA: float = 1.50
+    # ══ [R/R RATIO] ══
+    TP_RR_RATIO: float = 5.0     # target: TP = 5 × SL distance
+    # ══ [R/R-Adaptive Trail] ══
+    TRAIL_ACT_FROM_TP: bool = True     # derive activation from TP distance
+    TRAIL_ACT_TP_FRACTION: float = 0.33 # activate at 33% of TP distance
+    # ══ [ATOMIC FILL ACCOUNTING] ══
+    PO_MAX_ATTEMPTS: int = 3              # max cancel/replace cycles
+    PO_MAX_DRIFT_BPS: float = 5.0         # abort if drift exceeds
+    PO_MIN_ACCEPT_RATIO: float = 0.50     # accept partial if >= 50%
 
 CFG = Config()
 
@@ -278,7 +313,7 @@ def _default_assets():
             "DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT","DOT/USDT",
             "LTC/USDT","UNI/USDT","ATOM/USDT","ETC/USDT","POL/USDT",
             "XAG/USDT","TRX/USDT","TON/USDT","BCH/USDT","NEAR/USDT",
-            "APT/USDT","HBAR/USDT","VET/USDT",
+            "APT/USDT","HBAR/USDT","VET/USDT","FIL/USDT",
             "STX/USDT","AAVE/USDT","ARB/USDT",
             "OP/USDT","INJ/USDT","SUI/USDT","TIA/USDT","SEI/USDT",
             "ALGO/USDT","GRT/USDT","FET/USDT","RENDER/USDT",
@@ -1237,10 +1272,15 @@ def build_signals(assets, mode="backtest"):
             # حساب الوقف والهدف بناءً على سعر النفق (Limit Entry)
             sl_dist = compute_geodesic_stop(tunnel_entry_p, ad, fi, CFG)
             sl = tunnel_entry_p - sl_dist if action == "BUY" else tunnel_entry_p + sl_dist
-            tp1 = tunnel_entry_p + (sl_dist * 2.0) if action == "BUY" else tunnel_entry_p - (sl_dist * 2.0)
+
+            # ══ [R/R RATIO] Use configurable multiplier ══
+            _rr = float(getattr(CFG, 'TP_RR_RATIO', 5.0))
+            tp1 = (tunnel_entry_p + (sl_dist * _rr) if action == "BUY"
+                   else tunnel_entry_p - (sl_dist * _rr))
             
             # حظر الصفقات الهشة التي تكون تكلفتها أكبر من ربحها
-            if (sl_dist * 2.0) < (abs(CFG.MAKER_FEE) * tunnel_entry_p): continue
+            # ══ [R/R] use TP_RR_RATIO instead of hardcoded 2.0 ══
+            if (sl_dist * _rr) < (abs(CFG.MAKER_FEE) * tunnel_entry_p): continue
 
             dynamic_risk = compute_geodesic_kelly(ad, fi, CFG)
 
@@ -1372,6 +1412,190 @@ def _get_risk_multiplier(drawdown):
     return 1.0
 
 # ════════════════════════════════════════════════════════════════
+# § 14.56  Multi-Factor Trail Helpers
+# ════════════════════════════════════════════════════════════════
+
+def _trail_mfe_factor(mfe_frac: float, sigma_bar: float) -> float:
+    """
+    Stage 1: MFE-Graduated trail factor φ(r), r = MFE/σ.
+    Piecewise-constant: as MFE grows, factor shrinks (tighter trail).
+    """
+    if sigma_bar <= 1e-9:
+        return 1.0
+    r = mfe_frac / sigma_bar
+    bps = getattr(CFG, 'TRAIL_MFE_BREAKPOINTS', (1.0, 2.0, 3.0))
+    facs = getattr(CFG, 'TRAIL_MFE_FACTORS', (1.00, 0.70, 0.45, 0.30))
+    for i, bp in enumerate(bps):
+        if r < bp:
+            return float(facs[min(i, len(facs) - 1)])
+    return float(facs[-1])
+
+
+def _trail_age_factor(age_bars: int, tau_half: float) -> float:
+    """
+    Stage 2: Age-Decayed factor ψ(a) = max(floor, exp(-β·a/τ_half)).
+    """
+    if tau_half <= 0:
+        return 1.0
+    beta = getattr(CFG, 'TRAIL_AGE_BETA', 0.30)
+    floor = getattr(CFG, 'TRAIL_AGE_FLOOR', 0.50)
+    try:
+        psi = float(np.exp(-beta * max(0, age_bars) / tau_half))
+    except Exception:
+        psi = 1.0
+    return max(psi, floor)
+
+
+def _trail_regime_factor(ad, current_fi: int) -> float:
+    """
+    Stage 3: Regime factor χ = clip(σ_median / σ_now, clip_min, clip_max).
+
+    If current volatility is below median → χ > 1 (wider trail, "calm before storm").
+    If current volatility is above median → χ < 1 (tighter trail, protect profits).
+    """
+    W = getattr(CFG, 'TRAIL_REGIME_WINDOW', 500)
+    if current_fi < 30 or ad.E_therm is None:
+        return 1.0
+    try:
+        start = max(0, current_fi - W)
+        hist = ad.E_therm[start:current_fi]
+        if len(hist) < 30:
+            return 1.0
+        sigma_med = float(np.median(hist))
+        if current_fi < len(ad.E_therm):
+            sigma_now = float(ad.E_therm[current_fi])
+        else:
+            sigma_now = sigma_med
+        if sigma_now <= 1e-9 or sigma_med <= 1e-9:
+            return 1.0
+        chi = sigma_med / sigma_now
+        chi_min = getattr(CFG, 'TRAIL_REGIME_CLIP_MIN', 0.70)
+        chi_max = getattr(CFG, 'TRAIL_REGIME_CLIP_MAX', 1.50)
+        return float(np.clip(chi, chi_min, chi_max))
+    except Exception:
+        return 1.0
+
+
+def _trail_structure_anchor(ad, current_fi: int, peak_price: float,
+                             action: str, sigma_bar: float) -> Optional[float]:
+    """
+    Stage 4: Structure-anchored trail distance.
+
+    Returns d such that trail_SL = peak × (1 - d) [BUY] or peak × (1 + d) [SELL]
+    if the most recent swing low/high is closer to peak than the σ-scaled value.
+
+    Returns None when no valid structure exists.
+    """
+    W = getattr(CFG, 'TRAIL_STRUCTURE_WINDOW', 20)
+    try:
+        current_ci = ad.feat_start + current_fi
+        if current_ci < W or current_ci >= len(ad.lows) or peak_price <= 0:
+            return None
+        buffer_kappa = getattr(CFG, 'TRAIL_STRUCTURE_BUFFER_KAPPA', 0.30)
+        buffer = buffer_kappa * sigma_bar
+
+        if action == "BUY":
+            swing = float(np.min(ad.lows[current_ci - W: current_ci + 1]))
+            candidate_sl = swing * (1.0 - buffer)
+            if candidate_sl >= peak_price:
+                return None
+            d_frac = 1.0 - candidate_sl / peak_price
+            return float(d_frac) if d_frac > 0 else None
+        else:
+            swing = float(np.max(ad.highs[current_ci - W: current_ci + 1]))
+            candidate_sl = swing * (1.0 + buffer)
+            if candidate_sl <= peak_price:
+                return None
+            d_frac = (candidate_sl - peak_price) / peak_price
+            return float(d_frac) if d_frac > 0 else None
+    except Exception:
+        return None
+
+
+def _compute_structure_tf_agreement(ad, current_fi: int, action: str) -> float:
+    """
+    Fraction of timeframes (1h/4h/1d) that agree with the trade direction.
+    Returns value in [0, 1]. Used to gate Stage 4.
+    """
+    try:
+        current_ci = ad.feat_start + current_fi
+        if current_ci < 1440:
+            return 0.0
+        closes = ad.closes
+        t1 = np.sign(closes[current_ci] - closes[current_ci - 60])
+        t4 = np.sign(closes[current_ci] - closes[current_ci - 240])
+        t1d = np.sign(closes[current_ci] - closes[current_ci - 1440])
+        sig_dir = 1 if action == "BUY" else -1
+        return (float(np.sign(t1) == sig_dir) +
+                float(np.sign(t4) == sig_dir) +
+                float(np.sign(t1d) == sig_dir)) / 3.0
+    except Exception:
+        return 0.0
+
+
+def compute_dynamic_trail_dist(ad, entry_fi: int, current_fi: int,
+                               mfe_frac: float, action: str,
+                               entry_px: float, peak_price: float) -> float:
+    """
+    Master dispatcher: combines the four stages into a single trail distance.
+
+    Returns d_frac such that:
+        BUY:  trail_SL = peak × (1 - d_frac)
+        SELL: trail_SL = peak × (1 + d_frac)
+    """
+    # ── 1. Base σ-scaled distance ──
+    sigma_bar = 0.01
+    try:
+        if ad.E_therm is not None and 0 <= entry_fi < len(ad.E_therm):
+            _s = float(ad.E_therm[entry_fi])
+            if np.isfinite(_s) and _s > 1e-6:
+                sigma_bar = _s
+    except Exception:
+        pass
+
+    kappa_base = getattr(CFG, 'TRAIL_KAPPA', 0.30)
+
+    # ══ [RR-Adaptive Distance] widen trail proportionally to TP distance ══
+    if getattr(CFG, 'TRAIL_ACT_FROM_TP', False):
+        _rr = float(getattr(CFG, 'TP_RR_RATIO', 5.0))
+        # Widen by factor proportional to sqrt(rr) — preserve win rate
+        _rr_scale = float(np.sqrt(_rr / 2.0))   # normalize to old rr=2
+        d = float(kappa_base * sigma_bar * _rr_scale)
+    else:
+        d = float(kappa_base * sigma_bar)
+
+    # ── 2. Stage 1: MFE-Graduated ──
+    if getattr(CFG, 'TRAIL_MFE_GRADUATED', False):
+        d *= _trail_mfe_factor(mfe_frac, sigma_bar)
+
+    # ── 3. Stage 2: Age-Decay ──
+    if getattr(CFG, 'TRAIL_AGE_DECAY', False):
+        age_bars = max(0, current_fi - entry_fi)
+        tau_half = max(effective_bars(CFG.MAX_HOLD_BARS) / 2.0, 1.0)
+        d *= _trail_age_factor(age_bars, tau_half)
+
+    # ── 4. Stage 3: Regime-Aware ──
+    if getattr(CFG, 'TRAIL_REGIME_AWARE', False):
+        d *= _trail_regime_factor(ad, current_fi)
+
+    # ── 5. Safety clip (in σ units) ──
+    min_d = getattr(CFG, 'TRAIL_DYNAMIC_MIN_SIGMA', 0.15) * sigma_bar
+    max_d = getattr(CFG, 'TRAIL_DYNAMIC_MAX_SIGMA', 1.50) * sigma_bar
+    d = float(np.clip(d, min_d, max_d))
+
+    # ── 6. Stage 4: Structure Anchor (optional, trend-gated) ──
+    if getattr(CFG, 'TRAIL_STRUCTURE_ANCHORED', False) and peak_price > 0:
+        tf_agree = _compute_structure_tf_agreement(ad, current_fi, action)
+        thresh = getattr(CFG, 'TRAIL_STRUCTURE_TREND_THRESHOLD', 0.80)
+        if tf_agree < thresh:
+            struct_d = _trail_structure_anchor(ad, current_fi, peak_price,
+                                                action, sigma_bar)
+            if struct_d is not None and 0 < struct_d < d:
+                d = struct_d
+
+    return float(d)
+
+# ════════════════════════════════════════════════════════════════
 # § 14.55  Dynamic Trailing Parameters
 # ════════════════════════════════════════════════════════════════
 
@@ -1404,11 +1628,25 @@ def compute_trail_params(ad, entry_fi: int) -> Tuple[float, float]:
             min_d,
             max_d,
         ))
-        trail_act = float(np.clip(
-            CFG.TRAIL_ACT_KAPPA * sigma,
-            min_a,
-            max_a,
-        ))
+
+        # ══ [RR-Adaptive Activation] scale activation to TP distance ══
+        if getattr(CFG, 'TRAIL_ACT_FROM_TP', False):
+            _rr = float(getattr(CFG, 'TP_RR_RATIO', 5.0))
+            _sl_frac = abs(trail_d) * _rr / 1.0  # TP distance = rr × sl_dist
+            # Activate at TRAIL_ACT_TP_FRACTION × TP distance
+            _act_from_tp = (getattr(CFG, 'TRAIL_ACT_TP_FRACTION', 0.33)
+                            * trail_d * _rr)
+            # If _act_from_tp is too large, cap at CFG.TRAIL_ACT_KAPPA * sigma
+            trail_act = max(
+                float(np.clip(CFG.TRAIL_ACT_KAPPA * sigma, min_a, max_a)),
+                _act_from_tp
+            )
+        else:
+            trail_act = float(np.clip(
+                CFG.TRAIL_ACT_KAPPA * sigma,
+                min_a,
+                max_a,
+            ))
         # Activation must be strictly greater than trail distance
         if trail_act <= trail_d:
             trail_act = trail_d * 1.2
@@ -1447,18 +1685,24 @@ def _advance(pos, ad, to_ci):
         if mfe_cand > pos.mfe_frac:
             pos.mfe_frac = mfe_cand
 
-        # ── Trailing Stop (protection layer, runs parallel to Apex) ──
-        # Uses per-position volatility-scaled parameters
-        _td = pos.trail_dist_frac if pos.trail_dist_frac > 0 else CFG.TRAIL_DISTANCE
+        # ── Trailing Stop (multi-factor, per-bar dynamic) ──
         _ta = pos.trail_activate_frac if pos.trail_activate_frac > 0 else CFG.TRAIL_ACTIVATE_MFE
 
         if CFG.TRAIL_ENABLED and pos.mfe_frac >= _ta:
+            # Resolve entry feature index once
+            _entry_fi = max(0, pos.entry_ci - ad.feat_start)
+
             if sig.action == "BUY":
                 peak = pos.peak_price if pos.peak_price > 0 else pos.entry_px
                 if high > peak:
                     peak = high
                     pos.peak_price = peak
-                new_sl = peak * (1.0 - _td)
+                # ══ [MF-TRAIL] per-bar dynamic distance ══
+                _dyn_td = compute_dynamic_trail_dist(
+                    ad, _entry_fi, fi, pos.mfe_frac, sig.action,
+                    pos.entry_px, peak
+                )
+                new_sl = peak * (1.0 - _dyn_td)
                 if new_sl > trail_sl * (1.0 + CFG.TRAIL_MIN_STEP):
                     trail_sl = new_sl
             else:  # SELL
@@ -1466,7 +1710,11 @@ def _advance(pos, ad, to_ci):
                 if low < peak or peak == 0:
                     peak = low
                     pos.peak_price = peak
-                new_sl = peak * (1.0 + _td)
+                _dyn_td = compute_dynamic_trail_dist(
+                    ad, _entry_fi, fi, pos.mfe_frac, sig.action,
+                    pos.entry_px, peak
+                )
+                new_sl = peak * (1.0 + _dyn_td)
                 if new_sl < trail_sl * (1.0 - CFG.TRAIL_MIN_STEP):
                     trail_sl = new_sl
 
@@ -1494,23 +1742,37 @@ def _advance(pos, ad, to_ci):
             pos.trail_sl = trail_sl; pos.current_ci = cidx
             return p, "MaxHold", cidx
 
+        # ══ [EXIT LABELING] distinguish initial-SL from trail-SL ══
+        _init_sl = pos.signal.sl
+
         # 4. SL / TP with PENETRATION
         if sig.action == "BUY":
-            # SL (stop order): trigger when low pierces SL
             sl_trigger = trail_sl * (1.0 - pen_frac)
             if low <= sl_trigger:
+                # Classify: is trail_sl above or at initial SL?
+                if trail_sl > _init_sl * (1.0 + 1e-6):
+                    _label = f"Trail-Win(peak={pos.peak_price:.2f})"
+                elif abs(trail_sl - _init_sl) / max(_init_sl, 1e-9) < 1e-6:
+                    _label = "Initial-SL"
+                else:
+                    _label = "Emergency SL"
                 pos.trail_sl = trail_sl; pos.current_ci = cidx
-                return trail_sl, "Emergency SL", cidx
-            # TP (limit order): fill when high pierces TP
+                return trail_sl, _label, cidx
             tp_trigger = sig.tp1 * (1.0 + pen_frac)
             if high >= tp_trigger:
                 pos.trail_sl = trail_sl; pos.current_ci = cidx
                 return sig.tp1, "Hard TP", cidx
-        else:  # SELL
+        else:
             sl_trigger = trail_sl * (1.0 + pen_frac)
             if high >= sl_trigger:
+                if trail_sl < _init_sl * (1.0 - 1e-6):
+                    _label = f"Trail-Win(peak={pos.peak_price:.2f})"
+                elif abs(trail_sl - _init_sl) / max(_init_sl, 1e-9) < 1e-6:
+                    _label = "Initial-SL"
+                else:
+                    _label = "Emergency SL"
                 pos.trail_sl = trail_sl; pos.current_ci = cidx
-                return trail_sl, "Emergency SL", cidx
+                return trail_sl, _label, cidx
             tp_trigger = sig.tp1 * (1.0 - pen_frac)
             if low <= tp_trigger:
                 pos.trail_sl = trail_sl; pos.current_ci = cidx
@@ -3260,20 +3522,14 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
                       fallback_market: bool = False,
                       fixed_target: Optional[float] = None):
     """
-    Post-Only limit execution with cancel/replace and optional market fallback.
+    Post-Only execution with ATOMIC fill accounting.
 
-    Places GTX limit at best_bid*(1-pen) for BUY, best_ask*(1+pen) for SELL.
-    Cancel/replaces when target drifts > PO_DRIFT_BPS.
-    Verifies fill via fetch_order.
-
-    Returns:
-      {
-        'filled_qty': float,
-        'avg_price':  float,   # 0.0 if none filled
-        'fill_ratio': float,   # 0..1
-        'reason':     str,     # 'filled' | 'partial' | 'no_fill' | 'market_fallback' | 'error'
-        'market_price': float, # last seen best ask (BUY) or best bid (SELL)
-      }
+    Key invariants:
+      - total_filled ALWAYS reflects sum of exchange-confirmed fills.
+      - remaining = qty - total_filled ALWAYS.
+      - Every cancel is preceded by a fresh fetch_order.
+      - Bounded chasing: max PO_MAX_ATTEMPTS cancel/replace cycles.
+      - Aborts when drift > PO_MAX_DRIFT_BPS or attempts exhausted.
     """
     pen = (penetration_bps if penetration_bps is not None
            else CFG.PO_PENETRATION_BPS) * 1e-4
@@ -3281,16 +3537,20 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
             else CFG.PO_MAX_WAIT_S)
     rep = reprice_s if reprice_s is not None else CFG.PO_REPRICE_S
     drift_bps = CFG.PO_DRIFT_BPS
+    max_attempts = int(getattr(CFG, 'PO_MAX_ATTEMPTS', 3))
+    max_drift = float(getattr(CFG, 'PO_MAX_DRIFT_BPS', 5.0))
 
     t0 = time.time()
-    active = None          # {'id', 'price', 'qty'}
+    active = None           # {'id','price','qty','counted_fill','counted_cost','terminal'}
     total_filled = 0.0
     total_cost = 0.0
     remaining = qty
+    attempts = 0
     last_bid = 0.0
     last_ask = 0.0
 
-    def _sweep_active():
+    def _refresh_active():
+        """Fetch latest order state; update total_filled via DELTA only."""
         nonlocal active, total_filled, total_cost, remaining
         if active is None:
             return
@@ -3299,85 +3559,136 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
         except Exception:
             return
         status = st.get('status')
+        fq = float(st.get('filled') or 0.0)
+        fp = float(st.get('average') or st.get('price') or active['price'])
+
+        # ══ DELTA-BASED update: never double-count, never miss ══
+        prev_f = float(active.get('counted_fill', 0.0))
+        prev_c = float(active.get('counted_cost', 0.0))
+        delta_f = fq - prev_f
+        if delta_f > 0.0:
+            cur_cost = fq * fp
+            delta_c = max(0.0, cur_cost - prev_c)
+            total_filled += delta_f
+            total_cost += delta_c
+            active['counted_fill'] = fq
+            active['counted_cost'] = cur_cost
+            remaining = max(0.0, qty - total_filled)
+
         if status == 'closed':
-            fq = float(st.get('filled') or 0.0)
-            fp = float(st.get('average') or st.get('price') or active['price'])
-            total_filled += fq
-            total_cost += fq * fp
-            remaining = qty - total_filled
-            active = None
+            active['terminal'] = True
         elif status in ('canceled', 'expired', 'rejected'):
-            active = None
+            active['terminal'] = True
 
     try:
         while time.time() - t0 < wait:
-            # 1. Fresh book
+            # 1. Book
             try:
                 ob = exchange.fetch_order_book(symbol, limit=5)
                 last_bid = float(ob['bids'][0][0])
                 last_ask = float(ob['asks'][0][0])
-            except Exception as e:
-                log.debug(f"[PostOnly] book fetch {symbol}: {e}")
+            except Exception:
                 time.sleep(1.0)
                 continue
 
-            # ══ [FIXED PRICE] Use fixed_target if provided; else compute from book ══
+            # 2. Target
             _fixed = (fixed_target is not None and fixed_target > 0)
             if _fixed:
                 target = float(fixed_target)
             else:
-                if side == 'buy':
-                    target = last_bid * (1.0 - pen)
-                else:
-                    target = last_ask * (1.0 + pen)
+                target = (last_bid * (1.0 - pen)) if side == 'buy' \
+                         else (last_ask * (1.0 + pen))
 
-            # 3. Sweep status
-            _sweep_active()
+            # 3. Refresh active state (handles ALL statuses)
+            _refresh_active()
 
-            # 4. Done?
-            if total_filled >= qty * CFG.PO_FILL_THRESHOLD:
-                break
+            # 4. Handle terminal
+            if active is not None and active.get('terminal'):
+                if active['counted_fill'] >= active['qty'] * 0.99:
+                    active = None
+                    break   # complete
+                # Was canceled externally → drop and decide below
+                active = None
+
+            # 5. Exit conditions
             if remaining <= qty * 0.02:
                 break
+            if total_filled >= qty * CFG.PO_FILL_THRESHOLD:
+                break
 
-            # ══ [FIXED PRICE] Skip drift reprice when fixed_target is set ══
+            # 6. Drift + cancel/replace decision
             if active is not None and not _fixed:
                 drift = abs(active['price'] - target) / max(target, 1e-12) * 1e4
                 if drift > drift_bps:
+                    # ══ MANDATORY: sweep before cancel ══
+                    _refresh_active()
+                    # Decide: replace or abort?
+                    abort = (
+                        attempts >= max_attempts
+                        or drift > max_drift
+                        or total_filled >= qty * 0.90
+                    )
+                    if abort:
+                        log.info(f"[PostOnly] {symbol} ABORT "
+                                 f"(attempts={attempts}, drift={drift:.2f}bps, "
+                                 f"filled={total_filled:.6f}/{qty:.6f})")
+                        # Cancel + final sweep
+                        try:
+                            exchange.cancel_order(active['id'], symbol)
+                        except Exception:
+                            pass
+                        active = None
+                        break
+                    # REPLACE
                     try:
                         exchange.cancel_order(active['id'], symbol)
                     except Exception:
                         pass
+                    time.sleep(0.2)
+                    _refresh_active()   # catch fills that arrived during cancel
                     active = None
+                    attempts += 1
+                    log.debug(f"[PostOnly] {symbol} re-place "
+                              f"#{attempts} (drift={drift:.2f}bps, "
+                              f"remaining={remaining:.6f})")
 
-            # 6. Place new if none active
+            # 7. Place new order (only if there is meaningful remaining)
             if active is None and remaining > 0:
+                if total_filled >= qty * 0.90:
+                    break
                 try:
                     o = exchange.create_order(
                         symbol, 'limit', side, remaining, target,
-                        params={'timeInForce': 'GTX'}  # ← Post-Only
+                        params={'timeInForce': 'GTX'}
                     )
-                    active = {'id': o['id'], 'price': target, 'qty': remaining}
+                    active = {
+                        'id': o['id'],
+                        'price': target,
+                        'qty': remaining,
+                        'counted_fill': 0.0,
+                        'counted_cost': 0.0,
+                        'terminal': False,
+                    }
                 except Exception as e:
-                    # GTX rejected (would cross) — wait briefly
-                    log.debug(f"[PostOnly] {symbol} GTX rejected at {target:.6f}: {e}")
+                    log.debug(f"[PostOnly] {symbol} GTX rejected: {e}")
                     time.sleep(0.5)
                     continue
 
             time.sleep(rep)
 
-        # Final sweep
-        _sweep_active()
-
-        # Cancel any still-active order
+        # ── FINAL SWEEP (mandatory) ──
         if active is not None:
-            try:
-                exchange.cancel_order(active['id'], symbol)
-            except Exception:
-                pass
+            _refresh_active()
+            if not active.get('terminal'):
+                try:
+                    exchange.cancel_order(active['id'], symbol)
+                except Exception:
+                    pass
+                time.sleep(0.3)
+                _refresh_active()
             active = None
 
-        # Handle result
+        # ── Result ──
         if total_filled <= 0:
             if fallback_market:
                 try:
@@ -3386,18 +3697,21 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
                     fp = float(o.get('average') or mp)
                     return {
                         'filled_qty': qty, 'avg_price': fp, 'fill_ratio': 1.0,
-                        'reason': 'market_fallback', 'market_price': mp
+                        'reason': 'market_fallback', 'market_price': mp,
+                        'attempts': attempts,
                     }
                 except Exception as e:
                     log.error(f"[PostOnly] market fallback failed {symbol}: {e}")
             return {'filled_qty': 0.0, 'avg_price': 0.0, 'fill_ratio': 0.0,
                     'reason': 'no_fill',
-                    'market_price': last_ask if side == 'buy' else last_bid}
+                    'market_price': last_ask if side == 'buy' else last_bid,
+                    'attempts': attempts}
 
         avg = total_cost / total_filled
         fill_ratio = total_filled / qty
+        reason = 'filled' if fill_ratio >= 0.98 else 'partial'
 
-        # Partial → market remainder if requested
+        # Optional market top-up for remainder
         if fill_ratio < 0.98 and fallback_market and remaining > 0:
             try:
                 mp = last_ask if side == 'buy' else last_bid
@@ -3409,23 +3723,39 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
                 return {
                     'filled_qty': total_filled, 'avg_price': avg,
                     'fill_ratio': total_filled / qty,
-                    'reason': 'market_fallback',
-                    'market_price': mp
+                    'reason': 'market_fallback', 'market_price': mp,
+                    'attempts': attempts,
                 }
             except Exception as e:
-                log.warning(f"[PostOnly] partial market fallback failed {symbol}: {e}")
+                log.warning(f"[PostOnly] partial top-up failed {symbol}: {e}")
 
         return {
-            'filled_qty': total_filled, 'avg_price': avg,
+            'filled_qty': total_filled,
+            'avg_price': avg,
             'fill_ratio': fill_ratio,
-            'reason': 'filled' if fill_ratio >= 0.98 else 'partial',
-            'market_price': last_ask if side == 'buy' else last_bid
+            'reason': reason,
+            'market_price': last_ask if side == 'buy' else last_bid,
+            'attempts': attempts,
         }
 
     except Exception as e:
         log.error(f"[PostOnly] {symbol} fatal: {e}")
+        # Emergency: sweep whatever we can
+        try:
+            _refresh_active()
+        except Exception:
+            pass
+        if total_filled > 0:
+            return {
+                'filled_qty': total_filled,
+                'avg_price': total_cost / total_filled,
+                'fill_ratio': total_filled / qty,
+                'reason': 'partial_error',
+                'market_price': last_ask if side == 'buy' else last_bid,
+                'attempts': attempts,
+            }
         return {'filled_qty': 0.0, 'avg_price': 0.0, 'fill_ratio': 0.0,
-                'reason': 'error', 'market_price': 0.0}
+                'reason': 'error', 'market_price': 0.0, 'attempts': attempts}
 
 # ════════════════════════════════════════════════════════════════
 # § 18.7b  AdaptiveFillEngine — Microstructure-Aware Maker Execution
@@ -3817,11 +4147,11 @@ def check_thermodynamic_apex(pos_action, entry_price, current_price, ad, fi):
     accel_mean = np.mean(accel_window)
 
     # الشرط: الفعل التراكمي يثبت تراجع الزخم (استقرار طاقي)
-    energy_exhausted = (sum_dF > 0.005)
+    energy_exhausted = (sum_dF > 0.003)
 
-    if pos_action == "BUY" and energy_exhausted and accel_mean < 0.005:
+    if pos_action == "BUY" and energy_exhausted and accel_mean < 0.002:
         return True, "Apex: Action Integral Exhaustion"
-    if pos_action == "SELL" and energy_exhausted and accel_mean > -0.005:
+    if pos_action == "SELL" and energy_exhausted and accel_mean > -0.002:
         return True, "Apex: Action Integral Exhaustion"
 
     return False, ""
@@ -4450,20 +4780,34 @@ def run_live(cfg, exchange):
                             ex = True
                             rsn = f"MaxHold({int(bars_held)}bars)"
 
-                # ── Trailing SL (dynamic σ-scaled) ──
+                # ── Trailing SL (multi-factor) ──
                 if not ex:
                     entry_px = pos['entry']
-                    _td = float(pos.get('trail_dist_frac', CFG.TRAIL_DISTANCE))
                     _ta = float(pos.get('trail_activate_frac', CFG.TRAIL_ACTIVATE_MFE))
 
-                    # Update peak from live price
+                    # Resolve feature index for current candle
+                    _cur_fi = max(0, len(ad.closes) - 2 - ad.feat_start)
+                    _entry_ci = int(pos.get('entry_ci', len(ad.closes) - 2))
+                    _entry_fi = max(0, _entry_ci - ad.feat_start)
+
+                    # Compute MFE from live price
+                    if pos['action'] == "BUY":
+                        _live_mfe = (price - entry_px) / entry_px
+                    else:
+                        _live_mfe = (entry_px - price) / entry_px
+
                     if pos['action'] == "BUY":
                         cur_peak = float(pos.get('peak_price', entry_px))
                         if price > cur_peak:
                             pos['peak_price'] = price
                             cur_peak = price
-                        if (cur_peak - entry_px) / entry_px >= _ta:
-                            new_sl = cur_peak * (1.0 - _td)
+                        if _live_mfe >= _ta and cur_peak > entry_px:
+                            # ══ [MF-TRAIL] dynamic per-bar distance ══
+                            _dyn_td = compute_dynamic_trail_dist(
+                                ad, _entry_fi, _cur_fi, max(_live_mfe, 0.0),
+                                pos['action'], entry_px, cur_peak
+                            )
+                            new_sl = cur_peak * (1.0 - _dyn_td)
                             if new_sl > pos['sl']:
                                 pos['sl'] = new_sl
                     else:
@@ -4471,19 +4815,40 @@ def run_live(cfg, exchange):
                         if price < cur_peak or cur_peak == entry_px:
                             pos['peak_price'] = price
                             cur_peak = price
-                        if (entry_px - cur_peak) / entry_px >= _ta:
-                            new_sl = cur_peak * (1.0 + _td)
+                        if _live_mfe >= _ta and cur_peak < entry_px:
+                            _dyn_td = compute_dynamic_trail_dist(
+                                ad, _entry_fi, _cur_fi, max(_live_mfe, 0.0),
+                                pos['action'], entry_px, cur_peak
+                            )
+                            new_sl = cur_peak * (1.0 + _dyn_td)
                             if new_sl < pos['sl']:
                                 pos['sl'] = new_sl
 
-                # ── SL / TP ──
+                # ── SL / TP (labeled) ──
                 if not ex:
+                    _init_sl = float(pos.get('initial_sl', pos['sl']))
                     if pos['action'] == "BUY":
-                        if price <= pos['sl']: ex = True; rsn = "Emergency SL"
-                        elif price >= pos.get('tp1', 1e18): ex = True; rsn = "Hard TP"
+                        if price <= pos['sl']:
+                            ex = True
+                            if pos['sl'] > _init_sl * (1.0 + 1e-6):
+                                rsn = f"Trail-Win(peak={pos.get('peak_price', price):.4f})"
+                            elif abs(pos['sl'] - _init_sl) / max(_init_sl, 1e-9) < 1e-6:
+                                rsn = "Initial-SL"
+                            else:
+                                rsn = "Emergency SL"
+                        elif price >= pos.get('tp1', 1e18):
+                            ex = True; rsn = "Hard TP"
                     else:
-                        if price >= pos['sl']: ex = True; rsn = "Emergency SL"
-                        elif price <= pos.get('tp1', 0.): ex = True; rsn = "Hard TP"
+                        if price >= pos['sl']:
+                            ex = True
+                            if pos['sl'] < _init_sl * (1.0 - 1e-6):
+                                rsn = f"Trail-Win(peak={pos.get('peak_price', price):.4f})"
+                            elif abs(pos['sl'] - _init_sl) / max(_init_sl, 1e-9) < 1e-6:
+                                rsn = "Initial-SL"
+                            else:
+                                rsn = "Emergency SL"
+                        elif price <= pos.get('tp1', 0.):
+                            ex = True; rsn = "Hard TP"
 
                 if not ex:
                     continue
@@ -4684,6 +5049,23 @@ def run_live(cfg, exchange):
                         actual_qty = result['filled_qty']
                         fill_ratio = result['fill_ratio']
 
+                        # ══ [ATOMIC] Reject too-small partial fills ══
+                        _min_accept = float(getattr(CFG, 'PO_MIN_ACCEPT_RATIO', 0.50))
+                        if fill_ratio < _min_accept:
+                            log.warning(
+                                f"[PostOnly] {sym} rejecting partial "
+                                f"{fill_ratio*100:.1f}% < {_min_accept*100:.0f}% "
+                                f"(qty={actual_qty:.6f})"
+                            )
+                            # Close the tiny partial position
+                            try:
+                                _s_close = 'sell' if sig.action == 'BUY' else 'buy'
+                                exchange.create_order(sym, 'market', _s_close, actual_qty)
+                                log.info(f"[PostOnly] closed tiny partial {sym}")
+                            except Exception as _e:
+                                log.error(f"[PostOnly] failed to close partial: {_e}")
+                            continue
+
                         # ══ 4. Verify fill via fetch_order (safety) ══
                         if entry_price <= 0:
                             log.warning(f"[Entry] {sym} fill reported but price=0 — closing")
@@ -4859,6 +5241,28 @@ def main():
                    help="Max Live cache entries (default 40)")
     p.add_argument("--no-fixed-price", action="store_true",
                    help="Disable fixed-price entry (allow reprice chasing)")
+    p.add_argument("--no-trail-mfe", action="store_true",
+                   help="Disable MFE-graduated trail (Stage 1)")
+    p.add_argument("--no-trail-age", action="store_true",
+                   help="Disable age-decayed trail (Stage 2)")
+    p.add_argument("--no-trail-regime", action="store_true",
+                   help="Disable regime-aware trail (Stage 3)")
+    p.add_argument("--trail-structure", action="store_true",
+                   help="Enable structure-anchored trail (Stage 4, default OFF)")
+    p.add_argument("--trail-mfe-factors", type=str, default=None,
+                   help="Comma-separated MFE factors (e.g. '1.0,0.7,0.45,0.3')")
+    p.add_argument("--trail-age-beta", type=float, default=None,
+                   help="Age decay rate β (default 0.30)")
+    p.add_argument("--tp-rr", type=float, default=None,
+                   help="TP reward/risk ratio (default 5.0)")
+    p.add_argument("--trail-act-from-tp", action="store_true",
+                   help="Derive trail activation from TP distance (RR-adaptive)")
+    p.add_argument("--po-max-attempts", type=int, default=None,
+                   help="Max cancel/replace cycles (default 3)")
+    p.add_argument("--po-max-drift-bps", type=float, default=None,
+                   help="Abort if drift exceeds this (default 5.0)")
+    p.add_argument("--po-min-accept", type=float, default=None,
+                   help="Min fill ratio to accept partial (default 0.50)")
     args = p.parse_args()
 
     CFG.mode = args.mode
@@ -4947,6 +5351,30 @@ def main():
         CFG.LIVE_ASSET_CACHE_MAX = int(args.live_cache_size)
     if args.no_fixed_price:
         CFG.PO_FIXED_PRICE = False
+    if args.no_trail_mfe:     CFG.TRAIL_MFE_GRADUATED = False
+    if args.no_trail_age:     CFG.TRAIL_AGE_DECAY = False
+    if args.no_trail_regime:  CFG.TRAIL_REGIME_AWARE = False
+    if args.trail_structure:  CFG.TRAIL_STRUCTURE_ANCHORED = True
+    if args.trail_age_beta is not None:
+        CFG.TRAIL_AGE_BETA = float(args.trail_age_beta)
+    if args.trail_mfe_factors:
+        try:
+            _facs = tuple(float(x.strip()) for x in args.trail_mfe_factors.split(',') if x.strip())
+            if len(_facs) >= 2:
+                CFG.TRAIL_MFE_FACTORS = _facs
+        except Exception as e:
+            log.warning(f"[Trail] bad --trail-mfe-factors: {e}")
+    if args.tp_rr is not None:
+        CFG.TP_RR_RATIO = float(args.tp_rr)
+    if args.trail_act_from_tp:
+        CFG.TRAIL_ACT_FROM_TP = True
+    if args.po_max_attempts is not None:
+        CFG.PO_MAX_ATTEMPTS = int(args.po_max_attempts)
+    if args.po_max_drift_bps is not None:
+        CFG.PO_MAX_DRIFT_BPS = float(args.po_max_drift_bps)
+    if args.po_min_accept is not None:
+        CFG.PO_MIN_ACCEPT_RATIO = float(args.po_min_accept)
+
 
     print("╔"+"═"*70+"╗")
     print(f"  [Level-1] Parallel: {CFG.PARALLEL_PROCESSING}  "
