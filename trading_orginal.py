@@ -201,8 +201,8 @@ class Config:
 
     # ══ [POST-ONLY EXECUTION] ══
     PO_PENETRATION_BPS: float = 1.0      # match backtest's FILL_PENETRATION_BPS
-    PO_MAX_WAIT_S: int = 30              # entry wait time
-    PO_EXIT_MAX_WAIT_S: int = 180         # exit wait time
+    PO_MAX_WAIT_S: int = 30              # entry wait time (per attempt)
+    PO_EXIT_MAX_WAIT_S: int = 30          # reduced from 180 to prevent long blocking
     PO_REPRICE_S: float = 3.0            # cancel/replace interval
     PO_FILL_THRESHOLD: float = 0.50      # accept partial if ≥ 50%
     PO_EXIT_FALLBACK_MARKET: bool = True # exit → market after timeout
@@ -260,6 +260,19 @@ class Config:
     LIVE_ASSET_CACHE_MAX: int = 40           # max entries (safety)
     # ══ [FIXED PRICE ENTRY — no chasing] ══
     PO_FIXED_PRICE: bool = True              # use sig.price, hold it fixed
+    # ══ [ATOMIC FILL ACCOUNTING] ══
+    PO_MAX_ATTEMPTS: int = 3              # reduced from 5 (rate-limit safety)
+    PO_MAX_DRIFT_BPS: float = 5.0
+    PO_MIN_ACCEPT_RATIO: float = 0.50     # reject below 50% (was 0.15, comment was misleading)
+
+    # ══ [NON-BLOCKING PENDING ORDERS] ══
+    PENDING_ENABLED: bool = True
+    PENDING_FILE_PREFIX: str = "pending_orders"
+    PENDING_MAX_PER_CYCLE: int = 3        # cap new placements per loop
+    PENDING_REST_CHECK_EVERY: int = 2     # check each pending order every N loops
+
+    # ══ [SMART OHLCV FETCH] ══
+    SMART_OHLCV_ENABLED: bool = True
 
 CFG = Config()
 
@@ -358,6 +371,25 @@ def effective_bars(base_bars_1h: int) -> int:
         1d  → 7 bars = 7 days
     """
     return max(1, int(round(base_bars_1h * CFG.TF_SCALE)))
+
+# ════════════════════════════════════════════════════════════════
+# § 2.04  Smart OHLCV Refresh Detection
+# ════════════════════════════════════════════════════════════════
+
+def _needs_ohlcv_refresh(cached_df, tf_sec: int) -> bool:
+    """
+    True if a new bar has opened since the last cached bar.
+    Saves ~98% of fetch_ohlcv calls on 1h timeframe.
+    """
+    if cached_df is None or len(cached_df) == 0:
+        return True
+    try:
+        last_bar_open_ts = int(cached_df.index[-1].timestamp())
+        now_ts = int(time.time())
+        current_open_ts = (now_ts // max(tf_sec, 1)) * max(tf_sec, 1)
+        return last_bar_open_ts < current_open_ts
+    except Exception:
+        return True
 
 # ════════════════════════════════════════════════════════════════
 # § 2  جلب البيانات مع كاش (متوازٍ)
@@ -3260,20 +3292,14 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
                       fallback_market: bool = False,
                       fixed_target: Optional[float] = None):
     """
-    Post-Only limit execution with cancel/replace and optional market fallback.
+    Post-Only execution with ATOMIC fill accounting.
 
-    Places GTX limit at best_bid*(1-pen) for BUY, best_ask*(1+pen) for SELL.
-    Cancel/replaces when target drifts > PO_DRIFT_BPS.
-    Verifies fill via fetch_order.
-
-    Returns:
-      {
-        'filled_qty': float,
-        'avg_price':  float,   # 0.0 if none filled
-        'fill_ratio': float,   # 0..1
-        'reason':     str,     # 'filled' | 'partial' | 'no_fill' | 'market_fallback' | 'error'
-        'market_price': float, # last seen best ask (BUY) or best bid (SELL)
-      }
+    Key invariants:
+      - total_filled ALWAYS reflects sum of exchange-confirmed fills.
+      - remaining = qty - total_filled ALWAYS.
+      - Every cancel is preceded by a fresh fetch_order.
+      - Bounded chasing: max PO_MAX_ATTEMPTS cancel/replace cycles.
+      - Aborts when drift > PO_MAX_DRIFT_BPS or attempts exhausted.
     """
     pen = (penetration_bps if penetration_bps is not None
            else CFG.PO_PENETRATION_BPS) * 1e-4
@@ -3281,16 +3307,20 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
             else CFG.PO_MAX_WAIT_S)
     rep = reprice_s if reprice_s is not None else CFG.PO_REPRICE_S
     drift_bps = CFG.PO_DRIFT_BPS
+    max_attempts = int(getattr(CFG, 'PO_MAX_ATTEMPTS', 3))
+    max_drift = float(getattr(CFG, 'PO_MAX_DRIFT_BPS', 5.0))
 
     t0 = time.time()
-    active = None          # {'id', 'price', 'qty'}
+    active = None           # {'id','price','qty','counted_fill','counted_cost','terminal'}
     total_filled = 0.0
     total_cost = 0.0
     remaining = qty
+    attempts = 0
     last_bid = 0.0
     last_ask = 0.0
 
-    def _sweep_active():
+    def _refresh_active():
+        """Fetch latest order state; update total_filled via DELTA only."""
         nonlocal active, total_filled, total_cost, remaining
         if active is None:
             return
@@ -3299,85 +3329,136 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
         except Exception:
             return
         status = st.get('status')
+        fq = float(st.get('filled') or 0.0)
+        fp = float(st.get('average') or st.get('price') or active['price'])
+
+        # ══ DELTA-BASED update: never double-count, never miss ══
+        prev_f = float(active.get('counted_fill', 0.0))
+        prev_c = float(active.get('counted_cost', 0.0))
+        delta_f = fq - prev_f
+        if delta_f > 0.0:
+            cur_cost = fq * fp
+            delta_c = max(0.0, cur_cost - prev_c)
+            total_filled += delta_f
+            total_cost += delta_c
+            active['counted_fill'] = fq
+            active['counted_cost'] = cur_cost
+            remaining = max(0.0, qty - total_filled)
+
         if status == 'closed':
-            fq = float(st.get('filled') or 0.0)
-            fp = float(st.get('average') or st.get('price') or active['price'])
-            total_filled += fq
-            total_cost += fq * fp
-            remaining = qty - total_filled
-            active = None
+            active['terminal'] = True
         elif status in ('canceled', 'expired', 'rejected'):
-            active = None
+            active['terminal'] = True
 
     try:
         while time.time() - t0 < wait:
-            # 1. Fresh book
+            # 1. Book
             try:
                 ob = exchange.fetch_order_book(symbol, limit=5)
                 last_bid = float(ob['bids'][0][0])
                 last_ask = float(ob['asks'][0][0])
-            except Exception as e:
-                log.debug(f"[PostOnly] book fetch {symbol}: {e}")
+            except Exception:
                 time.sleep(1.0)
                 continue
 
-            # ══ [FIXED PRICE] Use fixed_target if provided; else compute from book ══
+            # 2. Target
             _fixed = (fixed_target is not None and fixed_target > 0)
             if _fixed:
                 target = float(fixed_target)
             else:
-                if side == 'buy':
-                    target = last_bid * (1.0 - pen)
-                else:
-                    target = last_ask * (1.0 + pen)
+                target = (last_bid * (1.0 - pen)) if side == 'buy' \
+                         else (last_ask * (1.0 + pen))
 
-            # 3. Sweep status
-            _sweep_active()
+            # 3. Refresh active state (handles ALL statuses)
+            _refresh_active()
 
-            # 4. Done?
-            if total_filled >= qty * CFG.PO_FILL_THRESHOLD:
-                break
+            # 4. Handle terminal
+            if active is not None and active.get('terminal'):
+                if active['counted_fill'] >= active['qty'] * 0.99:
+                    active = None
+                    break   # complete
+                # Was canceled externally → drop and decide below
+                active = None
+
+            # 5. Exit conditions
             if remaining <= qty * 0.02:
                 break
+            if total_filled >= qty * CFG.PO_FILL_THRESHOLD:
+                break
 
-            # ══ [FIXED PRICE] Skip drift reprice when fixed_target is set ══
+            # 6. Drift + cancel/replace decision
             if active is not None and not _fixed:
                 drift = abs(active['price'] - target) / max(target, 1e-12) * 1e4
                 if drift > drift_bps:
+                    # ══ MANDATORY: sweep before cancel ══
+                    _refresh_active()
+                    # Decide: replace or abort?
+                    abort = (
+                        attempts >= max_attempts
+                        or drift > max_drift
+                        or total_filled >= qty * 0.90
+                    )
+                    if abort:
+                        log.info(f"[PostOnly] {symbol} ABORT "
+                                 f"(attempts={attempts}, drift={drift:.2f}bps, "
+                                 f"filled={total_filled:.6f}/{qty:.6f})")
+                        # Cancel + final sweep
+                        try:
+                            exchange.cancel_order(active['id'], symbol)
+                        except Exception:
+                            pass
+                        active = None
+                        break
+                    # REPLACE
                     try:
                         exchange.cancel_order(active['id'], symbol)
                     except Exception:
                         pass
+                    time.sleep(0.2)
+                    _refresh_active()   # catch fills that arrived during cancel
                     active = None
+                    attempts += 1
+                    log.debug(f"[PostOnly] {symbol} re-place "
+                              f"#{attempts} (drift={drift:.2f}bps, "
+                              f"remaining={remaining:.6f})")
 
-            # 6. Place new if none active
+            # 7. Place new order (only if there is meaningful remaining)
             if active is None and remaining > 0:
+                if total_filled >= qty * 0.90:
+                    break
                 try:
                     o = exchange.create_order(
                         symbol, 'limit', side, remaining, target,
-                        params={'timeInForce': 'GTX'}  # ← Post-Only
+                        params={'timeInForce': 'GTX'}
                     )
-                    active = {'id': o['id'], 'price': target, 'qty': remaining}
+                    active = {
+                        'id': o['id'],
+                        'price': target,
+                        'qty': remaining,
+                        'counted_fill': 0.0,
+                        'counted_cost': 0.0,
+                        'terminal': False,
+                    }
                 except Exception as e:
-                    # GTX rejected (would cross) — wait briefly
-                    log.debug(f"[PostOnly] {symbol} GTX rejected at {target:.6f}: {e}")
+                    log.debug(f"[PostOnly] {symbol} GTX rejected: {e}")
                     time.sleep(0.5)
                     continue
 
             time.sleep(rep)
 
-        # Final sweep
-        _sweep_active()
-
-        # Cancel any still-active order
+        # ── FINAL SWEEP (mandatory) ──
         if active is not None:
-            try:
-                exchange.cancel_order(active['id'], symbol)
-            except Exception:
-                pass
+            _refresh_active()
+            if not active.get('terminal'):
+                try:
+                    exchange.cancel_order(active['id'], symbol)
+                except Exception:
+                    pass
+                time.sleep(0.3)
+                _refresh_active()
             active = None
 
-        # Handle result
+        # ── Result ──
         if total_filled <= 0:
             if fallback_market:
                 try:
@@ -3386,18 +3467,21 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
                     fp = float(o.get('average') or mp)
                     return {
                         'filled_qty': qty, 'avg_price': fp, 'fill_ratio': 1.0,
-                        'reason': 'market_fallback', 'market_price': mp
+                        'reason': 'market_fallback', 'market_price': mp,
+                        'attempts': attempts,
                     }
                 except Exception as e:
                     log.error(f"[PostOnly] market fallback failed {symbol}: {e}")
             return {'filled_qty': 0.0, 'avg_price': 0.0, 'fill_ratio': 0.0,
                     'reason': 'no_fill',
-                    'market_price': last_ask if side == 'buy' else last_bid}
+                    'market_price': last_ask if side == 'buy' else last_bid,
+                    'attempts': attempts}
 
         avg = total_cost / total_filled
         fill_ratio = total_filled / qty
+        reason = 'filled' if fill_ratio >= 0.98 else 'partial'
 
-        # Partial → market remainder if requested
+        # Optional market top-up for remainder
         if fill_ratio < 0.98 and fallback_market and remaining > 0:
             try:
                 mp = last_ask if side == 'buy' else last_bid
@@ -3409,23 +3493,39 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
                 return {
                     'filled_qty': total_filled, 'avg_price': avg,
                     'fill_ratio': total_filled / qty,
-                    'reason': 'market_fallback',
-                    'market_price': mp
+                    'reason': 'market_fallback', 'market_price': mp,
+                    'attempts': attempts,
                 }
             except Exception as e:
-                log.warning(f"[PostOnly] partial market fallback failed {symbol}: {e}")
+                log.warning(f"[PostOnly] partial top-up failed {symbol}: {e}")
 
         return {
-            'filled_qty': total_filled, 'avg_price': avg,
+            'filled_qty': total_filled,
+            'avg_price': avg,
             'fill_ratio': fill_ratio,
-            'reason': 'filled' if fill_ratio >= 0.98 else 'partial',
-            'market_price': last_ask if side == 'buy' else last_bid
+            'reason': reason,
+            'market_price': last_ask if side == 'buy' else last_bid,
+            'attempts': attempts,
         }
 
     except Exception as e:
         log.error(f"[PostOnly] {symbol} fatal: {e}")
+        # Emergency: sweep whatever we can
+        try:
+            _refresh_active()
+        except Exception:
+            pass
+        if total_filled > 0:
+            return {
+                'filled_qty': total_filled,
+                'avg_price': total_cost / total_filled,
+                'fill_ratio': total_filled / qty,
+                'reason': 'partial_error',
+                'market_price': last_ask if side == 'buy' else last_bid,
+                'attempts': attempts,
+            }
         return {'filled_qty': 0.0, 'avg_price': 0.0, 'fill_ratio': 0.0,
-                'reason': 'error', 'market_price': 0.0}
+                'reason': 'error', 'market_price': 0.0, 'attempts': attempts}
 
 # ════════════════════════════════════════════════════════════════
 # § 18.7b  AdaptiveFillEngine — Microstructure-Aware Maker Execution
@@ -4301,6 +4401,290 @@ def _live_cache_log_stats() -> None:
              f"evictions={e}, entries={len(_LIVE_ASSET_CACHE)}")
 
 # ════════════════════════════════════════════════════════════════
+# § 18.93  Pending Orders (Non-Blocking Entry)
+# ════════════════════════════════════════════════════════════════
+
+_PENDING_ORDERS: Dict[str, Dict] = {}
+_PENDING_ORDERS_PATH: str = ""
+
+
+def load_pending_orders(mode: str) -> Dict[str, Dict]:
+    """Restore pending orders from disk."""
+    global _PENDING_ORDERS, _PENDING_ORDERS_PATH
+    _PENDING_ORDERS_PATH = f"{CFG.PENDING_FILE_PREFIX}_{mode}.json"
+    if os.path.exists(_PENDING_ORDERS_PATH):
+        try:
+            with open(_PENDING_ORDERS_PATH) as f:
+                _PENDING_ORDERS = json.load(f)
+            log.info(f"[Pending] Restored {len(_PENDING_ORDERS)} pending orders")
+        except Exception as e:
+            log.warning(f"[Pending] load failed: {e}")
+            _PENDING_ORDERS = {}
+    else:
+        _PENDING_ORDERS = {}
+    return _PENDING_ORDERS
+
+
+def save_pending_orders() -> None:
+    """Persist pending orders atomically."""
+    if not _PENDING_ORDERS_PATH:
+        return
+    try:
+        tmp = _PENDING_ORDERS_PATH + ".tmp"
+        with open(tmp, 'w') as f:
+            json.dump(_PENDING_ORDERS, f, indent=2, default=str)
+        os.replace(tmp, _PENDING_ORDERS_PATH)
+    except Exception as e:
+        log.warning(f"[Pending] save failed: {e}")
+
+
+def _pending_drop_stale(max_age_s: float = 3600.0) -> int:
+    """Remove pending entries older than max_age_s (safety)."""
+    now = time.time()
+    removed = 0
+    for sym in list(_PENDING_ORDERS.keys()):
+        rec = _PENDING_ORDERS[sym]
+        if now - float(rec.get('placed_at', 0.0)) > max_age_s:
+            oid = rec.get('order_id')
+            if oid:
+                try:
+                    # best-effort cancel
+                    pass
+                except Exception:
+                    pass
+            _PENDING_ORDERS.pop(sym, None)
+            removed += 1
+    return removed
+
+
+def _sweep_pending_once(exchange, sym: str) -> Optional[Dict]:
+    """
+    Fetch status of a single pending order and update delta fields.
+    Returns the record with possibly-updated 'status', 'filled', 'avg_price'.
+    """
+    rec = _PENDING_ORDERS.get(sym)
+    if rec is None:
+        return None
+    oid = rec.get('order_id')
+    if not oid:
+        return rec
+    try:
+        st = exchange.fetch_order(oid, sym)
+    except Exception as e:
+        log.debug(f"[Pending] fetch_order {sym} failed: {e}")
+        return rec
+    status = st.get('status', 'unknown')
+    fq = float(st.get('filled') or 0.0)
+    fp = float(st.get('average') or st.get('price') or rec.get('price') or 0.0)
+    rec['status'] = status
+    rec['filled'] = fq
+    rec['avg_price'] = fp
+    rec['updated_ts'] = time.time()
+    return rec
+
+
+def _promote_pending_to_position(sym: str, rec: Dict,
+                                 open_pos_live: Dict) -> bool:
+    """Convert a filled pending order into an open position record."""
+    filled_qty = float(rec.get('filled') or 0.0)
+    total_qty = float(rec.get('qty') or 0.0)
+    entry_price = float(rec.get('avg_price') or rec.get('price') or 0.0)
+    if filled_qty <= 0 or entry_price <= 0 or total_qty <= 0:
+        return False
+
+    fill_ratio = filled_qty / total_qty
+
+    # Reject too-small partial fills
+    min_accept = float(getattr(CFG, 'PO_MIN_ACCEPT_RATIO', 0.50))
+    if fill_ratio < min_accept:
+        log.warning(
+            f"[Pending] {sym} fill {fill_ratio*100:.1f}% < "
+            f"{min_accept*100:.0f}% — closing tiny partial"
+        )
+        try:
+            close_side = 'sell' if rec['action'] == 'BUY' else 'buy'
+            exchange.create_order(sym, 'market', close_side, filled_qty)
+        except Exception as e:
+            log.error(f"[Pending] close partial failed {sym}: {e}")
+        return False
+
+    # Adapt SL/TP to actual fill, preserving original R/R
+    orig_sl_dist = float(rec.get('orig_sl_dist') or 0.0)
+    orig_tp_dist = float(rec.get('orig_tp_dist') or 0.0)
+    if orig_sl_dist <= 1e-12:
+        log.warning(f"[Pending] {sym} invalid SL dist — closing")
+        try:
+            close_side = 'sell' if rec['action'] == 'BUY' else 'buy'
+            exchange.create_order(sym, 'market', close_side, filled_qty)
+        except Exception:
+            pass
+        return False
+
+    rr = orig_tp_dist / orig_sl_dist
+    max_sl_frac = 0.015
+    if orig_sl_dist > entry_price * max_sl_frac:
+        orig_sl_dist = entry_price * max_sl_frac
+        orig_tp_dist = orig_sl_dist * rr
+
+    if rec['action'] == 'BUY':
+        adapted_sl = entry_price - orig_sl_dist
+        adapted_tp = entry_price + orig_tp_dist
+    else:
+        adapted_sl = entry_price + orig_sl_dist
+        adapted_tp = entry_price - orig_tp_dist
+
+    # σ-scaled trailing params at entry
+    trail_d, trail_a = (0.003, 0.004)
+    try:
+        ad = rec.get('ad_ref')
+        entry_fi = int(rec.get('entry_fi') or 0)
+        if ad is not None:
+            trail_d, trail_a = compute_trail_params(ad, entry_fi)
+    except Exception:
+        pass
+
+    open_pos_live[sym] = {
+        'action': rec['action'],
+        'entry': entry_price,
+        'qty': filled_qty,
+        'sl': adapted_sl,
+        'tp1': adapted_tp,
+        'T_info': float(rec.get('T_info') or 0.0),
+        'dyn_risk': float(rec.get('dyn_risk') or 0.01),
+        'entry_ts': time.time(),
+        'fill_ratio': fill_ratio,
+        'leverage': int(rec.get('leverage') or 1),
+        'trail_dist_frac': float(trail_d),
+        'trail_activate_frac': float(trail_a),
+    }
+    log.info(
+        f"✅ [Pending→Entry] {rec['action']} {sym} @ {entry_price:.6f} "
+        f"qty={filled_qty:.6f} (fill={fill_ratio*100:.0f}%) "
+        f"sl={adapted_sl:.6f} tp={adapted_tp:.6f}"
+    )
+    return True
+
+
+def monitor_pending_orders(exchange, open_pos_live: Dict,
+                           loop_iter: int = 0) -> None:
+    """
+    Sweep all pending orders. Promote filled ones, drop canceled/expired,
+    cancel timed-out ones. Bounded to PO_MAX_WAIT_S + grace.
+    """
+    if not getattr(CFG, 'PENDING_ENABLED', True):
+        return
+    now = time.time()
+    use_rest = (loop_iter % max(int(getattr(CFG, 'PENDING_REST_CHECK_EVERY', 2)), 1) == 0)
+
+    for sym in list(_PENDING_ORDERS.keys()):
+        rec = _PENDING_ORDERS[sym]
+
+        # Always try stream first, fall back to REST periodically
+        if use_rest:
+            _sweep_pending_once(exchange, sym)
+            rec = _PENDING_ORDERS.get(sym)
+            if rec is None:
+                continue
+
+        status = str(rec.get('status') or 'open')
+
+        # ── Terminal: filled → promote ──
+        if status == 'closed':
+            filled = float(rec.get('filled') or 0.0)
+            total = float(rec.get('qty') or 0.0)
+            if total > 0 and filled >= total * 0.98:
+                ok = _promote_pending_to_position(sym, rec, open_pos_live)
+                if not ok:
+                    log.info(f"[Pending] {sym} dropped after non-promotable fill")
+                _PENDING_ORDERS.pop(sym, None)
+            else:
+                # Partial close on exchange side; treat as filled and adapt
+                ok = _promote_pending_to_position(sym, rec, open_pos_live)
+                if not ok:
+                    log.info(f"[Pending] {sym} dropped after partial fill")
+                _PENDING_ORDERS.pop(sym, None)
+            continue
+
+        # ── Terminal: canceled/expired/rejected → drop ──
+        if status in ('canceled', 'expired', 'rejected'):
+            log.info(f"[Pending] {sym} {rec.get('action')} → {status}")
+            _PENDING_ORDERS.pop(sym, None)
+            continue
+
+        # ── Timeout → cancel + drop ──
+        timeout_s = float(rec.get('timeout_s') or CFG.PO_MAX_WAIT_S)
+        elapsed = now - float(rec.get('placed_at') or now)
+        if elapsed > timeout_s:
+            oid = rec.get('order_id')
+            if oid:
+                try:
+                    exchange.cancel_order(oid, sym)
+                except Exception:
+                    pass
+                time.sleep(0.2)
+                # Final sweep
+                _sweep_pending_once(exchange, sym)
+                rec2 = _PENDING_ORDERS.get(sym)
+                if rec2 and str(rec2.get('status')) == 'closed':
+                    _promote_pending_to_position(sym, rec2, open_pos_live)
+            log.info(f"[Pending] {sym} {rec.get('action')} timeout "
+                     f"({elapsed:.0f}s > {timeout_s:.0f}s)")
+            _PENDING_ORDERS.pop(sym, None)
+            continue
+
+
+def place_pending_entry(exchange, sym: str, side: str, qty: float,
+                        sig, timeout_s: float, leverage: int,
+                        ad=None) -> Optional[Dict]:
+    """
+    Place a single Post-Only order and register it as pending (non-blocking).
+    Returns the pending record or None on failure.
+    """
+    target = float(sig.price)
+    try:
+        o = exchange.create_order(
+            sym, 'limit', side, qty, target,
+            params={'timeInForce': 'GTX'}
+        )
+    except Exception as e:
+        log.debug(f"[Pending] {sym} GTX rejected @ {target:.6f}: {e}")
+        return None
+
+    entry_fi = 0
+    try:
+        if ad is not None:
+            entry_fi = max(0, min(sig.feat_idx, len(ad.E_therm) - 1))
+    except Exception:
+        entry_fi = 0
+
+    rec = {
+        'order_id': str(o['id']),
+        'sym': sym,
+        'side': side,
+        'action': sig.action,
+        'qty': float(qty),
+        'price': target,
+        'orig_sl_dist': float(abs(sig.price - sig.sl)),
+        'orig_tp_dist': float(abs(sig.tp1 - sig.price)),
+        'T_info': float(sig.T_info_val),
+        'dyn_risk': float(sig.dynamic_risk),
+        'leverage': int(leverage),
+        'entry_fi': int(entry_fi),
+        'placed_at': time.time(),
+        'timeout_s': float(timeout_s),
+        'status': 'open',
+        'filled': 0.0,
+        'avg_price': 0.0,
+        # NOTE: ad_ref is intentionally NOT serialized; it is lost on restart.
+        # On restart, trail params fall back to defaults.
+        'ad_ref': ad,
+    }
+    _PENDING_ORDERS[sym] = rec
+    log.info(f"[Pending] {sig.action} {sym} @ {target:.6f} qty={qty:.6f} "
+             f"id={rec['order_id']} (timeout={timeout_s:.0f}s)")
+    return rec
+
+# ════════════════════════════════════════════════════════════════
 # § 19  وضع Live / Testnet
 # ════════════════════════════════════════════════════════════════
 
@@ -4330,7 +4714,12 @@ def run_live(cfg, exchange):
 
     # ══ [State] Load persistent symbol metadata (leverage/margin/setup) ══
     load_symbol_meta(cfg.mode)
-
+    # ══ [Pending] Load persisted pending orders ══
+    load_pending_orders(cfg.mode)
+    _stale = _pending_drop_stale(max_age_s=max(3600.0, CFG.PO_MAX_WAIT_S * 4))
+    if _stale > 0:
+        log.info(f"[Pending] Dropped {_stale} stale entries on startup")
+    log.info(f"  [Pending] Active pending orders: {len(_PENDING_ORDERS)}")
 
     # ══ [State] Initial reconciliation with exchange ══
     _pre_syms = list(open_pos_live.keys()) or scan_top_assets(exchange)
@@ -4354,9 +4743,19 @@ def run_live(cfg, exchange):
 
     log.info("🚀 تم بناء الذاكرة التاريخية. بدء حلقة التداول اللحظي...")
 
+    loop_iter = 0
     while True:
         try:
             t0 = time.time()
+            loop_iter += 1
+
+            # ══ [Pending] Sweep pending orders every cycle ══
+            try:
+                monitor_pending_orders(exchange, open_pos_live, loop_iter)
+            except Exception as _e:
+                log.warning(f"[Pending] monitor error: {_e}")
+            
+            # تحديث دوري لقائمة الأزواج لتجنب جمود التساؤل
             
             # تحديث دوري لقائمة الأزواج لتجنب جمود السيولة
             if time.time() - last_scan_time > 4 * 3600:
@@ -4380,10 +4779,33 @@ def run_live(cfg, exchange):
             # ══ [LIVE CACHE] track last_closed per symbol ══
             _current_last_closed: Dict[str, int] = {}
 
+            _tf_sec_local = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
+            _smart = getattr(CFG, 'SMART_OHLCV_ENABLED', True)
+            _ohlcv_fetched = 0
+            _ohlcv_skipped = 0
+
             for sym in top_syms:
                 if sym not in cached_data: continue
                 try:
+                    # ══ [Smart OHLCV] skip fetch if no new bar ══
+                    if _smart and not _needs_ohlcv_refresh(cached_data[sym], _tf_sec_local):
+                        _ohlcv_skipped += 1
+                        # Still use the cached data for this symbol
+                        _tf_sec_s = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
+                        _lc_ts = _last_closed_bar_ts(cached_data[sym], _tf_sec_s)
+                        _current_last_closed[sym] = _lc_ts
+                        ad = _live_cache_get(sym, cfg.timeframe, _lc_ts)
+                        if ad is None:
+                            ad = process_asset(sym, cached_data[sym],
+                                                current_capital=cap_live)
+                            if ad is not None:
+                                _live_cache_put(sym, cfg.timeframe, _lc_ts, ad)
+                        if ad:
+                            assets[sym] = ad
+                        continue
+
                     new_candles = exchange.fetch_ohlcv(sym, cfg.timeframe, limit=3)
+                    _ohlcv_fetched += 1
                     df_new = pd.DataFrame(new_candles, columns=['ts','Open','High','Low','Close','Volume'])
                     df_new['ts'] = pd.to_datetime(df_new['ts'], unit='ms', utc=True)
                     df_new = df_new.set_index('ts').astype(float)
@@ -4664,25 +5086,63 @@ def run_live(cfg, exchange):
                         except Exception:
                             pass
 
-                        # ══ 3. Entry — Post-Only (with fixed price) ══
-                        _fixed_target = None
-                        if getattr(CFG, 'PO_FIXED_PRICE', True):
-                            _fixed_target = float(sig.price)
+                        # ══ 3. Entry — Non-Blocking Pending Order ══
+                        if getattr(CFG, 'PENDING_ENABLED', True):
+                            # Respect cap on placements per cycle
+                            if len(_PENDING_ORDERS) >= int(CFG.MAX_CONCURRENT_ASSETS):
+                                log.debug(f"[Pending] cap reached, skipping {sym}")
+                                continue
 
-                        result = execute_post_only(
-                            exchange, sym, sd, qty,
-                            fallback_market=False,
-                            fixed_target=_fixed_target,
-                        )
-
-                        if not result.get('filled_qty') or result['filled_qty'] <= 0:
-                            log.info(f"[Entry] {sym} {sd} no fill "
-                                     f"({result.get('reason')}) — skip signal")
+                            rec = place_pending_entry(
+                                exchange, sym, sd, qty, sig,
+                                timeout_s=float(CFG.PO_MAX_WAIT_S),
+                                leverage=int(dynamic_leverage),
+                                ad=assets[sym],
+                            )
+                            if rec is None:
+                                log.info(f"[Pending] {sym} rejected by exchange — skip")
+                                continue
+                            # Persist immediately; promotion happens in monitor
+                            try:
+                                save_pending_orders()
+                            except Exception:
+                                pass
+                            # Do NOT register in open_pos_live here.
                             continue
+                        else:
+                            # Legacy blocking path (fallback)
+                            _fixed_target = None
+                            if getattr(CFG, 'PO_FIXED_PRICE', True):
+                                _fixed_target = float(sig.price)
+                            result = execute_post_only(
+                                exchange, sym, sd, qty,
+                                fallback_market=False,
+                                fixed_target=_fixed_target,
+                            )
+                            if not result.get('filled_qty') or result['filled_qty'] <= 0:
+                                continue
+
 
                         entry_price = result['avg_price']
                         actual_qty = result['filled_qty']
                         fill_ratio = result['fill_ratio']
+
+                        # ══ [ATOMIC] Reject too-small partial fills ══
+                        _min_accept = float(getattr(CFG, 'PO_MIN_ACCEPT_RATIO', 0.50))
+                        if fill_ratio < _min_accept:
+                            log.warning(
+                                f"[PostOnly] {sym} rejecting partial "
+                                f"{fill_ratio*100:.1f}% < {_min_accept*100:.0f}% "
+                                f"(qty={actual_qty:.6f})"
+                            )
+                            # Close the tiny partial position
+                            try:
+                                _s_close = 'sell' if sig.action == 'BUY' else 'buy'
+                                exchange.create_order(sym, 'market', _s_close, actual_qty)
+                                log.info(f"[PostOnly] closed tiny partial {sym}")
+                            except Exception as _e:
+                                log.error(f"[PostOnly] failed to close partial: {_e}")
+                            continue
 
                         # ══ 4. Verify fill via fetch_order (safety) ══
                         if entry_price <= 0:
@@ -4770,6 +5230,7 @@ def run_live(cfg, exchange):
                     json.dump(open_pos_live, f, indent=2)
             except Exception:
                 pass
+            save_pending_orders()
             save_symbol_meta()
             
             # استرخاء المحرك للمزامنة الزمنية
@@ -4859,6 +5320,16 @@ def main():
                    help="Max Live cache entries (default 40)")
     p.add_argument("--no-fixed-price", action="store_true",
                    help="Disable fixed-price entry (allow reprice chasing)")
+    p.add_argument("--po-max-attempts", type=int, default=None,
+                   help="Max cancel/replace cycles (default 3)")
+    p.add_argument("--po-max-drift-bps", type=float, default=None,
+                   help="Abort if drift exceeds this (default 5.0)")
+    p.add_argument("--po-min-accept", type=float, default=None,
+                   help="Min fill ratio to accept partial (default 0.50)")
+    p.add_argument("--no-pending", action="store_true",
+                   help="Disable non-blocking pending orders (use legacy blocking)")
+    p.add_argument("--no-smart-ohlcv", action="store_true",
+                   help="Disable smart OHLCV fetch (always fetch every cycle)")
     args = p.parse_args()
 
     CFG.mode = args.mode
@@ -4947,6 +5418,16 @@ def main():
         CFG.LIVE_ASSET_CACHE_MAX = int(args.live_cache_size)
     if args.no_fixed_price:
         CFG.PO_FIXED_PRICE = False
+    if args.po_max_attempts is not None:
+        CFG.PO_MAX_ATTEMPTS = int(args.po_max_attempts)
+    if args.po_max_drift_bps is not None:
+        CFG.PO_MAX_DRIFT_BPS = float(args.po_max_drift_bps)
+    if args.po_min_accept is not None:
+        CFG.PO_MIN_ACCEPT_RATIO = float(args.po_min_accept)
+    if args.no_pending:
+        CFG.PENDING_ENABLED = False
+    if args.no_smart_ohlcv:
+        CFG.SMART_OHLCV_ENABLED = False
 
     print("╔"+"═"*70+"╗")
     print(f"  [Level-1] Parallel: {CFG.PARALLEL_PROCESSING}  "

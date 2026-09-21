@@ -1,134 +1,51 @@
 {
-  "ALGO/USDT": {
-    "leverage": 46,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789937883.098129
-  },
-  "OP/USDT": {
-    "leverage": 30,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789857894.7074258
-  },
   "LDO/USDT": {
-    "leverage": 32,
+    "leverage": 50,
     "margin_mode": "isolated",
     "setup_done": true,
     "reason": "fresh_setup",
-    "updated_ts": 1789859260.3903856
+    "updated_ts": 1789981246.6970923
   },
-  "ATOM/USDT": {
-    "leverage": 46,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789948061.9103646
-  },
-  "WIF/USDT": {
-    "leverage": 32,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789863488.0190172
-  },
-  "RENDER/USDT": {
-    "leverage": 31,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789864068.4639778
-  },
-  "FIL/USDT": {
-    "leverage": 49,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "position_exists"
-  },
-  "LTC/USDT": {
-    "leverage": 41,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789866654.1241345
-  },
-  "APT/USDT": {
-    "leverage": 40,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789866855.2729118
-  },
-  "BTC/USDT": {
-    "leverage": 47,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789915229.7752988
-  },
-  "ARB/USDT": {
-    "leverage": 47,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789915238.2999065
-  },
-  "POL/USDT": {
-    "leverage": 46,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789948970.0779543
-  },
-  "VET/USDT": {
+  "HBAR/USDT": {
     "leverage": 48,
     "margin_mode": "isolated",
     "setup_done": true,
     "reason": "fresh_setup",
-    "updated_ts": 1789917113.0851011
+    "updated_ts": 1789988548.6168404
   },
-  "XMR/USDT": {
-    "leverage": 45,
+  "AVAX/USDT": {
+    "leverage": 49,
     "margin_mode": "isolated",
     "setup_done": true,
     "reason": "fresh_setup",
-    "updated_ts": 1789922827.3061092
+    "updated_ts": 1789988931.0392137
   },
-  "ETC/USDT": {
-    "leverage": 46,
+  "DOGE/USDT": {
+    "leverage": 48,
     "margin_mode": "isolated",
     "setup_done": true,
     "reason": "fresh_setup",
-    "updated_ts": 1789938717.347499
+    "updated_ts": 1789988543.6910605
   },
-  "NEO/USDT": {
-    "leverage": 46,
+  "RENDER/USDT": {
+    "leverage": 50,
     "margin_mode": "isolated",
     "setup_done": true,
     "reason": "fresh_setup",
-    "updated_ts": 1789938114.5881734
+    "updated_ts": 1789992235.6404743
   },
-  "LINK/USDT": {
-    "leverage": 46,
+  "APT/USDT": {
+    "leverage": 50,
     "margin_mode": "isolated",
     "setup_done": true,
     "reason": "fresh_setup",
-    "updated_ts": 1789941699.099589
+    "updated_ts": 1789992241.3682497
   },
-  "SOL/USDT": {
-    "leverage": 46,
+  "BTC/USDT": {
+    "leverage": 50,
     "margin_mode": "isolated",
     "setup_done": true,
     "reason": "fresh_setup",
-    "updated_ts": 1789941828.1132946
-  },
-  "ADA/USDT": {
-    "leverage": 46,
-    "margin_mode": "isolated",
-    "setup_done": true,
-    "reason": "fresh_setup",
-    "updated_ts": 1789946160.4065633
+    "updated_ts": 1789995778.8597872
   }
 }

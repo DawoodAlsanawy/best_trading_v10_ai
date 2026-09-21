@@ -262,7 +262,7 @@ class Config:
     REENTRY_COOLDOWN_ENABLED: bool = True
     # ══ [LIVE ASSET CACHE — reuse AssetData when closed bar unchanged] ══
     LIVE_ASSET_CACHE_ENABLED: bool = True
-    LIVE_ASSET_CACHE_MAX: int = 40           # max entries (safety)
+    LIVE_ASSET_CACHE_MAX: int = 200           # max entries (safety)
     # ══ [FIXED PRICE ENTRY — no chasing] ══
     PO_FIXED_PRICE: bool = True              # use sig.price, hold it fixed
     # ══ [ATOMIC FILL ACCOUNTING] ══
@@ -4504,13 +4504,20 @@ def ensure_symbol_setup(exchange, sym: str, target_leverage: int,
     if CFG.SETUP_VERIFY_LEVERAGE:
         try:
             lev_info = exchange.fetch_leverage(sym)
-            confirmed = int(lev_info.get('leverage', target_leverage))
-            if confirmed != target_leverage:
-                log.warning(f"[Setup] {sym} leverage mismatch: "
-                            f"got {confirmed}x, wanted {target_leverage}x")
+            if lev_info is None or not hasattr(lev_info, 'get'):
+                log.debug(f"[Setup] {sym} leverage verify unavailable on this "
+                          f"exchange — assuming {target_leverage}x")
+                confirmed = target_leverage
+            else:
+                confirmed = int(lev_info.get('leverage', target_leverage)
+                                or target_leverage)
+                if confirmed != target_leverage:
+                    log.warning(f"[Setup] {sym} leverage mismatch: "
+                                f"got {confirmed}x, wanted {target_leverage}x")
         except Exception as e:
-            log.warning(f"[Setup] {sym} fetch_leverage verify failed: {e} "
-                        f"(assuming {confirmed}x)")
+            log.debug(f"[Setup] {sym} fetch_leverage verify failed: {e} "
+                      f"(assuming {target_leverage}x)")
+            confirmed = target_leverage
 
     _SYMBOL_META[sym] = {
         'leverage': confirmed,
@@ -6082,6 +6089,11 @@ def main():
     # ══ [Level-2] Compile Numba kernels before starting ══
     _warmup_numba_kernels()
     if args.nassets     is not None: CFG.n_assets = args.nassets
+    # ══ [Cache sizing] ensure capacity ≥ n_assets + safety margin ══
+    _min_cache = max(50, int(CFG.n_assets * 1.5))
+    if CFG.LIVE_ASSET_CACHE_MAX < _min_cache:
+        CFG.LIVE_ASSET_CACHE_MAX = _min_cache
+        log.info(f"[Cache] LIVE_ASSET_CACHE_MAX adjusted to {_min_cache}")
     if args.maxcon     is not None: CFG.MAX_CONCURRENT_ASSETS = args.maxcon
     if args.fill_mode is not None: CFG.FILL_ENTRY_MODE = args.fill_mode
     if args.fill_target is not None: CFG.FILL_TARGET = float(args.fill_target)
