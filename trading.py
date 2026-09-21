@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, ProcessPoolExec
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
-
+import traceback
 import numpy as np
 import pandas as pd
 from scipy.stats import kurtosis, linregress, skew
@@ -1675,8 +1675,8 @@ def compute_portfolio_risk_frac(sig, capital, open_pos_dict, cfg) -> float:
     for pos in open_pos_dict.values():
         try:
             heat_used += float(pos.signal.dynamic_risk)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"[Budget] heat accumulation failed: {e}")
     heat_available = max(0.0, heat_max - heat_used)
     if heat_available <= 1e-9:
         return 0.0
@@ -2238,11 +2238,15 @@ def _save_asset_cache(sym: str, timeframe: str, df, ad, cfg) -> None:
 
 def _worker_init(cfg_dict: Dict) -> None:
     """Re-apply CFG overrides in child process (no-op on fork)."""
+    failed = 0
     for k, v in cfg_dict.items():
         try:
             setattr(CFG, k, v)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"[Worker] setattr {k} failed: {e}")
+            failed += 1
+    if failed > 0:
+        log.warning(f"[Worker] {failed}/{len(cfg_dict)} CFG fields not applied")
 
 
 def _process_asset_worker(args):
@@ -2253,11 +2257,15 @@ def _process_asset_worker(args):
     sym, df, cap, timeframe, cfg_dict = args
 
     # Restore CFG in child (needed for spawn/forkserver; harmless on fork)
+    failed = 0
     for k, v in cfg_dict.items():
         try:
             setattr(CFG, k, v)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"[Worker:{sym}] setattr {k} failed: {e}")
+            failed += 1
+    if failed > 0:
+        log.warning(f"[Worker:{sym}] {failed} CFG fields not applied")
 
     # 1. Try cache
     ad = _load_asset_cache(sym, timeframe, df, CFG)
@@ -2829,11 +2837,8 @@ def run_backtest(cfg):
             futures = [ex.submit(_process_asset_worker, t) for t in tasks]
             crashed_syms: List[str] = []
 
-            for fut, (sym, df, *_rest) in zip(futures, tasks):
-                pass  # placeholder — we'll iterate differently below
-
-            # Iterate with symbol association so we can retry failed ones serially
-            fut_to_sym = {ex.submit(_process_asset_worker, t): t[0] for t in tasks}
+            # ══ [CLEANUP] Removed dead placeholder loop ══
+            # The previous code re-submitted tasks (bug); removed.
             # NOTE: we already submitted above; reconstruct the mapping is unnecessary
             # since we track via as_completed. Instead: use a dict keyed by future.
 
@@ -3137,8 +3142,8 @@ def verify_fill_sync(exchange, order_id, symbol, timeout_s: float = 2.0):
                 }
             if st in ('canceled', 'expired', 'rejected'):
                 return {'filled': False, 'qty': 0.0, 'price': 0.0, 'status': st}
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"[VerifyFill] fetch_order {order_id} failed: {e}")
         time.sleep(0.1)
     return {'filled': False, 'qty': 0.0, 'price': 0.0, 'status': 'timeout'}
 
@@ -3212,8 +3217,8 @@ class MicroTracker:
             if len(self._book_hist) > self.max_hist:
                 self._book_hist = self._book_hist[-self.max_hist:]
             self._prune(now)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"[MicroTracker] update_book failed: {e}")
 
     def update_trades(self, trades: List[Dict], now: Optional[float] = None) -> None:
         """trades: list of {'price','amount','side' or 'timestamp'}"""
@@ -3225,8 +3230,8 @@ class MicroTracker:
                 q = float(t.get('amount') or 0)
                 if p > 0 and q > 0:
                     self._trade_hist.append((ts, p, q))
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug(f"[MicroTracker] update_trades item failed: {e}")
         if len(self._trade_hist) > 5000:
             self._trade_hist = self._trade_hist[-5000:]
         self._prune(now)
@@ -3500,15 +3505,17 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
                         # Cancel + final sweep
                         try:
                             exchange.cancel_order(active['id'], symbol)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            log.warning(f"[PostOnly] ABORT cancel {symbol} "
+                                        f"oid={active['id']} failed: {e}")
                         active = None
                         break
                     # REPLACE
                     try:
                         exchange.cancel_order(active['id'], symbol)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log.warning(f"[PostOnly] REPLACE cancel {symbol} "
+                                    f"oid={active['id']} failed: {e}")
                     time.sleep(0.2)
                     _refresh_active()   # catch fills that arrived during cancel
                     active = None
@@ -3547,8 +3554,9 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
             if not active.get('terminal'):
                 try:
                     exchange.cancel_order(active['id'], symbol)
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.warning(f"[PostOnly] FINAL cancel {symbol} "
+                                f"oid={active['id']} failed: {e}")
                 time.sleep(0.3)
                 _refresh_active()
             active = None
@@ -3675,8 +3683,9 @@ class AdaptiveFillEngine:
         try:
             trades = self.exchange.fetch_trades(self.symbol, limit=50)
             self.tracker.update_trades(trades)
-        except Exception:
-            pass  # trades are optional
+        except Exception as e:
+            log.debug(f"[AFE] fetch_trades {self.symbol} failed "
+                      f"(optional): {e}")
         st = self.tracker.state()
         self.last_state = st
         return st
@@ -3779,8 +3788,9 @@ class AdaptiveFillEngine:
         for o in active:
             try:
                 self.exchange.cancel_order(o['id'], self.symbol)
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug(f"[AFE] cancel {self.symbol} "
+                          f"oid={o.get('id')} failed: {e}")
 
     # ─────────────────────────────────────────────────────────────
     def _sweep_fills(self, active: List[Dict], total_filled: float,
@@ -3797,7 +3807,8 @@ class AdaptiveFillEngine:
                     total_filled += fq
                     total_cost += fq * fp
                 elif status in ('canceled', 'expired', 'rejected'):
-                    pass  # drop
+                    log.debug(f"[AFE] sweep: {self.symbol} "
+                              f"oid={o.get('id')} terminal status={status}")
                 else:
                     still_active.append(o)
             except Exception:
@@ -4220,8 +4231,9 @@ def ensure_symbol_setup(exchange, sym: str, target_leverage: int,
             if confirmed != target_leverage:
                 log.warning(f"[Setup] {sym} leverage mismatch: "
                             f"got {confirmed}x, wanted {target_leverage}x")
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning(f"[Setup] {sym} fetch_leverage verify failed: {e} "
+                        f"(assuming {confirmed}x)")
 
     _SYMBOL_META[sym] = {
         'leverage': confirmed,
@@ -4256,8 +4268,9 @@ def verify_fill(exchange, order_id: str, sym: str,
                 }
             if status in ('canceled', 'expired', 'rejected'):
                 return {'filled': False, 'qty': 0.0, 'avg_price': 0.0, 'status': status}
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"[VerifyFill] fetch_order {order_id} ({sym}) "
+                      f"failed: {e}")
         time.sleep(0.25)
     return None  # still pending
 
@@ -4911,8 +4924,8 @@ def run_live(cfg, exchange):
                 cap_live = float(bal['USDT']['free'])
                 _last_known_cap = cap_live
             except Exception as e:
-                log.warning(f"[Balance] fetch failed ({e}); using last known "
-                            f"${_last_known_cap:.2f}")
+                log.warning(f"[Balance] fetch failed: {e}; "
+                            f"using last known ${_last_known_cap:.2f}")
                 cap_live = _last_known_cap
 
             peak_cap_live = max(peak_cap_live, cap_live)
@@ -5225,10 +5238,14 @@ def run_live(cfg, exchange):
                                 if o['side'] == sd:
                                     try:
                                         exchange.cancel_order(o['id'], sym)
-                                    except Exception:
-                                        pass
-                        except Exception:
-                            pass
+                                        log.debug(f"[AntiStack] cancelled {sym} "
+                                                  f"{sd} oid={o['id']}")
+                                    except Exception as e:
+                                        log.warning(f"[AntiStack] cancel {sym} "
+                                                    f"oid={o['id']} failed: {e}")
+                        except Exception as e:
+                            log.warning(f"[AntiStack] fetch_open_orders "
+                                        f"{sym} failed: {e}")
 
                         # ══ 3. Entry — Non-Blocking Pending Order ══
                         if getattr(CFG, 'PENDING_ENABLED', True):
@@ -5361,8 +5378,9 @@ def run_live(cfg, exchange):
                         try:
                             with open(state_file, 'w') as f:
                                 json.dump(open_pos_live, f, indent=2)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            log.warning(f"[State] save after entry {sym} "
+                                        f"failed: {e}")
 
                     except Exception as e:
                         log.error(f"[Entry] {sym} exception: {e}")
@@ -5380,8 +5398,8 @@ def run_live(cfg, exchange):
             try:
                 with open(state_file, 'w') as f:
                     json.dump(open_pos_live, f, indent=2)
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning(f"[State] end-of-cycle save failed: {e}")
             save_pending_orders()
             save_symbol_meta()
             
@@ -5393,7 +5411,9 @@ def run_live(cfg, exchange):
             log.info("تم إيقاف الروبوت يدوياً.")
             break
         except Exception as e: 
+            import traceback
             log.error(f"خطأ غير متوقع في حلقة التداول: {e}")
+            log.debug(traceback.format_exc())
             time.sleep(10)
 
 
