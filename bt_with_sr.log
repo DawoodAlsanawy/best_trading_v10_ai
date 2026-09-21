@@ -1,0 +1,245 @@
+02:53:46 [INFO] [Level-2] Numba kernels warm (JIT ready in 0.6s)
+02:53:48 [INFO] [TF] timeframe=1h TF_SCALE=1.0000 TF_SECONDS=3600 TF_HOURS=1.000
+02:53:48 [INFO] §1  مسح أعلى 15 عملة...
+02:53:55 [INFO] §2  جلب البيانات (متوازٍ)...
+02:53:56 [INFO]   ✓ BTC/USDT      : 17,521 شمعة
+02:53:57 [INFO]   ✓ DOGE/USDT     : 17,521 شمعة
+02:53:57 [INFO]   ✓ XRP/USDT      : 17,521 شمعة
+02:53:57 [INFO]   ✓ SOL/USDT      : 17,521 شمعة
+02:53:57 [INFO]   ✓ ETH/USDT      : 17,521 شمعة
+02:53:57 [INFO]   ✓ BNB/USDT      : 17,521 شمعة
+02:53:57 [INFO]   ✓ ADA/USDT      : 17,521 شمعة
+02:53:57 [INFO]   ✓ LINK/USDT     : 17,521 شمعة
+02:53:58 [INFO]   ✓ LTC/USDT      : 17,521 شمعة
+02:53:58 [INFO]   ✓ UNI/USDT      : 17,521 شمعة
+02:53:58 [INFO]   ✓ AVAX/USDT     : 17,521 شمعة
+02:53:58 [INFO]   ✓ DOT/USDT      : 17,521 شمعة
+02:53:58 [INFO]   ✓ ATOM/USDT     : 17,521 شمعة
+02:53:58 [INFO]   ✓ BCH/USDT      : 17,521 شمعة
+02:53:58 [INFO]   ✓ ETC/USDT      : 17,521 شمعة
+02:53:58 [INFO]   ✓ TON/USDT      : 17,514 شمعة
+02:53:58 [INFO]   ✓ TRX/USDT      : 17,521 شمعة
+02:53:58 [INFO]   ✓ NEAR/USDT     : 17,521 شمعة
+02:53:59 [INFO]   ✓ VET/USDT      : 17,521 شمعة
+02:53:59 [INFO]   ✓ STX/USDT      : 17,521 شمعة
+02:53:59 [INFO]   ✓ APT/USDT      : 17,521 شمعة
+02:53:59 [INFO]   ✓ HBAR/USDT     : 17,521 شمعة
+02:53:59 [INFO]   ✓ AAVE/USDT     : 17,521 شمعة
+02:53:59 [INFO]   ✓ SUI/USDT      : 17,521 شمعة
+02:53:59 [INFO]   ✓ ARB/USDT      : 17,521 شمعة
+02:53:59 [INFO]   ✓ INJ/USDT      : 17,521 شمعة
+02:53:59 [INFO]   ✓ OP/USDT       : 17,521 شمعة
+02:54:00 [INFO]   ✓ SEI/USDT      : 17,521 شمعة
+02:54:00 [INFO]   ✓ TIA/USDT      : 17,521 شمعة
+02:54:00 [INFO]   ✓ ALGO/USDT     : 17,521 شمعة
+02:54:00 [INFO]   ✓ FET/USDT      : 17,521 شمعة
+02:54:00 [INFO]   ✓ GRT/USDT      : 17,521 شمعة
+02:54:00 [INFO]   ✓ RENDER/USDT   : 17,521 شمعة
+02:54:00 [INFO]   ✓ LDO/USDT      : 17,521 شمعة
+02:54:01 [INFO]   ✓ THETA/USDT    : 17,521 شمعة
+02:54:01 [INFO]   ✓ KAS/USDT      : 17,521 شمعة
+02:54:01 [INFO]   ✓ WIF/USDT      : 17,521 شمعة
+02:54:01 [INFO]   ✓ SAND/USDT     : 17,521 شمعة
+02:54:01 [INFO]   ✓ EGLD/USDT     : 17,521 شمعة
+02:54:01 [INFO]   ✓ AXS/USDT      : 17,521 شمعة
+02:54:01 [INFO]   ✓ CHZ/USDT      : 17,521 شمعة
+02:54:01 [INFO]   ✓ MANA/USDT     : 17,521 شمعة
+02:54:01 [INFO]   ✓ POL/USDT      : 17,521 شمعة
+02:54:01 [INFO]   ✓ XLM/USDT      : 17,521 شمعة
+02:54:02 [INFO]   ✓ FIL/USDT      : 17,521 شمعة
+02:54:02 [INFO]   ✓ DASH/USDT     : 17,521 شمعة
+02:54:02 [INFO]   ✓ QNT/USDT      : 17,521 شمعة
+02:54:02 [INFO]   ✓ ZEC/USDT      : 17,521 شمعة
+02:54:02 [INFO]   ✓ XMR/USDT      : 17,521 شمعة
+02:54:02 [INFO] §3  معالجة فضاء الحالة (K ديناميكي)...
+02:54:02 [INFO]   [Parallel] 8 workers × 49 symbols (cache=on)
+╔══════════════════════════════════════════════════════════════════════╗
+  [Level-1] Parallel: True  Cache: True
+  [Level-2] Numba: True
+
+║  محرك التداول الثرموديناميكي الكمي v6.0 – Singularity Engine     ║
+║  الوضع: BACKTEST    |  رأس المال: $55.00              ║
+╠══════════════════════════════════════════════════════════════════════╣
+║  ① Boltzmann Kelly: BASE=2.0%  λ=0.05  [1.0%–5.0%]  ║
+║  ② Topo-Divergence: ε=0.05  (حتمية هندسية)              ║
+║  ③ Dynamic-K:       [4–12]  (SNR ∝ 1/m)                     ║
+║  ④ Cosmological Λ:  0  (De Sitter drift)                  ║
+║  ⑤ T_sync EMA-accel: فلتر التشابك عبر المقاييس                  ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+02:54:12 [INFO]   ✓ BTC/USDT       | K=11 | اختبار=  755 | tri_μ=1.28 | [cache]
+02:54:12 [INFO]   ✓ BTC/USDT       | K=11 | اختبار=  755 | tri_μ=1.28 | [cache]
+02:54:12 [INFO]   ✓ DOGE/USDT      | K=11 | اختبار=  427 | tri_μ=1.10 | [cache]
+02:54:12 [INFO]   ✓ DOGE/USDT      | K=11 | اختبار=  427 | tri_μ=1.10 | [cache]
+02:54:12 [INFO]   ✓ XRP/USDT       | K=11 | اختبار=  687 | tri_μ=1.21 | [cache]
+02:54:12 [INFO]   ✓ XRP/USDT       | K=11 | اختبار=  687 | tri_μ=1.21 | [cache]
+02:54:13 [INFO]   ✓ SOL/USDT       | K=11 | اختبار=  306 | tri_μ=1.15 | [cache]
+02:54:13 [INFO]   ✓ SOL/USDT       | K=11 | اختبار=  306 | tri_μ=1.15 | [cache]
+02:54:13 [INFO]   ✓ ETH/USDT       | K=11 | اختبار=  567 | tri_μ=1.23 | [cache]
+02:54:13 [INFO]   ✓ ETH/USDT       | K=11 | اختبار=  567 | tri_μ=1.23 | [cache]
+02:54:13 [INFO]   ✓ BNB/USDT       | K=11 | اختبار=  763 | tri_μ=1.26 | [cache]
+02:54:13 [INFO]   ✓ BNB/USDT       | K=11 | اختبار=  763 | tri_μ=1.26 | [cache]
+02:54:13 [INFO]   ✓ ADA/USDT       | K=11 | اختبار=  595 | tri_μ=1.21 | [cache]
+02:54:13 [INFO]   ✓ ADA/USDT       | K=11 | اختبار=  595 | tri_μ=1.21 | [cache]
+02:54:13 [INFO]   ✓ LINK/USDT      | K=11 | اختبار=  731 | tri_μ=1.23 | [cache]
+02:54:13 [INFO]   ✓ LINK/USDT      | K=11 | اختبار=  731 | tri_μ=1.23 | [cache]
+02:54:13 [INFO]   ✓ LTC/USDT       | K=11 | اختبار=  658 | tri_μ=1.21 | [cache]
+02:54:13 [INFO]   ✓ LTC/USDT       | K=11 | اختبار=  658 | tri_μ=1.21 | [cache]
+02:54:13 [INFO]   ✓ UNI/USDT       | K=11 | اختبار=  561 | tri_μ=1.19 | [cache]
+02:54:13 [INFO]   ✓ UNI/USDT       | K=11 | اختبار=  561 | tri_μ=1.19 | [cache]
+02:54:13 [INFO]   ✓ AVAX/USDT      | K=11 | اختبار=  430 | tri_μ=1.16 | [cache]
+02:54:13 [INFO]   ✓ AVAX/USDT      | K=11 | اختبار=  430 | tri_μ=1.16 | [cache]
+02:54:13 [INFO]   ✓ DOT/USDT       | K=11 | اختبار=  512 | tri_μ=1.19 | [cache]
+02:54:13 [INFO]   ✓ DOT/USDT       | K=11 | اختبار=  512 | tri_μ=1.19 | [cache]
+02:54:13 [INFO]   ✓ ATOM/USDT      | K=11 | اختبار=  648 | tri_μ=1.23 | [cache]
+02:54:13 [INFO]   ✓ ATOM/USDT      | K=11 | اختبار=  648 | tri_μ=1.23 | [cache]
+02:54:13 [INFO]   ✓ BCH/USDT       | K=11 | اختبار=  682 | tri_μ=1.23 | [cache]
+02:54:13 [INFO]   ✓ BCH/USDT       | K=11 | اختبار=  682 | tri_μ=1.23 | [cache]
+02:54:13 [INFO]   ✓ ETC/USDT       | K=11 | اختبار=  658 | tri_μ=1.22 | [cache]
+02:54:13 [INFO]   ✓ ETC/USDT       | K=11 | اختبار=  658 | tri_μ=1.22 | [cache]
+02:54:13 [INFO]   ✓ TON/USDT       | K=11 | اختبار=  423 | tri_μ=1.08 | [cache]
+02:54:13 [INFO]   ✓ TON/USDT       | K=11 | اختبار=  423 | tri_μ=1.08 | [cache]
+02:54:13 [INFO]   ✓ TRX/USDT       | K=11 | اختبار=  695 | tri_μ=1.23 | [cache]
+02:54:13 [INFO]   ✓ TRX/USDT       | K=11 | اختبار=  695 | tri_μ=1.23 | [cache]
+02:54:13 [INFO]   ✓ NEAR/USDT      | K=11 | اختبار=  442 | tri_μ=1.16 | [cache]
+02:54:13 [INFO]   ✓ NEAR/USDT      | K=11 | اختبار=  442 | tri_μ=1.16 | [cache]
+02:54:13 [INFO]   ✓ VET/USDT       | K=11 | اختبار=  613 | tri_μ=1.21 | [cache]
+02:54:13 [INFO]   ✓ VET/USDT       | K=11 | اختبار=  613 | tri_μ=1.21 | [cache]
+02:54:13 [INFO]   ✓ STX/USDT       | K=11 | اختبار=  710 | tri_μ=1.24 | [cache]
+02:54:13 [INFO]   ✓ STX/USDT       | K=11 | اختبار=  710 | tri_μ=1.24 | [cache]
+02:54:13 [INFO]   ✓ APT/USDT       | K=11 | اختبار=  436 | tri_μ=1.18 | [cache]
+02:54:13 [INFO]   ✓ APT/USDT       | K=11 | اختبار=  436 | tri_μ=1.18 | [cache]
+02:54:13 [INFO]   ✓ HBAR/USDT      | K=11 | اختبار=  696 | tri_μ=1.21 | [cache]
+02:54:13 [INFO]   ✓ HBAR/USDT      | K=11 | اختبار=  696 | tri_μ=1.21 | [cache]
+02:54:14 [INFO]   ✓ AAVE/USDT      | K=11 | اختبار=  451 | tri_μ=1.18 | [cache]
+02:54:14 [INFO]   ✓ AAVE/USDT      | K=11 | اختبار=  451 | tri_μ=1.18 | [cache]
+02:54:14 [INFO]   ✓ SUI/USDT       | K=11 | اختبار=  720 | tri_μ=1.24 | [cache]
+02:54:14 [INFO]   ✓ SUI/USDT       | K=11 | اختبار=  720 | tri_μ=1.24 | [cache]
+02:54:14 [INFO]   ✓ ARB/USDT       | K=11 | اختبار=  553 | tri_μ=1.18 | [cache]
+02:54:14 [INFO]   ✓ ARB/USDT       | K=11 | اختبار=  553 | tri_μ=1.18 | [cache]
+02:54:14 [INFO]   ✓ INJ/USDT       | K=11 | اختبار=  479 | tri_μ=1.18 | [cache]
+02:54:14 [INFO]   ✓ INJ/USDT       | K=11 | اختبار=  479 | tri_μ=1.18 | [cache]
+02:54:14 [INFO]   ✓ OP/USDT        | K=11 | اختبار=  464 | tri_μ=1.18 | [cache]
+02:54:14 [INFO]   ✓ OP/USDT        | K=11 | اختبار=  464 | tri_μ=1.18 | [cache]
+02:54:14 [INFO]   ✓ SEI/USDT       | K=11 | اختبار=  568 | tri_μ=1.19 | [cache]
+02:54:14 [INFO]   ✓ SEI/USDT       | K=11 | اختبار=  568 | tri_μ=1.19 | [cache]
+02:54:14 [INFO]   ✓ TIA/USDT       | K=11 | اختبار=  533 | tri_μ=1.19 | [cache]
+02:54:14 [INFO]   ✓ TIA/USDT       | K=11 | اختبار=  533 | tri_μ=1.19 | [cache]
+02:54:14 [INFO]   ✓ ALGO/USDT      | K=11 | اختبار=  608 | tri_μ=1.21 | [cache]
+02:54:14 [INFO]   ✓ ALGO/USDT      | K=11 | اختبار=  608 | tri_μ=1.21 | [cache]
+02:54:14 [INFO]   ✓ FET/USDT       | K=11 | اختبار=  538 | tri_μ=1.19 | [cache]
+02:54:14 [INFO]   ✓ FET/USDT       | K=11 | اختبار=  538 | tri_μ=1.19 | [cache]
+02:54:14 [INFO]   ✓ GRT/USDT       | K=11 | اختبار=  599 | tri_μ=1.21 | [cache]
+02:54:14 [INFO]   ✓ GRT/USDT       | K=11 | اختبار=  599 | tri_μ=1.21 | [cache]
+02:54:14 [INFO]   ✓ RENDER/USDT    | K=11 | اختبار=  587 | tri_μ=1.21 | [cache]
+02:54:14 [INFO]   ✓ RENDER/USDT    | K=11 | اختبار=  587 | tri_μ=1.21 | [cache]
+02:54:14 [INFO]   ✓ LDO/USDT       | K=11 | اختبار=  737 | tri_μ=1.23 | [cache]
+02:54:14 [INFO]   ✓ LDO/USDT       | K=11 | اختبار=  737 | tri_μ=1.23 | [cache]
+02:54:14 [INFO]   ✓ THETA/USDT     | K=11 | اختبار=  586 | tri_μ=1.20 | [cache]
+02:54:14 [INFO]   ✓ THETA/USDT     | K=11 | اختبار=  586 | tri_μ=1.20 | [cache]
+02:54:14 [INFO]   ✓ KAS/USDT       | K=11 | اختبار=  668 | tri_μ=1.22 | [cache]
+02:54:14 [INFO]   ✓ KAS/USDT       | K=11 | اختبار=  668 | tri_μ=1.22 | [cache]
+02:54:14 [INFO]   ✓ WIF/USDT       | K=11 | اختبار=  757 | tri_μ=1.23 | [cache]
+02:54:14 [INFO]   ✓ WIF/USDT       | K=11 | اختبار=  757 | tri_μ=1.23 | [cache]
+02:54:14 [INFO]   ✓ SAND/USDT      | K=11 | اختبار=  576 | tri_μ=1.19 | [cache]
+02:54:14 [INFO]   ✓ SAND/USDT      | K=11 | اختبار=  576 | tri_μ=1.19 | [cache]
+02:54:14 [INFO]   ✓ EGLD/USDT      | K=11 | اختبار=  347 | tri_μ=1.14 | [cache]
+02:54:14 [INFO]   ✓ EGLD/USDT      | K=11 | اختبار=  347 | tri_μ=1.14 | [cache]
+02:54:14 [INFO]   ✓ AXS/USDT       | K=11 | اختبار=  492 | tri_μ=1.18 | [cache]
+02:54:14 [INFO]   ✓ AXS/USDT       | K=11 | اختبار=  492 | tri_μ=1.18 | [cache]
+02:54:14 [INFO]   ✓ CHZ/USDT       | K=11 | اختبار=  503 | tri_μ=1.18 | [cache]
+02:54:14 [INFO]   ✓ CHZ/USDT       | K=11 | اختبار=  503 | tri_μ=1.18 | [cache]
+02:54:14 [INFO]   ✓ MANA/USDT      | K=11 | اختبار=  595 | tri_μ=1.19 | [cache]
+02:54:14 [INFO]   ✓ MANA/USDT      | K=11 | اختبار=  595 | tri_μ=1.19 | [cache]
+02:54:14 [INFO]   ✓ POL/USDT       | K=11 | اختبار=  534 | tri_μ=1.21 | [cache]
+02:54:14 [INFO]   ✓ POL/USDT       | K=11 | اختبار=  534 | tri_μ=1.21 | [cache]
+02:54:14 [INFO]   ✓ XLM/USDT       | K=11 | اختبار=  616 | tri_μ=1.19 | [cache]
+02:54:14 [INFO]   ✓ XLM/USDT       | K=11 | اختبار=  616 | tri_μ=1.19 | [cache]
+02:54:15 [INFO]   ✓ FIL/USDT       | K=11 | اختبار=  483 | tri_μ=1.18 | [cache]
+02:54:15 [INFO]   ✓ FIL/USDT       | K=11 | اختبار=  483 | tri_μ=1.18 | [cache]
+02:54:15 [INFO]   ✓ DASH/USDT      | K=11 | اختبار=  178 | tri_μ=1.12 | [cache]
+02:54:15 [INFO]   ✓ DASH/USDT      | K=11 | اختبار=  178 | tri_μ=1.12 | [cache]
+02:54:15 [INFO]   ✓ QNT/USDT       | K=11 | اختبار=  696 | tri_μ=1.21 | [cache]
+02:54:15 [INFO]   ✓ QNT/USDT       | K=11 | اختبار=  696 | tri_μ=1.21 | [cache]
+02:54:15 [INFO]   ✓ ZEC/USDT       | K=11 | اختبار=  376 | tri_μ=1.15 | [cache]
+02:54:15 [INFO]   ✓ ZEC/USDT       | K=11 | اختبار=  376 | tri_μ=1.15 | [cache]
+02:54:15 [INFO]   ✓ XMR/USDT       | K=11 | اختبار=  563 | tri_μ=1.20 | [cache]
+02:54:15 [INFO]   ✓ XMR/USDT       | K=11 | اختبار=  563 | tri_μ=1.20 | [cache]
+02:54:23 [INFO]   [Parallel] done in 21.4s  (cache=98, computed=0, errors=0)
+02:54:23 [INFO] §4  مصفوفة الارتباط...
+02:54:24 [INFO]   أزواج مرتبطة (ρ>0.7): 52
+02:54:24 [INFO] §5  بناء الإشارات (①②④⑤ مُفعَّلة)...
+02:54:42 [INFO] [RuleFilter] thresholds: rvol24_q33=0.00692, dist_high_q66=-0.01601, tf_std_q66=0.600, range_pos_q66=0.656
+02:54:43 [INFO] [RuleFilter] kept=4675, rejected=4212 (47.4%) @ min_score=2
+02:54:43 [INFO]   ✔ 4,675 إشارة
+02:54:43 [INFO]   T_info: μ=4.270 | σ=1.521
+02:54:43 [INFO]   risk_dynamic: μ=2.073% | max=2.61%
+02:54:43 [INFO]   BUY=1,504 | SELL=3,171 (Λ=0)
+02:54:43 [INFO] §6  محاكاة المحفظة متعددة المراكز...
+02:54:43 [INFO]   [Backtest Realism] Entry fills: 1,625/4,675 (34.8%) [pen=1.0bps, wait=15bars]
+02:54:43 [INFO]   ✔ 1,592 صفقة
+02:54:43 [INFO] §7  انحدار الإنتروبيا...
+02:54:43 [INFO]   BTC/USDT      : b=-0.00002  R²=0.010  [neutral]
+02:54:43 [INFO]   DOGE/USDT     : b=+0.00005  R²=0.031  [neutral]
+02:54:43 [INFO]   XRP/USDT      : b=+0.00002  R²=0.004  [neutral]
+02:54:43 [INFO]   SOL/USDT      : b=-0.00008  R²=0.111  [decreasing]
+02:54:47 [INFO] 📊 quantum_v6_results.png
+02:54:47 [INFO] ✅ اكتمل.
+02:54:47 [INFO]    E[ln(1+fR)] = +0.005058
+02:54:47 [INFO]    MaxDrawdown  = 22.68%
+02:54:47 [INFO]    Topo-Exits   = 0.0%
+02:54:47 [INFO]    AvgRisk      = 2.845%
+02:54:47 [INFO] [Diagnostic] Close-and-reverse within 3h: 0
+
+════════════════════════════════════════════════════════════════════════
+   📊  محرك التداول الثرموديناميكي الكمي v6.0  [BACKTEST]
+   🌌  محرك التفرد – Singularity Engine
+════════════════════════════════════════════════════════════════════════
+
+▶ المقياس الأساسي (م٦): E[ln(1+fR)] لكل صفقة
+   متوسط  : +0.005058
+   وسيط   : +0.001098
+   انحراف : 0.019756
+   → ✅ حافة إيجابية
+
+▶ إحصاءات الصفقات
+   عدد الصفقات      : 1,592
+   شراء / بيع        : 539 / 1,053
+   نسبة النجاح      : 70.23%
+   عامل الربح (PF)  : 5.048
+   متوسط الربح      : $192.6991
+   متوسط الخسارة   : $-90.0358
+   شارب (سنوي)      : 4.064
+   دخول مُحسَّن       : 0  (0.0%)
+
+▶ التعديلات الجديدة (v6.0)
+   ① متوسط T_info (حرارة معلوماتية) : 4.4790
+   ① متوسط المخاطرة الديناميكية     : 2.845%
+   ② خروج توبولوجي (Topo-Div)       : 0  (0.0%)
+   خروج TRI مبكر                    : 0  (0.0%)
+   انزلاق إجمالي                    : $0.00
+
+▶ رأس المال (مقياس ثانوي)
+   ابتدائي: $55.00  →  نهائي: $172,815.64
+   العائد الكلي     : 314,110.2%
+   أقصى انخفاض     : 22.68%  ($1,654.80)
+
+▶ تحذير السيولة (م٦): 10 (0.6%)  ✅ معقول
+
+▶ توزيع أسباب الخروج
+   Emergency SL             :   1,512  (95.0%)
+   Apex: Action Integral Exhaustion:      79  (5.0%)
+   Hard TP                  :       1  (0.1%)
+
+════════════════════════════════════════════════════════════════════════
+
+
+▶ تحليل MFE (أقصى ربح غير مُحقَّق)
+   Emergency SL   (n=1512) | μMFE= 0.91%  max= 9.65%  | >0.5%:  905  >1.0%:  516  >2.0%:  165
+   Hard TP        (n=   1) | μMFE= 1.67%  max= 1.67%  | >0.5%:    1  >1.0%:    1  >2.0%:    0
+   Apex exits     (n=  79) | μMFE= 1.85%  max= 4.35%  | >0.5%:   79  >1.0%:   66  >2.0%:   27
+
+▶ ميزانية المخاطرة الكلية
+   μ risk/trade : 2.845%
+   max risk/trade : 3.000%
+   min risk/trade : 2.396%

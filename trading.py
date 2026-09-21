@@ -278,6 +278,24 @@ class Config:
 
     # ══ [SMART OHLCV FETCH] ══
     SMART_OHLCV_ENABLED: bool = True
+    # ══ [SUPPORT/RESISTANCE FILTER] ══
+    SR_FILTER_ENABLED: bool = False      # disabled by default until tuned
+    SR_LOOKBACK: int = 100
+    SR_MIN_TOUCHES: int = 2              # relaxed from 3
+    SR_TOUCH_TOLERANCE: float = 0.0035   # relaxed from 0.0025 (0.35%)
+    SR_MIN_GAP_BARS: int = 10
+    SR_STRENGTH_THRESHOLD: float = 1.0   # relaxed from 2.0
+    SR_DECAY_TAU: float = 80.0           # slower decay
+    SR_SL_PROXIMITY: float = 0.006       # relaxed from 0.004 (0.6%)
+    SR_VOLUME_WEIGHT: float = 1.5
+    # ══ [KILL SWITCH — HMAC-authenticated] ══
+    KILL_SWITCH_ENABLED: bool = True
+    KILL_SWITCH_SECRET: str = ""          # from env or CLI
+    KILL_SWITCH_FILE: str = "kill_switch.json"
+    KILL_SWITCH_POLL_S: int = 5
+    KILL_STATE_ARMED: str = "ARMED"
+    KILL_STATE_WARNING: str = "WARNING"
+    KILL_STATE_TRIGGERED: str = "TRIGGERED"
 
 CFG = Config()
 
@@ -1275,6 +1293,181 @@ def compute_dynamic_leverage(capital, cfg):
     lev = cfg.LEVERAGE_BASE / np.sqrt(max(capital / C0, 1.0))
     return int(np.clip(round(lev), cfg.LEVERAGE_MIN, cfg.LEVERAGE_MAX))
 
+# ════════════════════════════════════════════════════════════════
+# § 12.9  Support/Resistance Detection
+# ════════════════════════════════════════════════════════════════
+
+def _find_swing_levels(ad, current_ci: int, lookback: int):
+    """
+    Find candidate support/resistance levels as (price, idx) pairs.
+
+    A swing low at bar j requires:
+        lows[j] < lows[j-1]  AND  lows[j] < lows[j+1]
+    """
+    supports = []
+    resistances = []
+    try:
+        n = len(ad.lows)
+        if current_ci < lookback + 2:
+            return supports, resistances
+        start = current_ci - lookback
+        end = current_ci - 1
+
+        for j in range(start + 1, end):
+            l_prev = float(ad.lows[j - 1])
+            l_curr = float(ad.lows[j])
+            l_next = float(ad.lows[j + 1])
+            if l_curr < l_prev and l_curr < l_next:
+                supports.append((l_curr, j))
+
+            h_prev = float(ad.highs[j - 1])
+            h_curr = float(ad.highs[j])
+            h_next = float(ad.highs[j + 1])
+            if h_curr > h_prev and h_curr > h_next:
+                resistances.append((h_curr, j))
+    except Exception as e:
+        log.debug(f"[SR] swing detection failed {ad.symbol}: {e}")
+    return supports, resistances
+
+
+def _cluster_levels(levels_with_idx, tolerance: float):
+    """
+    Cluster (price, idx) pairs into a single level per cluster.
+    Preserves last_touch_idx = max index among cluster members.
+    """
+    if not levels_with_idx:
+        return []
+    # Sort by price descending
+    sorted_levels = sorted(levels_with_idx, key=lambda x: -x[0])
+    clusters = []
+    for price, idx in sorted_levels:
+        placed = False
+        for c in clusters:
+            if abs(price - c['price']) / max(c['price'], 1e-12) < tolerance:
+                cnt = c['touch_count']
+                c['price'] = (c['price'] * cnt + price) / (cnt + 1)
+                c['touch_count'] = cnt + 1
+                if idx > c['last_touch_idx']:
+                    c['last_touch_idx'] = idx
+                placed = True
+                break
+        if not placed:
+            clusters.append({
+                'price': price,
+                'touch_count': 1,
+                'last_touch_idx': idx,
+            })
+    return clusters
+
+
+def _compute_level_strength(ad, current_ci: int, cluster: Dict) -> float:
+    """
+    Combined strength = touches × time_decay × volume_factor.
+
+    time_decay uses bars since LAST touch (not window start):
+        time_factor = exp(-Δt / τ_decay)
+    """
+    try:
+        tau = float(getattr(CFG, 'SR_DECAY_TAU', 50.0))
+        lookback = int(getattr(CFG, 'SR_LOOKBACK', 100))
+        level_price = float(cluster['price'])
+        last_idx = int(cluster.get('last_touch_idx', current_ci - lookback))
+
+        delta_t = max(1, current_ci - last_idx)
+        time_factor = float(np.exp(-delta_t / tau))
+
+        # Volume factor: mean volume near level / mean volume overall
+        tol = float(getattr(CFG, 'SR_TOUCH_TOLERANCE', 0.0025))
+        start = max(0, current_ci - lookback)
+        vol_at = []
+        for j in range(start, current_ci):
+            try:
+                lj = float(ad.lows[j])
+                hj = float(ad.highs[j])
+                if (abs(lj - level_price) / max(level_price, 1e-12) < tol
+                        or abs(hj - level_price) / max(level_price, 1e-12) < tol):
+                    vol_at.append(float(ad.volumes[j]))
+            except Exception:
+                continue
+        if not vol_at:
+            return 0.0
+        vol_mean_all = float(np.mean(ad.volumes[start:current_ci])) + 1e-12
+        vol_factor = float(np.mean(vol_at)) / vol_mean_all
+
+        strength = float(cluster['touch_count']) * time_factor * vol_factor
+        return strength
+    except Exception as e:
+        log.debug(f"[SR] strength compute failed: {e}")
+        return 0.0
+
+
+_SR_REJECT_LOG: Dict[str, int] = defaultdict(int)
+
+
+def _sr_filter_check(sig, ad, current_ci: int) -> Tuple[bool, str]:
+    """
+    Reject signal if its SL is not protected by a strong S/R level.
+    Logs aggregate rejection reasons for diagnostics.
+    """
+    if not getattr(CFG, 'SR_FILTER_ENABLED', False):
+        return True, "OK"
+
+    try:
+        lookback = int(getattr(CFG, 'SR_LOOKBACK', 100))
+        min_touches = int(getattr(CFG, 'SR_MIN_TOUCHES', 3))
+        tol = float(getattr(CFG, 'SR_TOUCH_TOLERANCE', 0.0025))
+        str_thr = float(getattr(CFG, 'SR_STRENGTH_THRESHOLD', 1.5))
+        sl_prox = float(getattr(CFG, 'SR_SL_PROXIMITY', 0.004))
+
+        supports, resistances = _find_swing_levels(ad, current_ci, lookback)
+        candidates = supports if sig.action == "BUY" else resistances
+
+        if not candidates:
+            _SR_REJECT_LOG['no_swings'] += 1
+            return False, "no_swing_levels"
+
+        clusters = _cluster_levels(candidates, tol)
+        if not clusters:
+            _SR_REJECT_LOG['no_clusters'] += 1
+            return False, "no_clusters"
+
+        sl_price = float(sig.sl)
+        best_strength = 0.0
+        best_level = 0.0
+        best_dist = 999.0
+
+        for c in clusters:
+            if c['touch_count'] < min_touches:
+                continue
+            dist = abs(sl_price - c['price']) / max(sl_price, 1e-12)
+            if dist > sl_prox:
+                continue
+            if sig.action == "BUY" and c['price'] > sl_price * (1.0 + tol):
+                continue
+            if sig.action == "SELL" and c['price'] < sl_price * (1.0 - tol):
+                continue
+            strength = _compute_level_strength(ad, current_ci, c)
+            if strength > best_strength:
+                best_strength = strength
+                best_level = c['price']
+                best_dist = dist
+
+        if best_strength < str_thr:
+            _SR_REJECT_LOG['weak_strength'] += 1
+            # Log first 20 rejections per symbol for diagnosis
+            if _SR_REJECT_LOG['weak_strength'] <= 20:
+                log.debug(
+                    f"[SR] {sig.symbol} {sig.action} weak: "
+                    f"strength={best_strength:.2f} < {str_thr:.2f} "
+                    f"(level={best_level:.6f}, dist={best_dist*1e4:.1f}bps)"
+                )
+            return False, f"weak_SR({best_strength:.2f})"
+        return True, f"OK(strength={best_strength:.2f})"
+    except Exception as e:
+        log.warning(f"[SR] check failed {sig.symbol}: {e}")
+        return True, "SR_error"  # fail open
+
+
 def build_signals(assets, mode="backtest"):
     """
     محرك استشعار الإشارات الكمي:
@@ -1320,6 +1513,10 @@ def build_signals(assets, mode="backtest"):
 
             if ad.score[fi] < CFG.MIN_SCORE: continue
 
+            # ══ [SR FILTER] SL must be protected by strong support/resistance ══
+            # (computed after SL/TP is known — moved below in this version)
+            # See the deferred check after SL/TP computation.
+
             # [التعديل ②]: Phase-Matched Entry (تجنب السكين الساقطة)
             # نضع أمر الـ Limit عند مستوى امتصاص الاحتكاك الميكروي (10% من معامل الاحتكاك الفعلي)
             friction_drag = fric_val * p * 0.1
@@ -1330,8 +1527,24 @@ def build_signals(assets, mode="backtest"):
             sl = tunnel_entry_p - sl_dist if action == "BUY" else tunnel_entry_p + sl_dist
             tp1 = tunnel_entry_p + (sl_dist * 2.0) if action == "BUY" else tunnel_entry_p - (sl_dist * 2.0)
             
+
             # حظر الصفقات الهشة التي تكون تكلفتها أكبر من ربحها
             if (sl_dist * 2.0) < (abs(CFG.MAKER_FEE) * tunnel_entry_p): continue
+
+            # ══ [SR FILTER] SL must be protected by strong S/R ══
+            _sr_sig = Signal(
+                timestamp=ad.timestamps[ci], symbol=sym,
+                price=tunnel_entry_p, score=float(ad.score[fi]),
+                action=action, sl=sl, tp1=tp1, tp2=0.0, tp3=0.0,
+                atr=float(ad.atr14[ci]), lam=0.0, close_idx=ci, feat_idx=fi,
+                adv_usd=float(ad.adv_usd[ci]), tri_val=float(ad.tri[fi]),
+                dynamic_risk=CFG.MIN_RISK, T_info_val=T_info,
+                dyn_sl_factor=sl_dist / tunnel_entry_p,
+            )
+            _sr_ok, _sr_reason = _sr_filter_check(_sr_sig, ad, ci)
+            if not _sr_ok:
+                log.debug(f"[SR] {sym} reject @ {ci}: {_sr_reason}")
+                continue
 
             dynamic_risk = compute_geodesic_kelly(ad, fi, CFG)
 
@@ -2051,6 +2264,9 @@ def print_report(m, mode):
 
 
 def plot_results(trades, equity, m, out="quantum_v6_results.png"):
+    if not trades or m.get('n_trades', 0) == 0:
+        log.info("[Plot] no trades — skipping plot generation")
+        return
     fig = plt.figure(figsize=(20,14), facecolor='#0d0d0d')
     gs  = gridspec.GridSpec(3,4, figure=fig, hspace=0.45, wspace=0.38)
     bk,tc,gr = '#111111','#e0e0e0','#2a2a2a'
@@ -2958,6 +3174,11 @@ def run_backtest(cfg):
 
     m = compute_metrics(trades, equity, cfg.INITIAL_CAPITAL)
 
+    if m.get('n_trades', 0) == 0:
+        log.warning("⚠️ No trades generated — check signal filters / config")
+        print_report(m, "backtest")
+        return
+
     log.info("§7  انحدار الإنتروبيا...")
     for sym, ad in list(assets.items())[:4]:
         H_t = ad.H[ad.train_end:]
@@ -2973,6 +3194,9 @@ def run_backtest(cfg):
     log.info(f"   Topo-Exits   = {m.get('topo_exit_pct',0):.1f}%")
     log.info(f"   AvgRisk      = {m.get('avg_dynamic_risk',0)*100:.3f}%")
     # ══ [MFE Analysis] ══
+    if not trades:
+        log.info("[MFE] skipped — no trades")
+        return
     sl_trades = [t for t in trades if "Emergency SL" in t.exit_reason]
     tp_trades = [t for t in trades if "Hard TP" in t.exit_reason]
     apex_trades = [t for t in trades if "Apex" in t.exit_reason]
@@ -4135,6 +4359,59 @@ def reconcile_positions(exchange, open_pos_live: Dict) -> Dict:
 _SYMBOL_META: Dict[str, Dict] = {}
 _SYMBOL_META_PATH: str = ""
 
+# ════════════════════════════════════════════════════════════════
+# § 18.94  Rate-Limit Tracker
+# ════════════════════════════════════════════════════════════════
+
+_RATE_TRACKER: Dict = {
+    'window': [],          # list of (ts, weight)
+    'total_this_min': 0.0,
+    'rejected_count': 0,
+    'last_report_ts': 0.0,
+}
+
+# Binance USDT-M defaults
+_RATE_LIMIT_WEIGHT_PER_MIN = 2400
+_RATE_LIMIT_SOFT_CAP = 0.75   # pause new placements if usage > 75%
+
+
+def _rate_record(weight: float = 1.0) -> None:
+    """Record an API call weight."""
+    now = time.time()
+    _RATE_TRACKER['window'].append((now, weight))
+    # Prune older than 60s
+    cutoff = now - 60.0
+    _RATE_TRACKER['window'] = [
+        (t, w) for (t, w) in _RATE_TRACKER['window'] if t >= cutoff
+    ]
+    _RATE_TRACKER['total_this_min'] = sum(w for _, w in _RATE_TRACKER['window'])
+
+
+def _rate_usage() -> float:
+    """Current usage fraction [0, 1]."""
+    _rate_record(0.0)  # refresh
+    return float(_RATE_TRACKER['total_this_min']) / _RATE_LIMIT_WEIGHT_PER_MIN
+
+
+def _rate_can_place() -> bool:
+    """True if rate usage is below soft cap."""
+    return _rate_usage() < _RATE_LIMIT_SOFT_CAP
+
+
+def _rate_report() -> None:
+    """Log usage periodically."""
+    now = time.time()
+    if now - _RATE_TRACKER['last_report_ts'] < 300:
+        return
+    _RATE_TRACKER['last_report_ts'] = now
+    usage = _rate_usage()
+    if usage > 0.5:
+        log.warning(f"[RateLimit] usage={usage*100:.1f}% "
+                    f"(total={_RATE_TRACKER['total_this_min']:.0f}/min) "
+                    f"rejected={_RATE_TRACKER['rejected_count']}")
+    else:
+        log.info(f"[RateLimit] usage={usage*100:.1f}%")
+
 def load_symbol_meta(mode: str) -> Dict[str, Dict]:
     """Load persistent {sym: {leverage, margin_mode, setup_done}} from disk."""
     global _SYMBOL_META, _SYMBOL_META_PATH
@@ -4775,6 +5052,11 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
     Place a single Post-Only order and register it as pending (non-blocking).
     Returns the pending record or None on failure.
     """
+    # ══ [RateLimit] skip if soft cap reached ══
+    if not _rate_can_place():
+        _RATE_TRACKER['rejected_count'] += 1
+        log.debug(f"[RateLimit] {sym} placement skipped — usage high")
+        return None
     target = float(sig.price)
     try:
         o = exchange.create_order(
@@ -4818,6 +5100,204 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
     log.info(f"[Pending] {sig.action} {sym} @ {target:.6f} qty={qty:.6f} "
              f"id={rec['order_id']} (timeout={timeout_s:.0f}s)")
     return rec
+
+# ════════════════════════════════════════════════════════════════
+# § 18.98  Kill Switch (HMAC-authenticated)
+# ════════════════════════════════════════════════════════════════
+
+import hmac as _hmac
+import hashlib as _hashlib
+
+_KILL_SWITCH_STATE: Dict = {
+    'state': 'ARMED',
+    'reason': '',
+    'triggered_at': 0.0,
+    'last_file_mtime': 0.0,
+}
+
+
+def _kill_sign(reason: str, secret: str) -> str:
+    """Compute HMAC-SHA256 token for a given reason."""
+    if not secret:
+        return ""
+    return _hmac.new(secret.encode(), reason.encode(), _hashlib.sha256).hexdigest()
+
+
+def _kill_verify(reason: str, token: str, secret: str) -> bool:
+    """Constant-time verify."""
+    if not secret or not token:
+        return False
+    expected = _kill_sign(reason, secret)
+    try:
+        return _hmac.compare_digest(expected, token)
+    except Exception:
+        return False
+
+
+def _kill_switch_check_file(path: str, secret: str) -> Tuple[bool, str]:
+    """
+    Read kill switch file. Format:
+        {"state": "TRIGGERED", "reason": "...", "token": "..."}
+    Returns (should_trigger, reason). Verifies HMAC.
+    """
+    if not secret:
+        return False, ""
+    if not os.path.exists(path):
+        return False, ""
+    try:
+        mtime = os.path.getmtime(path)
+        # Skip if file not modified since last check
+        if mtime <= _KILL_SWITCH_STATE.get('last_file_mtime', 0.0):
+            return False, ""
+        _KILL_SWITCH_STATE['last_file_mtime'] = mtime
+
+        with open(path) as f:
+            data = json.load(f)
+        state = str(data.get('state') or 'ARMED')
+        reason = str(data.get('reason') or '')
+        token = str(data.get('token') or '')
+
+        if state != 'TRIGGERED':
+            return False, ""
+        if not _kill_verify(reason, token, secret):
+            log.warning(f"[KillSwitch] invalid HMAC for reason='{reason}' — ignoring")
+            return False, ""
+        return True, reason
+    except Exception as e:
+        log.debug(f"[KillSwitch] file check failed: {e}")
+        return False, ""
+
+
+def _kill_switch_check_auto(cap_live: float, cap_peak: float,
+                             daily_loss: float, consec_losses: int
+                             ) -> Tuple[bool, str]:
+    """
+    Automatic triggers (no HMAC needed — internal).
+    """
+    try:
+        # Drawdown from peak
+        if cap_peak > 0:
+            dd = (cap_peak - cap_live) / cap_peak
+            if dd >= float(CFG.MAX_DRAWDOWN_HALT) and CFG.MAX_DRAWDOWN_HALT < 1.0:
+                return True, f"drawdown_{dd*100:.1f}%"
+
+        # Consecutive losses (very loose default)
+        if consec_losses >= 6:
+            return True, f"consec_losses={consec_losses}"
+
+        # Daily loss (only if tracked)
+        if daily_loss <= -0.05:
+            return True, f"daily_loss={daily_loss*100:.1f}%"
+
+        return False, ""
+    except Exception as e:
+        log.debug(f"[KillSwitch] auto check failed: {e}")
+        return False, ""
+
+
+def _kill_switch_trigger(reason: str, exchange,
+                          open_pos_live: Dict, state_file: str) -> None:
+    """
+    Emergency: flatten all positions and stop.
+    """
+    log.critical(f"[KillSwitch] TRIGGERED: {reason}")
+    _KILL_SWITCH_STATE['state'] = 'TRIGGERED'
+    _KILL_SWITCH_STATE['reason'] = reason
+    _KILL_SWITCH_STATE['triggered_at'] = time.time()
+
+    # Flatten every open position
+    for sym in list(open_pos_live.keys()):
+        try:
+            pos = open_pos_live[sym]
+            close_side = 'sell' if pos['action'] == 'BUY' else 'buy'
+            o = exchange.create_order(sym, 'market', close_side, pos['qty'])
+            v = verify_fill(exchange, o['id'], sym, timeout_s=3.0)
+            px = v['avg_price'] if v and v['filled'] else 0.0
+            log.critical(f"[KillSwitch] flattened {sym} @ {px:.6f}")
+            del open_pos_live[sym]
+        except Exception as e:
+            log.error(f"[KillSwitch] flatten {sym} failed: {e}")
+
+    # Cancel all pending
+    for sym in list(_PENDING_ORDERS.keys()):
+        rec = _PENDING_ORDERS[sym]
+        oid = rec.get('order_id')
+        if oid:
+            try:
+                exchange.cancel_order(oid, sym)
+            except Exception:
+                pass
+        _PENDING_ORDERS.pop(sym, None)
+
+    # Persist state
+    try:
+        with open(state_file, 'w') as f:
+            json.dump(open_pos_live, f, indent=2)
+    except Exception:
+        pass
+    save_pending_orders()
+
+# ════════════════════════════════════════════════════════════════
+# § 18.96  Extended Reconciliation (_SYMBOL_META ↔ Exchange)
+# ════════════════════════════════════════════════════════════════
+
+def reconcile_symbol_meta(exchange, symbols: List[str]) -> int:
+    """
+    For each symbol in _SYMBOL_META, verify leverage/margin match exchange.
+    Fix mismatches when no position exists.
+    Returns count of fixed entries.
+    """
+    global _SYMBOL_META
+    fixed = 0
+    for sym in list(_SYMBOL_META.keys()):
+        if sym not in symbols:
+            continue
+        meta = _SYMBOL_META[sym]
+        if not meta.get('setup_done'):
+            continue
+
+        # Check for existing position
+        has_pos = False
+        try:
+            positions = exchange.fetch_positions([sym])
+            for p in positions:
+                amt = float(p['info'].get('positionAmt', 0) or 0)
+                if abs(amt) > 0:
+                    has_pos = True
+                    break
+        except Exception as e:
+            log.debug(f"[ReconcileMeta] fetch_positions {sym}: {e}")
+            continue
+
+        # Verify current leverage
+        try:
+            lev_info = exchange.fetch_leverage(sym)
+            cur_lev = int(lev_info.get('leverage', 0))
+        except Exception as e:
+            log.debug(f"[ReconcileMeta] fetch_leverage {sym}: {e}")
+            continue
+
+        cached_lev = int(meta.get('leverage', 0))
+        if cur_lev != cached_lev:
+            if has_pos:
+                log.warning(
+                    f"[ReconcileMeta] {sym} cached_lev={cached_lev}x "
+                    f"but exchange={cur_lev}x (position open — updating cache)"
+                )
+                meta['leverage'] = cur_lev
+            else:
+                log.warning(
+                    f"[ReconcileMeta] {sym} cached_lev={cached_lev}x "
+                    f"but exchange={cur_lev}x (no position — updating cache)"
+                )
+                meta['leverage'] = cur_lev
+            meta['updated_ts'] = time.time()
+            fixed += 1
+
+    if fixed > 0:
+        save_symbol_meta()
+        log.info(f"[ReconcileMeta] {fixed} symbols updated")
+    return fixed
 
 # ════════════════════════════════════════════════════════════════
 # § 19  وضع Live / Testnet
@@ -4895,6 +5375,29 @@ def run_live(cfg, exchange):
     while True:
         try:
             t0 = time.time()
+            # ══ [RateLimit] periodic report ══
+            _rate_report()
+            # ══ [KILL SWITCH] check every cycle ══
+            if getattr(CFG, 'KILL_SWITCH_ENABLED', True):
+                # File-based HMAC trigger
+                _should_kill, _kill_reason = _kill_switch_check_file(
+                    CFG.KILL_SWITCH_FILE, CFG.KILL_SWITCH_SECRET
+                )
+                if _should_kill:
+                    _kill_switch_trigger(_kill_reason, exchange,
+                                          open_pos_live, state_file)
+                    return
+                # Automatic triggers (drawdown etc.)
+                _auto_kill, _auto_reason = _kill_switch_check_auto(
+                    cap_live=cap_live if 'cap_live' in dir() else cfg.INITIAL_CAPITAL,
+                    cap_peak=peak_cap_live,
+                    daily_loss=0.0,
+                    consec_losses=0,
+                )
+                if _auto_kill:
+                    _kill_switch_trigger(_auto_reason, exchange,
+                                          open_pos_live, state_file)
+                    return
             loop_iter += 1
 
             # ══ [Pending] Sweep pending orders every cycle ══
@@ -4903,6 +5406,16 @@ def run_live(cfg, exchange):
             except Exception as _e:
                 log.warning(f"[Pending] monitor error: {_e}")
             
+            # ══ [ReconcileMeta] verify symbol metadata every 30 min ══
+            if not hasattr(run_live, '_last_meta_reconcile'):
+                run_live._last_meta_reconcile = 0.0
+            if time.time() - run_live._last_meta_reconcile > 1800:
+                try:
+                    reconcile_symbol_meta(exchange, top_syms)
+                except Exception as e:
+                    log.warning(f"[ReconcileMeta] failed: {e}")
+                run_live._last_meta_reconcile = time.time()
+
             # تحديث دوري لقائمة الأزواج لتجنب جمود السيولة
             if time.time() - last_scan_time > 4 * 3600:
                 log.info("🔄 تحديث قائمة الأصول ومزامنة التاريخ العميق...")
@@ -5162,11 +5675,17 @@ def run_live(cfg, exchange):
                         
                     ad = assets[sym]
                     
-                    # 🚀 التزامن السببي: السعر المستهدف للدخول هو سعر النفق المعلق مباشرة
                     lmt = sig.price 
                     delta = abs(lmt - sig.sl)
                     if delta < 1e-8: continue
                     if cap_live <= cfg.CAPITAL_FLOOR + 0.1: continue
+
+                    # ══ [SR FILTER — Live] ══
+                    _live_ci = max(0, len(ad.closes) - 2)
+                    _sr_ok, _sr_reason = _sr_filter_check(sig, ad, _live_ci)
+                    if not _sr_ok:
+                        log.info(f"[SR] {sym} rejected: {_sr_reason}")
+                        continue
                     
                     # ══ [SAFETY] Drawdown-aware risk reduction ══
                     # نحتاج peak_cap — نضيفه كمتغير خارجي
@@ -5416,6 +5935,30 @@ def run_live(cfg, exchange):
             log.debug(traceback.format_exc())
             time.sleep(10)
 
+# ════════════════════════════════════════════════════════════════
+# § 19.5  Time-Sync Guard
+# ════════════════════════════════════════════════════════════════
+
+def _check_time_sync(exchange, warn_threshold_s: float = 30.0) -> bool:
+    """
+    Compare exchange server time with local time.
+    Warn if drift > threshold. Returns True if OK, False if drift.
+    """
+    try:
+        server_ms = exchange.fetch_time()
+        server_s = float(server_ms) / 1000.0
+        local_s = time.time()
+        drift = abs(local_s - server_s)
+        if drift > warn_threshold_s:
+            log.warning(f"[TimeSync] local drift = {drift:.1f}s "
+                        f"(> {warn_threshold_s}s) — enable NTP")
+            return False
+        else:
+            log.info(f"[TimeSync] drift = {drift:.2f}s — OK")
+            return True
+    except Exception as e:
+        log.debug(f"[TimeSync] check failed: {e}")
+        return True  # fail open
 
 # ════════════════════════════════════════════════════════════════
 # § 20  نقطة الدخول
@@ -5502,6 +6045,17 @@ def main():
                    help="Disable non-blocking pending orders (use legacy blocking)")
     p.add_argument("--no-smart-ohlcv", action="store_true",
                    help="Disable smart OHLCV fetch (always fetch every cycle)")
+    p.add_argument("--sr-filter", action="store_true",
+                   help="Enable support/resistance filter (default OFF)")
+    p.add_argument("--sr-strength", type=float, default=None,
+                   help="S/R strength threshold (default 1.0)")
+    p.add_argument("--sr-proximity", type=float, default=None,
+                   help="SL-to-level proximity (default 0.006)")
+    p.add_argument("--kill-secret", type=str,
+                   default=os.environ.get("KILL_SWITCH_SECRET", ""),
+                   help="HMAC secret for kill switch (or KILL_SWITCH_SECRET env)")
+    p.add_argument("--no-kill-switch", action="store_true",
+                   help="Disable kill switch")
     args = p.parse_args()
 
     CFG.mode = args.mode
@@ -5600,6 +6154,16 @@ def main():
         CFG.PENDING_ENABLED = False
     if args.no_smart_ohlcv:
         CFG.SMART_OHLCV_ENABLED = False
+    if args.sr_filter:
+        CFG.SR_FILTER_ENABLED = True
+    if args.sr_strength is not None:
+        CFG.SR_STRENGTH_THRESHOLD = float(args.sr_strength)
+    if args.sr_proximity is not None:
+        CFG.SR_SL_PROXIMITY = float(args.sr_proximity)
+    if args.kill_secret:
+        CFG.KILL_SWITCH_SECRET = args.kill_secret
+    if args.no_kill_switch:
+        CFG.KILL_SWITCH_ENABLED = False
 
     print("╔"+"═"*70+"╗")
     print(f"  [Level-1] Parallel: {CFG.PARALLEL_PROCESSING}  "
@@ -5637,6 +6201,8 @@ def main():
         'enableRateLimit': True,
         'options': {'defaultType': 'future'}
     })
+    # ══ [TimeSync] verify before run ══
+    _check_time_sync(exchange)
 
     if CFG.mode == "testnet":
         # تم تحديث الدالة لتدعم خوادم Demo Trading الجديدة الخاصة بـ Binance
