@@ -1,5 +1,6 @@
 asset_cache*
 market_data_cache*
-
+*.json
+*.png
 __pycache__/*
 
