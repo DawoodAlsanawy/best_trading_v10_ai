@@ -1302,3 +1302,10 @@ $$
 **النتيجة:** البوت يعمل في فضاء رياضي صحيح بُني من الورقة، لكن الخوارزميات تقريبية (KMeans مقابل argmax، فرق مقابل مشتقة، إلخ).
 
 **الحافة الحقيقية للبوت ليست في فكرة واحدة، بل في الترجمة المتسقة لهذه البنية — وهذا ما يجعل جهد التعديل على أي معامل منتِجاً.**
+
+
+## the backtest command 
+``` python
+$ python best_trading_v10_ai5_1_1.py --mode backtest --api-key key --api-secret secret --capital 55 --nassets 50 --maxcon 5 --ml-filter --ml-model ml_filter_v6.pkl --po-wait-s 300 --no-fixed-price --clear-cache
+
+```

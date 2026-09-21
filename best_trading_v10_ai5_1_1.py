@@ -202,7 +202,7 @@ class Config:
     # ══ [POST-ONLY EXECUTION] ══
     PO_PENETRATION_BPS: float = 1.0      # match backtest's FILL_PENETRATION_BPS
     PO_MAX_WAIT_S: int = 30              # entry wait time
-    PO_EXIT_MAX_WAIT_S: int = 180         # exit wait time
+    PO_EXIT_MAX_WAIT_S: int = 45         # exit wait time
     PO_REPRICE_S: float = 3.0            # cancel/replace interval
     PO_FILL_THRESHOLD: float = 0.50      # accept partial if ≥ 50%
     PO_EXIT_FALLBACK_MARKET: bool = True # exit → market after timeout
@@ -278,7 +278,7 @@ def _default_assets():
             "DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT","DOT/USDT",
             "LTC/USDT","UNI/USDT","ATOM/USDT","ETC/USDT","POL/USDT",
             "XAG/USDT","TRX/USDT","TON/USDT","BCH/USDT","NEAR/USDT",
-            "APT/USDT","HBAR/USDT","VET/USDT",
+            "APT/USDT","HBAR/USDT","VET/USDT","FIL/USDT",
             "STX/USDT","AAVE/USDT","ARB/USDT",
             "OP/USDT","INJ/USDT","SUI/USDT","TIA/USDT","SEI/USDT",
             "ALGO/USDT","GRT/USDT","FET/USDT","RENDER/USDT",
@@ -3262,18 +3262,11 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
     """
     Post-Only limit execution with cancel/replace and optional market fallback.
 
-    Places GTX limit at best_bid*(1-pen) for BUY, best_ask*(1+pen) for SELL.
-    Cancel/replaces when target drifts > PO_DRIFT_BPS.
-    Verifies fill via fetch_order.
-
-    Returns:
-      {
-        'filled_qty': float,
-        'avg_price':  float,   # 0.0 if none filled
-        'fill_ratio': float,   # 0..1
-        'reason':     str,     # 'filled' | 'partial' | 'no_fill' | 'market_fallback' | 'error'
-        'market_price': float, # last seen best ask (BUY) or best bid (SELL)
-      }
+    [FIX] Partial-fill accounting:
+      - تتبع تراكمي لكل أمر عبر حقل filled (حتى لو الحالة 'open')
+      - _sweep_active قبل وبعد الإلغاء — لا يُفقد أي جزء مُنفَّذ
+      - remaining = qty - total_filled هو الكمية الوحيدة المُرسلة للبورصة
+      - ضمان: إجمالي التعرّض ≤ qty (لا تراكم مفرط)
     """
     pen = (penetration_bps if penetration_bps is not None
            else CFG.PO_PENETRATION_BPS) * 1e-4
@@ -3283,7 +3276,7 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
     drift_bps = CFG.PO_DRIFT_BPS
 
     t0 = time.time()
-    active = None          # {'id', 'price', 'qty'}
+    active = None          # {'id','price','qty','last_filled','last_cost'}
     total_filled = 0.0
     total_cost = 0.0
     remaining = qty
@@ -3291,6 +3284,8 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
     last_ask = 0.0
 
     def _sweep_active():
+        """اقرأ الأمر الحي، اجمع أي fills جديدة (جزئية أو كاملة)،
+        وأسقط الأمر فقط عند وصوله لحالة نهائية."""
         nonlocal active, total_filled, total_cost, remaining
         if active is None:
             return
@@ -3298,20 +3293,62 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
             st = exchange.fetch_order(active['id'], symbol)
         except Exception:
             return
+
+        # ── التقاط أي كمية مُنفَّذة على هذا الأمر (حتى لو open) ──
+        try:
+            fq_total = float(st.get('filled') or 0.0)
+        except Exception:
+            fq_total = 0.0
+
+        last_seen = float(active.get('last_filled', 0.0))
+        fq_delta = fq_total - last_seen
+
+        if fq_delta > 1e-12:
+            # استخرج السعر الهامشي الصحيح من فرق الـ average التراكمي
+            avg_now = float(st.get('average') or st.get('price')
+                            or active.get('price') or 0.0)
+            prev_cost = float(active.get('last_cost', 0.0))
+            new_cost = avg_now * fq_total
+            marginal_cost = new_cost - prev_cost
+            if marginal_cost < 0 or not np.isfinite(marginal_cost):
+                # حماية من ضجيج التقريب
+                marginal_cost = fq_delta * avg_now
+
+            total_filled += fq_delta
+            total_cost += marginal_cost
+            active['last_filled'] = fq_total
+            active['last_cost'] = new_cost
+            remaining = max(0.0, qty - total_filled)
+
         status = st.get('status')
-        if status == 'closed':
-            fq = float(st.get('filled') or 0.0)
-            fp = float(st.get('average') or st.get('price') or active['price'])
-            total_filled += fq
-            total_cost += fq * fp
-            remaining = qty - total_filled
+        if status in ('closed', 'canceled', 'expired', 'rejected'):
             active = None
-        elif status in ('canceled', 'expired', 'rejected'):
+
+    def _cancel_active():
+        """Sweep → Cancel → Sweep. لا نفقد أي fill جزئي."""
+        nonlocal active
+        if active is None:
+            return
+        _sweep_active()                      # 1) اجمع ما تم قبل الإلغاء
+        if active is None:
+            return
+        try:
+            exchange.cancel_order(active['id'], symbol)
+        except Exception:
+            pass
+        time.sleep(0.15)                     # امنح البورصة لحظة لتحديث الحالة
+        _sweep_active()                      # 2) اجمع ما تم خلال/بعد الإلغاء
+        if active is not None:
+            # محاولة إلغاء أخيرة لتجنّب ترك أمر حي غير مُتتبَّع
+            try:
+                exchange.cancel_order(active['id'], symbol)
+            except Exception:
+                pass
             active = None
 
     try:
         while time.time() - t0 < wait:
-            # 1. Fresh book
+            # 1. دفتر الأوامر
             try:
                 ob = exchange.fetch_order_book(symbol, limit=5)
                 last_bid = float(ob['bids'][0][0])
@@ -3321,63 +3358,59 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
                 time.sleep(1.0)
                 continue
 
-            # ══ [FIXED PRICE] Use fixed_target if provided; else compute from book ══
+            # 2. السعر المستهدف
             _fixed = (fixed_target is not None and fixed_target > 0)
             if _fixed:
                 target = float(fixed_target)
             else:
-                if side == 'buy':
-                    target = last_bid * (1.0 - pen)
-                else:
-                    target = last_ask * (1.0 + pen)
+                target = (last_bid * (1.0 - pen) if side == 'buy'
+                          else last_ask * (1.0 + pen))
 
-            # 3. Sweep status
+            # 3. اجمع fills على الأمر النشط
             _sweep_active()
 
-            # 4. Done?
+            # 4. شروط الإنهاء
             if total_filled >= qty * CFG.PO_FILL_THRESHOLD:
                 break
-            if remaining <= qty * 0.02:
+            if remaining <= max(qty * 0.02, 1e-12):
                 break
 
-            # ══ [FIXED PRICE] Skip drift reprice when fixed_target is set ══
+            # 5. إعادة التسعير عند الانحراف (تُخطّى في وضع fixed_target)
             if active is not None and not _fixed:
                 drift = abs(active['price'] - target) / max(target, 1e-12) * 1e4
                 if drift > drift_bps:
-                    try:
-                        exchange.cancel_order(active['id'], symbol)
-                    except Exception:
-                        pass
-                    active = None
+                    _cancel_active()         # إلغاء آمن مع التقاط fills
 
-            # 6. Place new if none active
+            # 6. ضع أمراً جديداً بالكمية المتبقية الحقيقية فقط
             if active is None and remaining > 0:
+                # حماية دفاعية: لا ترسل أبداً أكثر من qty الفعلية
+                send_qty = min(remaining, qty - total_filled)
+                if send_qty <= 1e-12:
+                    break
                 try:
                     o = exchange.create_order(
-                        symbol, 'limit', side, remaining, target,
-                        params={'timeInForce': 'GTX'}  # ← Post-Only
+                        symbol, 'limit', side, send_qty, target,
+                        params={'timeInForce': 'GTX'}
                     )
-                    active = {'id': o['id'], 'price': target, 'qty': remaining}
+                    active = {
+                        'id': o['id'],
+                        'price': target,
+                        'qty': send_qty,
+                        'last_filled': 0.0,
+                        'last_cost': 0.0,
+                    }
                 except Exception as e:
-                    # GTX rejected (would cross) — wait briefly
-                    log.debug(f"[PostOnly] {symbol} GTX rejected at {target:.6f}: {e}")
+                    log.debug(f"[PostOnly] {symbol} GTX rejected at "
+                              f"{target:.6f}: {e}")
                     time.sleep(0.5)
                     continue
 
             time.sleep(rep)
 
-        # Final sweep
-        _sweep_active()
+        # تنظيف نهائي: sweep ثم cancel ثم sweep
+        _cancel_active()
 
-        # Cancel any still-active order
-        if active is not None:
-            try:
-                exchange.cancel_order(active['id'], symbol)
-            except Exception:
-                pass
-            active = None
-
-        # Handle result
+        # ── النتيجة ──
         if total_filled <= 0:
             if fallback_market:
                 try:
@@ -3397,7 +3430,7 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
         avg = total_cost / total_filled
         fill_ratio = total_filled / qty
 
-        # Partial → market remainder if requested
+        # الجزء المتبقي → market إن طُلب
         if fill_ratio < 0.98 and fallback_market and remaining > 0:
             try:
                 mp = last_ask if side == 'buy' else last_bid
@@ -3413,7 +3446,8 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
                     'market_price': mp
                 }
             except Exception as e:
-                log.warning(f"[PostOnly] partial market fallback failed {symbol}: {e}")
+                log.warning(f"[PostOnly] partial market fallback "
+                            f"failed {symbol}: {e}")
 
         return {
             'filled_qty': total_filled, 'avg_price': avg,
@@ -3424,8 +3458,16 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
 
     except Exception as e:
         log.error(f"[PostOnly] {symbol} fatal: {e}")
-        return {'filled_qty': 0.0, 'avg_price': 0.0, 'fill_ratio': 0.0,
-                'reason': 'error', 'market_price': 0.0}
+        try:
+            _cancel_active()
+        except Exception:
+            pass
+        return {
+            'filled_qty': total_filled,
+            'avg_price': (total_cost / total_filled) if total_filled > 0 else 0.0,
+            'fill_ratio': total_filled / qty if qty > 0 else 0.0,
+            'reason': 'error', 'market_price': 0.0
+        }
 
 # ════════════════════════════════════════════════════════════════
 # § 18.7b  AdaptiveFillEngine — Microstructure-Aware Maker Execution
