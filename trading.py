@@ -3671,24 +3671,12 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
                 time.sleep(1.0)
                 continue
 
-            # 2. Target
-            # Defensive: if PO_FIXED_PRICE is True but caller didn't pass
-            # fixed_target, lock the FIRST observed target and never chase.
+            # 2. Target — v10 semantics exactly:
+            #    - caller supplies fixed_target → lock to it
+            #    - caller supplies None      → quote from live book at edge
             _fixed = (fixed_target is not None and fixed_target > 0)
             if _fixed:
                 target = float(fixed_target)
-            elif getattr(CFG, 'PO_FIXED_PRICE', False):
-                # Lock target on first iteration
-                if not hasattr(execute_post_only, '_locked_target'):
-                    execute_post_only._locked_target = {}
-                lock_key = f"{symbol}:{side}"
-                if lock_key not in execute_post_only._locked_target:
-                    execute_post_only._locked_target[lock_key] = (
-                        last_bid * (1.0 - pen) if side == 'buy'
-                        else last_ask * (1.0 + pen)
-                    )
-                target = execute_post_only._locked_target[lock_key]
-                _fixed = True
             else:
                 target = (last_bid * (1.0 - pen)) if side == 'buy' \
                          else (last_ask * (1.0 + pen))
@@ -5064,7 +5052,35 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
         _RATE_TRACKER['rejected_count'] += 1
         log.debug(f"[RateLimit] {sym} placement skipped — usage high")
         return None
-    target = float(sig.price)
+
+    # ══ [PARITY-FIX] Honor PO_FIXED_PRICE exactly as v10 did ══
+    # True  → use sig.price (fixed, no chasing) — matches v10's fixed_target
+    # False → quote from LIVE book at PO_PENETRATION_BPS from best bid/ask
+    pen = float(CFG.PO_PENETRATION_BPS) * 1e-4
+    if getattr(CFG, 'PO_FIXED_PRICE', True):
+        target = float(sig.price)
+    else:
+        try:
+            ob = exchange.fetch_order_book(sym, limit=5)
+            last_bid = float(ob['bids'][0][0])
+            last_ask = float(ob['asks'][0][0])
+            target = (last_bid * (1.0 - pen) if side == 'buy'
+                      else last_ask * (1.0 + pen))
+            # Sanity gate: refuse if target drifts too far from mid
+            _mid = (last_bid + last_ask) / 2.0
+            if _mid > 0:
+                _gap_bps = abs(target - _mid) / _mid * 1e4
+                _max_gap = float(getattr(CFG, 'PO_MAX_DRIFT_BPS', 5.0)) * 4.0
+                if _gap_bps > _max_gap:
+                    log.info(f"[Pending] {sym} target {target:.6f} "
+                             f"is {_gap_bps:.1f}bps from mid "
+                             f"(> {_max_gap:.1f}) — skip")
+                    return None
+        except Exception as e:
+            log.warning(f"[Pending] book fetch failed for {sym}: {e} — "
+                        f"falling back to sig.price")
+            target = float(sig.price)
+
     try:
         o = exchange.create_order(
             sym, 'limit', side, qty, target,
@@ -5775,9 +5791,15 @@ def run_live(cfg, exchange):
 
                         # ══ 3. Entry — Non-Blocking Pending Order ══
                         if getattr(CFG, 'PENDING_ENABLED', True):
-                            # Respect cap on placements per cycle
-                            if len(_PENDING_ORDERS) >= int(CFG.MAX_CONCURRENT_ASSETS):
-                                log.debug(f"[Pending] cap reached, skipping {sym}")
+                            # [CAP-FIX] Unified exposure cap:
+                            # positions + pendings must never exceed max concurrent
+                            _total_exposure = len(_PENDING_ORDERS) + len(open_pos_live)
+                            if _total_exposure >= int(CFG.MAX_CONCURRENT_ASSETS):
+                                log.debug(
+                                    f"[Pending] exposure cap reached "
+                                    f"({_total_exposure}≥{CFG.MAX_CONCURRENT_ASSETS}) "
+                                    f"— skip {sym}"
+                                )
                                 continue
 
                             # ══ [Parity] Entry timeout = bars × bar-duration ══
@@ -6102,10 +6124,39 @@ def main():
     if args.no_cache:     CFG.ASSET_CACHE_ENABLED = False
     if args.clear_cache:
         import shutil
+        # 1. Clear AssetData pickle cache
         if os.path.exists(CFG.ASSET_CACHE_DIR):
             shutil.rmtree(CFG.ASSET_CACHE_DIR)
             log.info(f"[Cache] cleared {CFG.ASSET_CACHE_DIR}")
         os.makedirs(CFG.ASSET_CACHE_DIR, exist_ok=True)
+        # 2. Clear market OHLCV parquet cache
+        if os.path.exists(CACHE_DIR):
+            shutil.rmtree(CACHE_DIR)
+            log.info(f"[Cache] cleared {CACHE_DIR}")
+            os.makedirs(CACHE_DIR, exist_ok=True)
+        # 3. Clear persistent state files (positions, pendings, meta, kill)
+        _state_files = [
+            "live_state_live.json", "live_state_testnet.json",
+            "pending_orders_live.json", "pending_orders_testnet.json",
+            "symbol_meta_live.json", "symbol_meta_testnet.json",
+            "kill_switch.json",
+        ]
+        for _f in _state_files:
+            if os.path.exists(_f):
+                try:
+                    os.remove(_f)
+                    log.info(f"[Clean] removed {_f}")
+                except Exception as _e:
+                    log.warning(f"[Clean] failed to remove {_f}: {_e}")
+        # 4. Clear __pycache__ of this file's directory (safety)
+        _pc = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "__pycache__")
+        if os.path.exists(_pc):
+            try:
+                shutil.rmtree(_pc)
+                log.info(f"[Clean] removed {_pc}")
+            except Exception as _e:
+                log.debug(f"[Clean] __pycache__ removal skipped: {_e}")
     if args.no_fill_engine: CFG.FILL_ENGINE_ENABLED = False
     if args.no_budget: CFG.BUDGET_ENABLED = False
     # ══ [TIMEFRAME SCALE] initialize before any data fetch ══
