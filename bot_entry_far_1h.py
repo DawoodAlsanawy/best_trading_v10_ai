@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, ProcessPoolExec
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
-import requests
+
 import numpy as np
 import pandas as pd
 from scipy.stats import kurtosis, linregress, skew
@@ -124,7 +124,7 @@ class Config:
     DRAWDOWN_REDUCE_AT_70: float=0.70
 
     MAX_CONCURRENT_ASSETS: int   = 5
-    CORRELATION_THRESHOLD: float = 0.60
+    CORRELATION_THRESHOLD: float = 0.70
 
     MAX_HOLD_BARS: int = 168
 
@@ -202,7 +202,7 @@ class Config:
     # ══ [POST-ONLY EXECUTION] ══
     PO_PENETRATION_BPS: float = 1.0      # match backtest's FILL_PENETRATION_BPS
     PO_MAX_WAIT_S: int = 30              # entry wait time
-    PO_EXIT_MAX_WAIT_S: int = 180         # exit wait time
+    PO_EXIT_MAX_WAIT_S: int = 45         # exit wait time
     PO_REPRICE_S: float = 3.0            # cancel/replace interval
     PO_FILL_THRESHOLD: float = 0.50      # accept partial if ≥ 50%
     PO_EXIT_FALLBACK_MARKET: bool = True # exit → market after timeout
@@ -260,10 +260,74 @@ class Config:
     LIVE_ASSET_CACHE_MAX: int = 40           # max entries (safety)
     # ══ [FIXED PRICE ENTRY — no chasing] ══
     PO_FIXED_PRICE: bool = True              # use sig.price, hold it fixed
+    # ══ [MULTI-FACTOR TRAIL] ══
+    # Stage 1: MFE-Graduated
+    TRAIL_MFE_GRADUATED: bool = True
+    TRAIL_MFE_BREAKPOINTS: Tuple = (1.0, 2.0, 3.0)
+    TRAIL_MFE_FACTORS: Tuple = (1.00, 0.70, 0.45, 0.30)
+
+    # Stage 2: Age-Decayed
+    TRAIL_AGE_DECAY: bool = True
+    TRAIL_AGE_BETA: float = 0.30
+    TRAIL_AGE_FLOOR: float = 0.50
+
+    # Stage 3: Regime-Aware
+    TRAIL_REGIME_AWARE: bool = True
+    TRAIL_REGIME_CLIP_MIN: float = 0.70
+    TRAIL_REGIME_CLIP_MAX: float = 1.50
+    TRAIL_REGIME_WINDOW: int = 500
+
+    # Stage 4: Structure-Anchored (default OFF)
+    TRAIL_STRUCTURE_ANCHORED: bool = False
+    TRAIL_STRUCTURE_WINDOW: int = 20
+    TRAIL_STRUCTURE_BUFFER_KAPPA: float = 0.30
+    TRAIL_STRUCTURE_TREND_THRESHOLD: float = 0.80
+
+    # Safety bounds (in σ units)
+    TRAIL_DYNAMIC_MIN_SIGMA: float = 0.15
+    TRAIL_DYNAMIC_MAX_SIGMA: float = 1.50
+    # ══ [R/R RATIO] ══
+    TP_RR_RATIO: float = 5.0     # target: TP = 5 × SL distance
+    # ══ [R/R-Adaptive Trail] ══
+    TRAIL_ACT_FROM_TP: bool = True     # derive activation from TP distance
+    TRAIL_ACT_TP_FRACTION: float = 0.33 # activate at 33% of TP distance
     # ══ [ATOMIC FILL ACCOUNTING] ══
-    PO_MAX_ATTEMPTS: int = 5              # max cancel/replace cycles
+    PO_MAX_ATTEMPTS: int = 3              # max cancel/replace cycles
     PO_MAX_DRIFT_BPS: float = 5.0         # abort if drift exceeds
-    PO_MIN_ACCEPT_RATIO: float = 0.15     # accept partial if >= 50%
+    PO_MIN_ACCEPT_RATIO: float = 0.50     # accept partial if >= 50%
+    # ══ [LEVEL 2: Adaptive Spread Penetration] ══
+    PO_ADAPTIVE_PEN_ENABLED: bool = True
+    PO_PEN_KAPPA: float = 0.50             # pen_bps = κ × spread_bps
+    PO_PEN_MIN_BPS: float = 0.5
+    PO_PEN_MAX_BPS: float = 5.0
+
+    # ══ [LEVEL 3: Queue-Aware Pricing] ══
+    PO_QUEUE_ADJUST_ENABLED: bool = True
+    PO_QUEUE_KAPPA: float = 0.30           # max price push (fraction of spread)
+    PO_QUEUE_SAMPLE_LEVELS: int = 3         # look at top N book levels
+
+    # ══ [LEVEL 6: Latency Compensation] ══
+    PO_LATENCY_COMP_ENABLED: bool = True
+    PO_LATENCY_KAPPA: float = 0.80         # apply fraction of predicted drift
+    PO_LATENCY_MAX_MS: float = 1000.0      # cap on latency estimate
+    PO_LATENCY_DRIFT_BARS: int = 5          # bars for drift estimate
+    # ══ [PRE-ENTRY VALIDATION GATE] ══
+    ENTRY_VALIDATE_ENABLED: bool = True
+    ENTRY_MAX_AGE_BARS: int = 3
+    ENTRY_MAX_DRIFT_SIGMA: float = 2.0
+    ENTRY_MAX_HORIZON_SIGMA: float = 3.0
+    ENTRY_VOL_BURST_MULT: float = 5.0
+    ENTRY_VOL_BURST_LOOKBACK: int = 60
+
+    # ══ [MULTI-LEVEL LADDER ENTRY] ══
+    ENTRY_LADDER_ENABLED: bool = True
+    ENTRY_LADDER_WEIGHTS: Tuple = (0.5, 0.3, 0.2)
+    ENTRY_LADDER_OFFSETS_SIGMA: Tuple = (0.0, 0.5, 1.0)
+
+    # ══ [POST-FILL REVALIDATION] ══
+    POST_FILL_CHECK_ENABLED: bool = True
+    POST_FILL_GRACE_S: int = 60
+    POST_FILL_MAX_ADVERSE_SIGMA: float = 1.5
 
 CFG = Config()
 
@@ -277,202 +341,19 @@ CFG = Config()
 #            "DOGE/USDT","AVAX/USDT","LINK/USDT","DOT/USDT",
 #            "LTC/USDT","UNI/USDT","ATOM/USDT","ETC/USDT","POL/USDT"]
 
-#def _default_assets():
-#    return ["BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT","XRP/USDT",
-#            "DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT","DOT/USDT",
-#            "LTC/USDT","UNI/USDT","ATOM/USDT","ETC/USDT","POL/USDT",
-#            "XAG/USDT","TRX/USDT","TON/USDT","BCH/USDT","NEAR/USDT",
-#            "APT/USDT","HBAR/USDT","VET/USDT",
-#            "STX/USDT","AAVE/USDT","ARB/USDT",
-#            "OP/USDT","INJ/USDT","SUI/USDT","TIA/USDT","SEI/USDT",
-#            "ALGO/USDT","GRT/USDT","FET/USDT","RENDER/USDT",
-#            "LDO/USDT","KAS/USDT","WIF/USDT","THETA/USDT","EGLD/USDT",
-#            "SAND/USDT","MANA/USDT","AXS/USDT","XLM/USDT","CHZ/USDT"]
-#def _default_assets():
-#    # أعلى 50 عملة من حيث القيمة السوقية مع قبول رافعة 50x على Binance Futures
-#    return [
-#        "BTC/USDT",   # بيتكوين - أعلى سيولة، رافعة 125x
-#        "ETH/USDT",   # إيثيريوم - ثاني أعلى سيولة، رافعة 100x
-#        "BNB/USDT",   # بيнанс كوين - رافعة 75x
-#        "SOL/USDT",   # سولانا - رافعة 50x
-#        "XRP/USDT",   # ريبل - رافعة 50x
-#        "DOGE/USDT",  # دوجكوين - رافعة 50x
-#        "ADA/USDT",   # كاردانو - رافعة 50x
-#        "AVAX/USDT",  # أفالانش - رافعة 50x
-#        "LINK/USDT",  # تشين لينك - رافعة 50x
-#        "DOT/USDT",   # بولكادوت - رافعة 50x
-#        "LTC/USDT",   # لايتكوين - رافعة 50x
-#        "UNI/USDT",   # يونيسواب - رافعة 50x
-#        "ATOM/USDT",  # كوزموس - رافعة 50x
-#        "ETC/USDT",   # إيثيريوم كلاسيك - رافعة 50x
-#        "TRX/USDT",   # ترون - رافعة 50x
-#        "TON/USDT",   # تون كوين - رافعة 50x
-#        "BCH/USDT",   # بيتكوين كاش - رافعة 50x
-#        "NEAR/USDT",  # نير بروتوكول - رافعة 50x
-#        "APT/USDT",   # أبتوس - رافعة 50x
-#        "HBAR/USDT",  # هيدرا - رافعة 50x
-#        "VET/USDT",   # في تشين - رافعة 50x
-#        "STX/USDT",   # ستاكس - رافعة 50x
-#        "AAVE/USDT",  # آفي - رافعة 50x
-#        "ARB/USDT",   # أربيتروم - رافعة 50x
-#        "OP/USDT",    # أوبتيميزم - رافعة 50x
-#        "INJ/USDT",   # إنجكتيف - رافعة 50x
-#        "SUI/USDT",   # سوي - رافعة 50x
-#        "TIA/USDT",   # سيليستيا - رافعة 50x
-#        "SEI/USDT",   # ساي - رافعة 50x
-#        "ALGO/USDT",  # ألجوراند - رافعة 50x
-#        "GRT/USDT",   # ذا غراف - رافعة 50x
-#        "FET/USDT",   # فيتشد أيه آي - رافعة 50x
-#        "RENDER/USDT",# ريندر - رافعة 50x
-#        "LDO/USDT",   # ليدو داو - رافعة 50x
-#        "KAS/USDT",   # كاسبا - رافعة 50x
-#        "WIF/USDT",   # دوج ويف هات - رافعة 50x
-#        "THETA/USDT", # ثيتا - رافعة 50x
-#        "EGLD/USDT",  # مولتي فيرس إكس - رافعة 50x
-#        "SAND/USDT",  # ذا ساندبوكس - رافعة 50x
-#        "MANA/USDT",  # ديسنترالاند - رافعة 50x
-#        "AXS/USDT",   # أكسي إنفينيتي - رافعة 50x
-#        "XLM/USDT",   # ستيلر - رافعة 50x
-#        "CHZ/USDT",   # تشيليز - رافعة 50x
-#        "POL/USDT",   # بوليجون (سابقاً MATIC) - رافعة 50x
-#        "FIL/USDT",   # فيل كوين - رافعة 50x
-#        "QNT/USDT",   # كوانت - رافعة 50x
-#        "DASH/USDT",  # داش - رافعة 50x
-#        "ZEC/USDT",   # زدكاش - رافعة 50x
-#        "XMR/USDT",   # مونيرو - رافعة 50x
-##        "EOS/USDT"    # إيوس - رافعة 50x
-#    ]
-
 def _default_assets():
-    # 100 أصل: أعلى القيمة السوقية + دعم رافعة 50x+ على Binance Futures
-    return [
-        # --- الطبقة الأولى: أعلى سيولة ورافعة (75x-125x) ---
-        "BTC/USDT",    # بيتكوين - رافعة 125x
-        "ETH/USDT",    # إيثيريوم - رافعة 100x
-        "BNB/USDT",    # بيнанс كوين - رافعة 75x
-        "SOL/USDT",    # سولانا - رافعة 50x
-        "XRP/USDT",    # ريبل - رافعة 50x
-        "DOGE/USDT",   # دوجكوين - رافعة 50x
-        "ADA/USDT",    # كاردانو - رافعة 50x
-        "AVAX/USDT",   # أفالانش - رافعة 50x
-        "LINK/USDT",   # تشين لينك - رافعة 50x
-        "DOT/USDT",    # بولكادوت - رافعة 50x
-        "LTC/USDT",    # لايتكوين - رافعة 50x
-        "UNI/USDT",    # يونيسواب - رافعة 50x
-        "ATOM/USDT",   # كوزموس - رافعة 50x
-        "ETC/USDT",    # إيثيريوم كلاسيك - رافعة 50x
-        "TRX/USDT",    # ترون - رافعة 50x
-        "TON/USDT",    # تون كوين - رافعة 50x
-        "BCH/USDT",    # بيتكوين كاش - رافعة 50x
-        "NEAR/USDT",   # نير بروتوكول - رافعة 50x
-        "APT/USDT",    # أبتوس - رافعة 50x
-        "HBAR/USDT",   # هيدرا - رافعة 50x
-        "VET/USDT",    # في تشين - رافعة 50x
-        "STX/USDT",    # ستاكس - رافعة 50x
-        "AAVE/USDT",   # آفي - رافعة 50x
-        "ARB/USDT",    # أربيتروم - رافعة 50x
-        "OP/USDT",     # أوبتيميزم - رافعة 50x
-        "INJ/USDT",    # إنجكتيف - رافعة 50x
-        "SUI/USDT",    # سوي - رافعة 50x
-        "TIA/USDT",    # سيليستيا - رافعة 50x
-        "SEI/USDT",    # ساي - رافعة 50x
-        "ALGO/USDT",   # ألجوراند - رافعة 50x
-        "GRT/USDT",    # ذا غراف - رافعة 50x
-        "FET/USDT",    # فيتشد أيه آي - رافعة 50x
-        "RENDER/USDT", # ريندر - رافعة 50x
-        "LDO/USDT",    # ليدو داو - رافعة 50x
-        "KAS/USDT",    # كاسبا - رافعة 50x
-        "WIF/USDT",    # دوج ويف هات - رافعة 50x
-        "THETA/USDT",  # ثيتا - رافعة 50x
-        "SAND/USDT",   # ذا ساندبوكس - رافعة 50x
-        "MANA/USDT",   # ديسنترالاند - رافعة 50x
-        "AXS/USDT",    # أكسي إنفينيتي - رافعة 50x
-        "XLM/USDT",    # ستيلر - رافعة 50x
-        "CHZ/USDT",    # تشيليز - رافعة 50x
-        "POL/USDT",    # بوليجون - رافعة 50x
-        "FIL/USDT",    # فيل كوين - رافعة 50x
-        "QNT/USDT",    # كوانت - رافعة 50x
-        "DASH/USDT",   # داش - رافعة 50x
-#        "EOS/USDT",    # إيوس - رافعة 50x
-#        "FTM/USDT",    # فانتوم - رافعة 50x
-        "FLOW/USDT",   # فلو - رافعة 50x
-        "CAKE/USDT",   # بانكيك سواب - رافعة 50x
-#        "ROSE/USDT",   # أوايسيس نتوورك - رافعة 50x
-        "ZIL/USDT",    # زيلكا - رافعة 50x
-        "ONE/USDT",    # هارموني - رافعة 50x
-        "IOTA/USDT",   # أيوتا - رافعة 50x
-        "NEO/USDT",    # نيو - رافعة 50x
-        "KAVA/USDT",   # كافا - رافعة 50x
-        "CRV/USDT",    # كورف - رافعة 50x
-        "SNX/USDT",    # سينثيتيكس - رافعة 50x
-        "COMP/USDT",   # كومباووند - رافعة 50x
-#        "MKR/USDT",    # ميكر - رافعة 50x
-        "SUSHI/USDT",  # سوشي سواب - رافعة 50x
-        "YFI/USDT",    # يرن فايننس - رافعة 50x
-        "ZRX/USDT",    # زيرو إكس - رافعة 50x
-        "BAT/USDT",    # باسيك أتنشن توكن - رافعة 50x
-        "ENJ/USDT",    # إنجين - رافعة 50x
-        "ANKR/USDT",   # أنكر - رافعة 50x
-#        "OCEAN/USDT",  # أوشن بروتوكول - رافعة 50x
-        "BAND/USDT",   # باند بروتوكول - رافعة 50x
-        "NMR/USDT",    # نوميرا - رافعة 50x
-        "STORJ/USDT",  # ستورج - رافعة 50x
-        "KSM/USDT",    # كوساما - رافعة 50x
-#        "WAVES/USDT",  # ويفز - رافعة 50x
-        "ZEN/USDT",    # هوريزن - رافعة 50x
-#        "ICP/USDT",    # إنترنت كمبيوتر - رافعة 50x
-        "CELO/USDT",   # سيلو - رافعة 50x
-        "AR/USDT",     # أرويف - رافعة 50x
-        "MASK/USDT",   # ماسك نتوورك - رافعة 50x
-        "DYDX/USDT",   # دي واي دي إكس - رافعة 50x
-        "ENS/USDT",    # إيثيريوم نيم سيرفس - رافعة 50x
-        "GMX/USDT",    # جي إم إكس - رافعة 50x
-        "MAGIC/USDT",  # ماجيك - رافعة 50x
-        "HIGH/USDT",   # هاي - رافعة 50x
-        "PENDLE/USDT", # بيندل - رافعة 50x
-        "JOE/USDT",    # ترايدر جو - رافعة 50x
-        "CYBER/USDT",  # سايبر كونكت - رافعة 50x
-        "ARKM/USDT",   # أركهام - رافعة 50x
-        "WLD/USDT",    # وورلد كوين - رافعة 50x
-        "BLUR/USDT",   # بلور - رافعة 50x
-        "ID/USDT",     # سبيس آي دي - رافعة 50x
-        "EDU/USDT",    # إيدي - رافعة 50x
-#        "PEPE/USDT",   # بيبي - رافعة 50x
-#        "FLOKI/USDT",  # فلوكي - رافعة 50x
-#        "BONK/USDT",   # بونك - رافعة 50x
-        "MEME/USDT",   # ميم كوين - رافعة 50x
-        "ORDI/USDT",   # أوردينالز - رافعة 50x
-        "1000SATS/USDT", # ساتس - رافعة 50x
-        "JUP/USDT",    # جوبيتر - رافعة 50x
-        "PYTH/USDT",   # بايث - رافعة 50x
-        "JTO/USDT",    # جيتو - رافعة 50x
-        "DYM/USDT",    # دايمنشن - رافعة 50x
-        "STRK/USDT",   # ستارك نت - رافعة 50x
-        "MANTA/USDT",  # مانتا - رافعة 50x
-        "ALT/USDT",    # ألت لاير - رافعة 50x
-        "AEVO/USDT",   # أفيفو - رافعة 50x
-        "ETHFI/USDT",  # إيثير فاي - رافعة 50x
-        "BOME/USDT",   # بوك أوف ميم - رافعة 50x
-        "W/USDT",      # ورم هول - رافعة 50x
-        "SAGA/USDT",   # ساغا - رافعة 50x
-        "OMNI/USDT",   # أومني - رافعة 50x
-        "REZ/USDT",    # رينزو - رافعة 50x
-        "BB/USDT",     # باونس بيت - رافعة 50x
-        "IO/USDT",     # آي أو نت - رافعة 50x
-        "ZK/USDT",     # zkSync - رافعة 50x
-        "LISTA/USDT",  # ليستا - رافعة 50x
-        "TAIKO/USDT",  # تايكو - رافعة 50x
-        "ZRO/USDT",    # لاير زيرو - رافعة 50x
-        "G/USDT",      # جي - رافعة 50x
-        "RARE/USDT",   # رير - رافعة 50x
-        "SYN/USDT",    # سينابس - رافعة 50x
-        "MEW/USDT",    # ميو - رافعة 50x
-        "MERL/USDT",   # ميرلين - رافعة 50x
-        "BANANA/USDT", # بانانا - رافعة 50x
-    ]
+    return ["BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT","XRP/USDT",
+            "DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT","DOT/USDT",
+            "LTC/USDT","UNI/USDT","ATOM/USDT","ETC/USDT","POL/USDT",
+            "XAG/USDT","TRX/USDT","TON/USDT","BCH/USDT","NEAR/USDT",
+            "APT/USDT","HBAR/USDT","VET/USDT","FIL/USDT",
+            "STX/USDT","AAVE/USDT","ARB/USDT",
+            "OP/USDT","INJ/USDT","SUI/USDT","TIA/USDT","SEI/USDT",
+            "ALGO/USDT","GRT/USDT","FET/USDT","RENDER/USDT",
+            "LDO/USDT","KAS/USDT","WIF/USDT","THETA/USDT","EGLD/USDT",
+            "SAND/USDT","MANA/USDT","AXS/USDT","XLM/USDT","CHZ/USDT"]
 
 # "ADA/USDT"
-
 def scan_top_assets(exchange, n=None) -> List[str]:
     n = n or CFG.n_assets
     try:
@@ -500,112 +381,6 @@ def scan_top_assets(exchange, n=None) -> List[str]:
         return _default_assets()[:n]
     log.info(f"مسح الأصول: {len(sel)} عملة مختارة")
     return sel
-
-
-
-#def scan_top_assets(exchange: Exchange, n: Optional[int] = None) -> List[str]:
-#    """
-#    دالة ديناميكية تختار أعلى n أصل من حيث القيمة السوقية
-#    مع ضمان: (1) مدرج في Binance Futures، (2) رافعة 50x على الأقل، (3) ضمن أعلى 100 عملة.
-#    """
-#    n = n or CFG.n_assets
-#
-#    # ── 1. جلب أعلى 100 عملة من حيث القيمة السوقية عبر CoinGecko ──
-#    top_100_symbols = set()
-#    try:
-#        url = "https://api.coingecko.com/api/v3/coins/markets"
-#        params = {
-#            "vs_currency": "usd",
-#            "order": "market_cap_desc",
-#            "per_page": 100,
-#            "page": 1,
-#            "sparkline": False
-#        }
-#        resp = requests.get(url, params=params, timeout=10)
-#        resp.raise_for_status()
-#        for coin in resp.json():
-#            # CoinGecko يعيد الرمز بأحرف صغيرة، نحوله للأحرف الكبيرة
-#            top_100_symbols.add(coin["symbol"].upper())
-#    except Exception as e:
-#        log.warning(f"scan_top_assets: فشل جلب ترتيب القيمة السوقية من CoinGecko: {e}")
-#        # في حال الفشل، نرجع إلى القائمة الافتراضية كخطة بديلة
-#        return _default_assets()[:n]
-#
-#    # ── 2. جلب الأسواق من البورصة وتصفية الرموز ──
-#    try:
-#        markets = exchange.fetch_markets()
-#    except Exception as e:
-#        log.warning(f"scan_top_assets: فشل جلب الأسواق: {e}")
-#        return _default_assets()[:n]
-#
-#    # ── 3. جلب معلومات الرافعة المالية لكل رمز ──
-#    # ملاحظة: fetchLeverageTiers قد تتطلب مصادقة على Binance، تأكد من إعداد مفاتيح API.
-#    try:
-#        leverage_tiers = exchange.fetch_leverage_tiers()
-#    except Exception as e:
-#        log.warning(f"scan_top_assets: فشل جلب مستويات الرافعة المالية: {e}")
-#        leverage_tiers = {}
-#
-#    # ── 4. جلب الأسعار وحجم التداول ──
-#    try:
-#        tickers = exchange.fetch_tickers()
-#    except Exception as e:
-#        log.warning(f"scan_top_assets: فشل جلب الأسعار: {e}")
-#        tickers = {}
-#
-#    scored = []
-#    for sym, market in markets.items():
-#        # شرط 1: يجب أن يكون الزوج مقابل USDT وفي سوق العقود الآجلة
-#        if not sym.endswith("/USDT"):
-#            continue
-#        if market.get("type") != "future":
-#            continue
-#        if market.get("contract") is not True:
-#            continue
-#
-#        base = sym.replace("/USDT", "")
-#
-#        # شرط 2: يجب أن يكون ضمن أعلى 100 عملة من حيث القيمة السوقية
-#        if base not in top_100_symbols:
-#            continue
-#
-#        # شرط 3: استبعاد الرموز المدرجة في CFG.exclude_tokens
-#        if any(ex in base for ex in CFG.exclude_tokens):
-#            continue
-#
-#        # شرط 4: التحقق من دعم رافعة 50x على الأقل
-#        max_leverage = 0
-#        if sym in leverage_tiers:
-#            tiers = leverage_tiers[sym]
-#            if isinstance(tiers, list) and len(tiers) > 0:
-#                # أقصى رافعة هي أعلى قيمة initialLeverage في جميع المستويات
-#                max_leverage = max(t.get("maxLeverage", 0) for t in tiers)
-#        # إذا لم نتمكن من الجلب، نعتمد على الحد الأقصى من معلومات السوق
-#        if max_leverage == 0:
-#            max_leverage = market.get("limits", {}).get("leverage", {}).get("max", 0) or 0
-#
-#        if max_leverage < 50:
-#            continue
-#
-#        # شرط 5: السيولة (حجم التداول بالدولار)
-#        qv = float(tickers.get(sym, {}).get("quoteVolume", 0) or 0)
-#        if qv < CFG.min_quote_vol_usd:
-#            continue
-#
-#        # حساب النتيجة: حجم التداول × (التغير المطلق + 1) لترتيب الأفضل
-#        chg = abs(float(tickers.get(sym, {}).get("percentage", 0) or 0))
-#        scored.append((qv * (chg + 1.0), sym, max_leverage))
-#
-#    # ── 5. الترتيب والاختيار ──
-#    scored.sort(key=lambda x: -x[0])
-#    sel = [s for _, s, _ in scored[:n]]
-#
-#    if not sel:
-#        log.warning("scan_top_assets: لم يتم العثور على أصول مطابقة، العودة للقائمة الافتراضية")
-#        return _default_assets()[:n]
-#
-#    log.info(f"مسح الأصول الديناميكي: {len(sel)} عملة مختارة (من أصل {len(scored)} مرشح)")
-#    return sel
 
 # ════════════════════════════════════════════════════════════════
 # § 2.05  Timeframe Scaling Helpers
@@ -1530,10 +1305,15 @@ def build_signals(assets, mode="backtest"):
             # حساب الوقف والهدف بناءً على سعر النفق (Limit Entry)
             sl_dist = compute_geodesic_stop(tunnel_entry_p, ad, fi, CFG)
             sl = tunnel_entry_p - sl_dist if action == "BUY" else tunnel_entry_p + sl_dist
-            tp1 = tunnel_entry_p + (sl_dist * 2.0) if action == "BUY" else tunnel_entry_p - (sl_dist * 2.0)
+
+            # ══ [R/R RATIO] Use configurable multiplier ══
+            _rr = float(getattr(CFG, 'TP_RR_RATIO', 5.0))
+            tp1 = (tunnel_entry_p + (sl_dist * _rr) if action == "BUY"
+                   else tunnel_entry_p - (sl_dist * _rr))
             
             # حظر الصفقات الهشة التي تكون تكلفتها أكبر من ربحها
-            if (sl_dist * 2.0) < (abs(CFG.MAKER_FEE) * tunnel_entry_p): continue
+            # ══ [R/R] use TP_RR_RATIO instead of hardcoded 2.0 ══
+            if (sl_dist * _rr) < (abs(CFG.MAKER_FEE) * tunnel_entry_p): continue
 
             dynamic_risk = compute_geodesic_kelly(ad, fi, CFG)
 
@@ -1665,6 +1445,190 @@ def _get_risk_multiplier(drawdown):
     return 1.0
 
 # ════════════════════════════════════════════════════════════════
+# § 14.56  Multi-Factor Trail Helpers
+# ════════════════════════════════════════════════════════════════
+
+def _trail_mfe_factor(mfe_frac: float, sigma_bar: float) -> float:
+    """
+    Stage 1: MFE-Graduated trail factor φ(r), r = MFE/σ.
+    Piecewise-constant: as MFE grows, factor shrinks (tighter trail).
+    """
+    if sigma_bar <= 1e-9:
+        return 1.0
+    r = mfe_frac / sigma_bar
+    bps = getattr(CFG, 'TRAIL_MFE_BREAKPOINTS', (1.0, 2.0, 3.0))
+    facs = getattr(CFG, 'TRAIL_MFE_FACTORS', (1.00, 0.70, 0.45, 0.30))
+    for i, bp in enumerate(bps):
+        if r < bp:
+            return float(facs[min(i, len(facs) - 1)])
+    return float(facs[-1])
+
+
+def _trail_age_factor(age_bars: int, tau_half: float) -> float:
+    """
+    Stage 2: Age-Decayed factor ψ(a) = max(floor, exp(-β·a/τ_half)).
+    """
+    if tau_half <= 0:
+        return 1.0
+    beta = getattr(CFG, 'TRAIL_AGE_BETA', 0.30)
+    floor = getattr(CFG, 'TRAIL_AGE_FLOOR', 0.50)
+    try:
+        psi = float(np.exp(-beta * max(0, age_bars) / tau_half))
+    except Exception:
+        psi = 1.0
+    return max(psi, floor)
+
+
+def _trail_regime_factor(ad, current_fi: int) -> float:
+    """
+    Stage 3: Regime factor χ = clip(σ_median / σ_now, clip_min, clip_max).
+
+    If current volatility is below median → χ > 1 (wider trail, "calm before storm").
+    If current volatility is above median → χ < 1 (tighter trail, protect profits).
+    """
+    W = getattr(CFG, 'TRAIL_REGIME_WINDOW', 500)
+    if current_fi < 30 or ad.E_therm is None:
+        return 1.0
+    try:
+        start = max(0, current_fi - W)
+        hist = ad.E_therm[start:current_fi]
+        if len(hist) < 30:
+            return 1.0
+        sigma_med = float(np.median(hist))
+        if current_fi < len(ad.E_therm):
+            sigma_now = float(ad.E_therm[current_fi])
+        else:
+            sigma_now = sigma_med
+        if sigma_now <= 1e-9 or sigma_med <= 1e-9:
+            return 1.0
+        chi = sigma_med / sigma_now
+        chi_min = getattr(CFG, 'TRAIL_REGIME_CLIP_MIN', 0.70)
+        chi_max = getattr(CFG, 'TRAIL_REGIME_CLIP_MAX', 1.50)
+        return float(np.clip(chi, chi_min, chi_max))
+    except Exception:
+        return 1.0
+
+
+def _trail_structure_anchor(ad, current_fi: int, peak_price: float,
+                             action: str, sigma_bar: float) -> Optional[float]:
+    """
+    Stage 4: Structure-anchored trail distance.
+
+    Returns d such that trail_SL = peak × (1 - d) [BUY] or peak × (1 + d) [SELL]
+    if the most recent swing low/high is closer to peak than the σ-scaled value.
+
+    Returns None when no valid structure exists.
+    """
+    W = getattr(CFG, 'TRAIL_STRUCTURE_WINDOW', 20)
+    try:
+        current_ci = ad.feat_start + current_fi
+        if current_ci < W or current_ci >= len(ad.lows) or peak_price <= 0:
+            return None
+        buffer_kappa = getattr(CFG, 'TRAIL_STRUCTURE_BUFFER_KAPPA', 0.30)
+        buffer = buffer_kappa * sigma_bar
+
+        if action == "BUY":
+            swing = float(np.min(ad.lows[current_ci - W: current_ci + 1]))
+            candidate_sl = swing * (1.0 - buffer)
+            if candidate_sl >= peak_price:
+                return None
+            d_frac = 1.0 - candidate_sl / peak_price
+            return float(d_frac) if d_frac > 0 else None
+        else:
+            swing = float(np.max(ad.highs[current_ci - W: current_ci + 1]))
+            candidate_sl = swing * (1.0 + buffer)
+            if candidate_sl <= peak_price:
+                return None
+            d_frac = (candidate_sl - peak_price) / peak_price
+            return float(d_frac) if d_frac > 0 else None
+    except Exception:
+        return None
+
+
+def _compute_structure_tf_agreement(ad, current_fi: int, action: str) -> float:
+    """
+    Fraction of timeframes (1h/4h/1d) that agree with the trade direction.
+    Returns value in [0, 1]. Used to gate Stage 4.
+    """
+    try:
+        current_ci = ad.feat_start + current_fi
+        if current_ci < 1440:
+            return 0.0
+        closes = ad.closes
+        t1 = np.sign(closes[current_ci] - closes[current_ci - 60])
+        t4 = np.sign(closes[current_ci] - closes[current_ci - 240])
+        t1d = np.sign(closes[current_ci] - closes[current_ci - 1440])
+        sig_dir = 1 if action == "BUY" else -1
+        return (float(np.sign(t1) == sig_dir) +
+                float(np.sign(t4) == sig_dir) +
+                float(np.sign(t1d) == sig_dir)) / 3.0
+    except Exception:
+        return 0.0
+
+
+def compute_dynamic_trail_dist(ad, entry_fi: int, current_fi: int,
+                               mfe_frac: float, action: str,
+                               entry_px: float, peak_price: float) -> float:
+    """
+    Master dispatcher: combines the four stages into a single trail distance.
+
+    Returns d_frac such that:
+        BUY:  trail_SL = peak × (1 - d_frac)
+        SELL: trail_SL = peak × (1 + d_frac)
+    """
+    # ── 1. Base σ-scaled distance ──
+    sigma_bar = 0.01
+    try:
+        if ad.E_therm is not None and 0 <= entry_fi < len(ad.E_therm):
+            _s = float(ad.E_therm[entry_fi])
+            if np.isfinite(_s) and _s > 1e-6:
+                sigma_bar = _s
+    except Exception:
+        pass
+
+    kappa_base = getattr(CFG, 'TRAIL_KAPPA', 0.30)
+
+    # ══ [RR-Adaptive Distance] widen trail proportionally to TP distance ══
+    if getattr(CFG, 'TRAIL_ACT_FROM_TP', False):
+        _rr = float(getattr(CFG, 'TP_RR_RATIO', 5.0))
+        # Widen by factor proportional to sqrt(rr) — preserve win rate
+        _rr_scale = float(np.sqrt(_rr / 2.0))   # normalize to old rr=2
+        d = float(kappa_base * sigma_bar * _rr_scale)
+    else:
+        d = float(kappa_base * sigma_bar)
+
+    # ── 2. Stage 1: MFE-Graduated ──
+    if getattr(CFG, 'TRAIL_MFE_GRADUATED', False):
+        d *= _trail_mfe_factor(mfe_frac, sigma_bar)
+
+    # ── 3. Stage 2: Age-Decay ──
+    if getattr(CFG, 'TRAIL_AGE_DECAY', False):
+        age_bars = max(0, current_fi - entry_fi)
+        tau_half = max(effective_bars(CFG.MAX_HOLD_BARS) / 2.0, 1.0)
+        d *= _trail_age_factor(age_bars, tau_half)
+
+    # ── 4. Stage 3: Regime-Aware ──
+    if getattr(CFG, 'TRAIL_REGIME_AWARE', False):
+        d *= _trail_regime_factor(ad, current_fi)
+
+    # ── 5. Safety clip (in σ units) ──
+    min_d = getattr(CFG, 'TRAIL_DYNAMIC_MIN_SIGMA', 0.15) * sigma_bar
+    max_d = getattr(CFG, 'TRAIL_DYNAMIC_MAX_SIGMA', 1.50) * sigma_bar
+    d = float(np.clip(d, min_d, max_d))
+
+    # ── 6. Stage 4: Structure Anchor (optional, trend-gated) ──
+    if getattr(CFG, 'TRAIL_STRUCTURE_ANCHORED', False) and peak_price > 0:
+        tf_agree = _compute_structure_tf_agreement(ad, current_fi, action)
+        thresh = getattr(CFG, 'TRAIL_STRUCTURE_TREND_THRESHOLD', 0.80)
+        if tf_agree < thresh:
+            struct_d = _trail_structure_anchor(ad, current_fi, peak_price,
+                                                action, sigma_bar)
+            if struct_d is not None and 0 < struct_d < d:
+                d = struct_d
+
+    return float(d)
+
+# ════════════════════════════════════════════════════════════════
 # § 14.55  Dynamic Trailing Parameters
 # ════════════════════════════════════════════════════════════════
 
@@ -1697,11 +1661,25 @@ def compute_trail_params(ad, entry_fi: int) -> Tuple[float, float]:
             min_d,
             max_d,
         ))
-        trail_act = float(np.clip(
-            CFG.TRAIL_ACT_KAPPA * sigma,
-            min_a,
-            max_a,
-        ))
+
+        # ══ [RR-Adaptive Activation] scale activation to TP distance ══
+        if getattr(CFG, 'TRAIL_ACT_FROM_TP', False):
+            _rr = float(getattr(CFG, 'TP_RR_RATIO', 5.0))
+            _sl_frac = abs(trail_d) * _rr / 1.0  # TP distance = rr × sl_dist
+            # Activate at TRAIL_ACT_TP_FRACTION × TP distance
+            _act_from_tp = (getattr(CFG, 'TRAIL_ACT_TP_FRACTION', 0.33)
+                            * trail_d * _rr)
+            # If _act_from_tp is too large, cap at CFG.TRAIL_ACT_KAPPA * sigma
+            trail_act = max(
+                float(np.clip(CFG.TRAIL_ACT_KAPPA * sigma, min_a, max_a)),
+                _act_from_tp
+            )
+        else:
+            trail_act = float(np.clip(
+                CFG.TRAIL_ACT_KAPPA * sigma,
+                min_a,
+                max_a,
+            ))
         # Activation must be strictly greater than trail distance
         if trail_act <= trail_d:
             trail_act = trail_d * 1.2
@@ -1740,18 +1718,24 @@ def _advance(pos, ad, to_ci):
         if mfe_cand > pos.mfe_frac:
             pos.mfe_frac = mfe_cand
 
-        # ── Trailing Stop (protection layer, runs parallel to Apex) ──
-        # Uses per-position volatility-scaled parameters
-        _td = pos.trail_dist_frac if pos.trail_dist_frac > 0 else CFG.TRAIL_DISTANCE
+        # ── Trailing Stop (multi-factor, per-bar dynamic) ──
         _ta = pos.trail_activate_frac if pos.trail_activate_frac > 0 else CFG.TRAIL_ACTIVATE_MFE
 
         if CFG.TRAIL_ENABLED and pos.mfe_frac >= _ta:
+            # Resolve entry feature index once
+            _entry_fi = max(0, pos.entry_ci - ad.feat_start)
+
             if sig.action == "BUY":
                 peak = pos.peak_price if pos.peak_price > 0 else pos.entry_px
                 if high > peak:
                     peak = high
                     pos.peak_price = peak
-                new_sl = peak * (1.0 - _td)
+                # ══ [MF-TRAIL] per-bar dynamic distance ══
+                _dyn_td = compute_dynamic_trail_dist(
+                    ad, _entry_fi, fi, pos.mfe_frac, sig.action,
+                    pos.entry_px, peak
+                )
+                new_sl = peak * (1.0 - _dyn_td)
                 if new_sl > trail_sl * (1.0 + CFG.TRAIL_MIN_STEP):
                     trail_sl = new_sl
             else:  # SELL
@@ -1759,7 +1743,11 @@ def _advance(pos, ad, to_ci):
                 if low < peak or peak == 0:
                     peak = low
                     pos.peak_price = peak
-                new_sl = peak * (1.0 + _td)
+                _dyn_td = compute_dynamic_trail_dist(
+                    ad, _entry_fi, fi, pos.mfe_frac, sig.action,
+                    pos.entry_px, peak
+                )
+                new_sl = peak * (1.0 + _dyn_td)
                 if new_sl < trail_sl * (1.0 - CFG.TRAIL_MIN_STEP):
                     trail_sl = new_sl
 
@@ -1787,23 +1775,37 @@ def _advance(pos, ad, to_ci):
             pos.trail_sl = trail_sl; pos.current_ci = cidx
             return p, "MaxHold", cidx
 
+        # ══ [EXIT LABELING] distinguish initial-SL from trail-SL ══
+        _init_sl = pos.signal.sl
+
         # 4. SL / TP with PENETRATION
         if sig.action == "BUY":
-            # SL (stop order): trigger when low pierces SL
             sl_trigger = trail_sl * (1.0 - pen_frac)
             if low <= sl_trigger:
+                # Classify: is trail_sl above or at initial SL?
+                if trail_sl > _init_sl * (1.0 + 1e-6):
+                    _label = f"Trail-Win(peak={pos.peak_price:.2f})"
+                elif abs(trail_sl - _init_sl) / max(_init_sl, 1e-9) < 1e-6:
+                    _label = "Initial-SL"
+                else:
+                    _label = "Emergency SL"
                 pos.trail_sl = trail_sl; pos.current_ci = cidx
-                return trail_sl, "Emergency SL", cidx
-            # TP (limit order): fill when high pierces TP
+                return trail_sl, _label, cidx
             tp_trigger = sig.tp1 * (1.0 + pen_frac)
             if high >= tp_trigger:
                 pos.trail_sl = trail_sl; pos.current_ci = cidx
                 return sig.tp1, "Hard TP", cidx
-        else:  # SELL
+        else:
             sl_trigger = trail_sl * (1.0 + pen_frac)
             if high >= sl_trigger:
+                if trail_sl < _init_sl * (1.0 - 1e-6):
+                    _label = f"Trail-Win(peak={pos.peak_price:.2f})"
+                elif abs(trail_sl - _init_sl) / max(_init_sl, 1e-9) < 1e-6:
+                    _label = "Initial-SL"
+                else:
+                    _label = "Emergency SL"
                 pos.trail_sl = trail_sl; pos.current_ci = cidx
-                return trail_sl, "Emergency SL", cidx
+                return trail_sl, _label, cidx
             tp_trigger = sig.tp1 * (1.0 - pen_frac)
             if low <= tp_trigger:
                 pos.trail_sl = trail_sl; pos.current_ci = cidx
@@ -3544,6 +3546,393 @@ def urgency_kappa(t_elapsed: float, t_total: float, kappa: float) -> float:
     return float(1.0 - np.exp(-kappa * frac))
 
 # ════════════════════════════════════════════════════════════════
+# § 18.90  Pre-Entry Validation + Ladder Entry
+# ════════════════════════════════════════════════════════════════
+
+def detect_volume_burst(ad, current_ci: int) -> Tuple[bool, float]:
+    """
+    True if recent volume > threshold × baseline.
+    Returns (is_burst, ratio).
+    """
+    try:
+        lookback = int(getattr(CFG, 'ENTRY_VOL_BURST_LOOKBACK', 60))
+        if current_ci < lookback + 5:
+            return False, 0.0
+        recent = ad.volumes[current_ci - 5: current_ci + 1]
+        baseline = ad.volumes[current_ci - lookback: current_ci - 5]
+        if len(baseline) < 10 or len(recent) == 0:
+            return False, 0.0
+        ratio = float(np.mean(recent)) / (float(np.mean(baseline)) + 1e-12)
+        threshold = float(getattr(CFG, 'ENTRY_VOL_BURST_MULT', 5.0))
+        return (ratio > threshold), float(ratio)
+    except Exception:
+        return False, 0.0
+
+
+def validate_entry_signal(sig, ad, current_ci: int) -> Tuple[bool, str]:
+    """
+    Gate before placing ANY entry order.
+
+    Verifies that if the price touches sig.price, the trade is still
+    likely to reach its target. Checks:
+
+      1. Signal age (bars since generation)
+      2. Market drift (moved away? rallied/crashed?)
+      3. Reachability (distance to sig.price vs remaining horizon σ)
+      4. Volume burst (news/spike regime)
+    """
+    if not getattr(CFG, 'ENTRY_VALIDATE_ENABLED', True):
+        return True, "OK"
+
+    # ── 1. Age check ──
+    age = current_ci - sig.close_idx
+    max_age = int(getattr(CFG, 'ENTRY_MAX_AGE_BARS', 3))
+    if age > max_age:
+        return False, f"signal_age={age}> {max_age}"
+
+    # ── 2. Market drift ──
+    try:
+        p_now = float(ad.closes[current_ci])
+        p_sig = float(ad.closes[sig.close_idx])
+    except Exception:
+        return False, "price_index_error"
+    if p_sig <= 0:
+        return False, "invalid_sig_price"
+    move = (p_now - p_sig) / p_sig
+
+    sigma_bar = float(ad.E_therm[current_ci]) if current_ci < len(ad.E_therm) else 0.01
+    if not np.isfinite(sigma_bar) or sigma_bar <= 1e-6:
+        sigma_bar = 0.01
+
+    drift_k = float(getattr(CFG, 'ENTRY_MAX_DRIFT_SIGMA', 2.0))
+    if sig.action == "BUY":
+        if move > drift_k * sigma_bar:
+            return False, f"rallied {move*100:+.2f}% (>{drift_k:.1f}σ)"
+        if move < -3.0 * sigma_bar:
+            return False, f"collapsed {move*100:+.2f}%"
+    else:
+        if move < -drift_k * sigma_bar:
+            return False, f"crashed {move*100:+.2f}% (>{drift_k:.1f}σ)"
+        if move > 3.0 * sigma_bar:
+            return False, f"rallied {move*100:+.2f}%"
+
+    # ── 3. Reachability ──
+    dist_to_entry = abs(p_now - sig.price) / max(p_now, 1e-12)
+    horizon_bars = int(CFG.FILL_ENTRY_MAX_WAIT_BARS) - age
+    if horizon_bars < 1:
+        return False, "horizon_exhausted"
+    sigma_horizon = sigma_bar * np.sqrt(horizon_bars)
+    reach_k = float(getattr(CFG, 'ENTRY_MAX_HORIZON_SIGMA', 3.0))
+    if dist_to_entry > reach_k * sigma_horizon:
+        return False, (f"unreachable: {dist_to_entry*100:.3f}% "
+                       f">{reach_k:.1f}σ_h ({sigma_horizon*100:.3f}%)")
+
+    # ── 4. Volume burst ──
+    burst, ratio = detect_volume_burst(ad, current_ci)
+    if burst:
+        return False, f"vol_burst={ratio:.1f}x"
+
+    return True, "OK"
+
+
+def build_entry_ladder(sig, ad, current_ci: int) -> List[Dict]:
+    """
+    Build ladder of entry prices around sig.price.
+
+    For BUY:  prices are at sig.price × (1 - offset·σ) for offsets [0, 0.5, 1]
+    For SELL: prices are at sig.price × (1 + offset·σ)
+
+    Returns list of {'price': float, 'weight': float}.
+    """
+    if not getattr(CFG, 'ENTRY_LADDER_ENABLED', True):
+        return [{'price': float(sig.price), 'weight': 1.0}]
+
+    sigma_bar = float(ad.E_therm[current_ci]) if current_ci < len(ad.E_therm) else 0.01
+    if not np.isfinite(sigma_bar) or sigma_bar <= 1e-6:
+        sigma_bar = 0.01
+
+    weights = getattr(CFG, 'ENTRY_LADDER_WEIGHTS', (0.5, 0.3, 0.2))
+    offsets = getattr(CFG, 'ENTRY_LADDER_OFFSETS_SIGMA', (0.0, 0.5, 1.0))
+    if len(weights) != len(offsets):
+        return [{'price': float(sig.price), 'weight': 1.0}]
+
+    levels = []
+    for w, off in zip(weights, offsets):
+        if sig.action == "BUY":
+            px = float(sig.price) * (1.0 - off * sigma_bar)
+        else:
+            px = float(sig.price) * (1.0 + off * sigma_bar)
+        levels.append({'price': px, 'weight': float(w)})
+    return levels
+
+
+# ════════════════════════════════════════════════════════════════
+# § 18.89  Market-Aware Ladder Adjustment (Levels 2, 3, 6)
+# ════════════════════════════════════════════════════════════════
+
+_LATENCY_EMA_MS: float = 50.0   # initial guess; updated after each order
+
+
+def _update_latency(sample_ms: float) -> None:
+    """Exponential moving average of round-trip latency."""
+    global _LATENCY_EMA_MS
+    alpha = 0.25
+    _LATENCY_EMA_MS = alpha * float(sample_ms) + (1.0 - alpha) * _LATENCY_EMA_MS
+
+
+def _get_latency_ms() -> float:
+    return float(min(_LATENCY_EMA_MS, getattr(CFG, 'PO_LATENCY_MAX_MS', 1000.0)))
+
+
+def _compute_adaptive_pen_bps(spread_bps: float) -> float:
+    """
+    Level 2: spread-adaptive penetration.
+    Wider spread → larger penetration → safer Maker placement.
+    """
+    if not getattr(CFG, 'PO_ADAPTIVE_PEN_ENABLED', True):
+        return float(CFG.PO_PENETRATION_BPS)
+    kappa = float(getattr(CFG, 'PO_PEN_KAPPA', 0.50))
+    pen = kappa * float(spread_bps)
+    return float(np.clip(
+        pen,
+        float(getattr(CFG, 'PO_PEN_MIN_BPS', 0.5)),
+        float(getattr(CFG, 'PO_PEN_MAX_BPS', 5.0)),
+    ))
+
+
+def _compute_queue_aggression(best_size: float, our_qty: float,
+                              spread_bps: float) -> float:
+    """
+    Level 3: aggression factor from best-level depth.
+    Deep queue → push price toward market.
+    Returns adjustment in bps (positive = toward market).
+    """
+    if not getattr(CFG, 'PO_QUEUE_ADJUST_ENABLED', True):
+        return 0.0
+    kappa = float(getattr(CFG, 'PO_QUEUE_KAPPA', 0.30))
+    if best_size <= 1e-9 or our_qty <= 1e-9:
+        return 0.0
+    ratio = float(our_qty) / float(best_size)
+    agg_frac = min(kappa, ratio * kappa)
+    return float(agg_frac * float(spread_bps))
+
+
+def _compute_latency_drift_bps(ad, current_ci: int) -> float:
+    """
+    Level 6: drift estimate (bps per second) from recent bars.
+    On 1h timeframe the value is tiny; on 1m it can be meaningful.
+    """
+    if not getattr(CFG, 'PO_LATENCY_COMP_ENABLED', True):
+        return 0.0
+    try:
+        n = int(getattr(CFG, 'PO_LATENCY_DRIFT_BARS', 5))
+        if ad is None or current_ci < n:
+            return 0.0
+        p_now = float(ad.closes[current_ci])
+        p_prev = float(ad.closes[current_ci - n])
+        if p_prev <= 0:
+            return 0.0
+        tf_sec = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
+        dt = max(1.0, n * tf_sec)
+        drift_frac_per_sec = (p_now - p_prev) / p_prev / dt
+        return float(drift_frac_per_sec * 10000.0)   # bps per second
+    except Exception:
+        return 0.0
+
+
+def _adjust_ladder_for_market(exchange, symbol: str, side: str,
+                               levels: List[Dict], our_qty: float,
+                               ad=None, current_ci: int = 0) -> List[Dict]:
+    """
+    Apply Levels 2, 3, 6 to ladder prices before placing orders.
+
+    Level 2: adaptive penetration (never cross the spread).
+    Level 3: push toward market if book is deep.
+    Level 6: latency-compensated price drift.
+
+    Returns a NEW list of {'price', 'weight'} dicts.
+    On any failure, returns the original list unchanged.
+    """
+    try:
+        t0 = time.monotonic()
+        ob = exchange.fetch_order_book(symbol, limit=5)
+        latency_ms = (time.monotonic() - t0) * 1000.0
+        _update_latency(latency_ms)
+    except Exception as e:
+        log.debug(f"[Ladder] book fetch failed {symbol}: {e}")
+        return levels
+
+    try:
+        best_bid = float(ob['bids'][0][0])
+        best_ask = float(ob['asks'][0][0])
+        best_bid_sz = float(ob['bids'][0][1])
+        best_ask_sz = float(ob['asks'][0][1])
+        mid = (best_bid + best_ask) / 2.0
+        if mid <= 0:
+            return levels
+        spread_bps = (best_ask - best_bid) / mid * 10000.0
+    except Exception:
+        return levels
+
+    # Level 2
+    pen_bps = _compute_adaptive_pen_bps(spread_bps)
+
+    # Level 3
+    best_size = best_bid_sz if side == 'buy' else best_ask_sz
+    queue_agg_bps = _compute_queue_aggression(best_size, our_qty, spread_bps)
+
+    # Level 6
+    drift_bps_per_sec = _compute_latency_drift_bps(ad, current_ci)
+    latency_s = _get_latency_ms() / 1000.0
+    lat_kappa = float(getattr(CFG, 'PO_LATENCY_KAPPA', 0.80))
+    lat_adj_bps = drift_bps_per_sec * latency_s * lat_kappa
+
+    adjusted: List[Dict] = []
+    for lvl in levels:
+        base_px = float(lvl['price'])
+        weight = float(lvl.get('weight', 1.0))
+
+        # ── Level 2: ensure Maker validity ──
+        if side == 'buy':
+            max_px = best_ask * (1.0 - pen_bps / 10000.0)
+            new_px = min(base_px, max_px)
+        else:
+            min_px = best_bid * (1.0 + pen_bps / 10000.0)
+            new_px = max(base_px, min_px)
+
+        # ── Level 3: push toward market ──
+        if queue_agg_bps > 0:
+            if side == 'buy':
+                new_px *= (1.0 + queue_agg_bps / 10000.0)
+            else:
+                new_px *= (1.0 - queue_agg_bps / 10000.0)
+
+        # ── Level 6: latency compensation ──
+        if abs(lat_adj_bps) > 1e-9:
+            if side == 'buy':
+                new_px *= (1.0 + lat_adj_bps / 10000.0)
+            else:
+                new_px *= (1.0 - lat_adj_bps / 10000.0)
+
+        adjusted.append({'price': float(new_px), 'weight': weight})
+
+    log.debug(
+        f"[Ladder] {symbol} {side} adjust: "
+        f"spread={spread_bps:.2f}bps pen={pen_bps:.2f}bps "
+        f"queue={queue_agg_bps:.3f}bps lat={lat_adj_bps:.4f}bps "
+        f"latency={_get_latency_ms():.1f}ms"
+    )
+    return adjusted
+
+def execute_ladder_wait(exchange, symbol: str, side: str, qty: float,
+                         levels: List[Dict], wait_s: float,
+                         ad=None, current_ci: int = 0) -> Optional[Dict]:
+    """
+    Place a multi-level ladder of Post-Only orders and monitor.
+
+    - Every level gets timeInForce=GTX (Post-Only).
+    - On timeout or fill of all levels, cancel remaining.
+    - Accounting via DELTA (never double-counts).
+
+    Returns aggregate dict or None.
+    """
+
+    # ══ [LEVELS 2, 3, 6] Market-aware pre-adjustment ══
+    if (getattr(CFG, 'PO_ADAPTIVE_PEN_ENABLED', False)
+            or getattr(CFG, 'PO_QUEUE_ADJUST_ENABLED', False)
+            or getattr(CFG, 'PO_LATENCY_COMP_ENABLED', False)):
+        try:
+            levels = _adjust_ladder_for_market(
+                exchange, symbol, side, levels, qty, ad, current_ci
+            )
+        except Exception as e:
+            log.debug(f"[Ladder] market adjust exception {symbol}: {e}")
+
+    active: List[Dict] = []
+    total_filled = 0.0
+    total_cost = 0.0
+
+    # ── Place all levels ──
+    for lvl in levels:
+        level_qty = qty * float(lvl.get('weight', 0.0))
+        if level_qty <= 0:
+            continue
+        try:
+            o = exchange.create_order(
+                symbol, 'limit', side, level_qty, float(lvl['price']),
+                params={'timeInForce': 'GTX'}
+            )
+            active.append({
+                'id': o['id'],
+                'price': float(lvl['price']),
+                'qty': level_qty,
+                'counted_fill': 0.0,
+                'counted_cost': 0.0,
+                'terminal': False,
+            })
+            log.debug(f"[Ladder] {symbol} {side} @ {lvl['price']:.6f} "
+                      f"qty={level_qty:.6f}")
+        except Exception as e:
+            log.debug(f"[Ladder] {symbol} level {lvl['price']:.6f} rejected: {e}")
+
+    if not active:
+        return None
+
+    def _refresh():
+        nonlocal total_filled, total_cost
+        for o in active:
+            if o.get('terminal'):
+                continue
+            try:
+                st = exchange.fetch_order(o['id'], symbol)
+            except Exception:
+                continue
+            status = st.get('status')
+            fq = float(st.get('filled') or 0.0)
+            fp = float(st.get('average') or st.get('price') or o['price'])
+            prev_f = float(o.get('counted_fill', 0.0))
+            prev_c = float(o.get('counted_cost', 0.0))
+            delta_f = fq - prev_f
+            if delta_f > 0:
+                cur_cost = fq * fp
+                delta_c = max(0.0, cur_cost - prev_c)
+                total_filled += delta_f
+                total_cost += delta_c
+                o['counted_fill'] = fq
+                o['counted_cost'] = cur_cost
+            if status in ('closed', 'canceled', 'expired', 'rejected'):
+                o['terminal'] = True
+
+    # ── Wait loop ──
+    t0 = time.time()
+    while time.time() - t0 < wait_s:
+        time.sleep(2.0)
+        _refresh()
+        if total_filled >= qty * 0.99:
+            break
+        if all(o.get('terminal') for o in active):
+            break
+
+    # ── Cancel remaining + final sweep ──
+    for o in active:
+        if not o.get('terminal'):
+            try:
+                exchange.cancel_order(o['id'], symbol)
+            except Exception:
+                pass
+    time.sleep(0.4)
+    _refresh()
+
+    if total_filled <= 0:
+        return None
+    return {
+        'filled_qty': total_filled,
+        'avg_price': total_cost / total_filled,
+        'fill_ratio': total_filled / qty,
+        'levels_used': len([o for o in active if o['counted_fill'] > 0]),
+    }
+
+# ════════════════════════════════════════════════════════════════
 # § 18.5  بروتوكول مايسنر لمنع الانزلاق (Quantum Chunking)
 # ════════════════════════════════════════════════════════════════
 def execute_post_only(exchange, symbol: str, side: str, qty: float,
@@ -3622,13 +4011,19 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
                 time.sleep(1.0)
                 continue
 
-            # 2. Target
+            # ══ [FIXED PRICE] Use fixed_target if provided; else compute from book ══
             _fixed = (fixed_target is not None and fixed_target > 0)
             if _fixed:
                 target = float(fixed_target)
             else:
-                target = (last_bid * (1.0 - pen)) if side == 'buy' \
-                         else (last_ask * (1.0 + pen))
+                # ══ [LEVEL 2] adaptive penetration for non-fixed targets ══
+                _spread_bps = (last_ask - last_bid) / max((last_ask + last_bid) / 2.0, 1e-12) * 10000.0
+                _pen_bps = _compute_adaptive_pen_bps(_spread_bps) if getattr(CFG, 'PO_ADAPTIVE_PEN_ENABLED', True) else (pen * 10000.0)
+                _pen_frac = _pen_bps * 1e-4
+                if side == 'buy':
+                    target = last_bid * (1.0 - _pen_frac)
+                else:
+                    target = last_ask * (1.0 + _pen_frac)
 
             # 3. Refresh active state (handles ALL statuses)
             _refresh_active()
@@ -4178,11 +4573,11 @@ def check_thermodynamic_apex(pos_action, entry_price, current_price, ad, fi):
     accel_mean = np.mean(accel_window)
 
     # الشرط: الفعل التراكمي يثبت تراجع الزخم (استقرار طاقي)
-    energy_exhausted = (sum_dF > 0.005)
+    energy_exhausted = (sum_dF > 0.003)
 
-    if pos_action == "BUY" and energy_exhausted and accel_mean < 0.003:
+    if pos_action == "BUY" and energy_exhausted and accel_mean < 0.002:
         return True, "Apex: Action Integral Exhaustion"
-    if pos_action == "SELL" and energy_exhausted and accel_mean > -0.003:
+    if pos_action == "SELL" and energy_exhausted and accel_mean > -0.002:
         return True, "Apex: Action Integral Exhaustion"
 
     return False, ""
@@ -4787,6 +5182,45 @@ def run_live(cfg, exchange):
                 ex = False
                 rsn = ""
 
+                # ══ [POST-FILL REVALIDATION] 60s grace period ══
+                if (getattr(CFG, 'POST_FILL_CHECK_ENABLED', True)
+                        and not pos.get('_post_fill_ok', False)):
+                    _fill_ts = float(pos.get('entry_ts', 0.0))
+                    _elapsed = time.time() - _fill_ts
+                    if _elapsed >= CFG.POST_FILL_GRACE_S:
+                        try:
+                            _entry_px = float(pos['entry'])
+                            _now_px = float(price)
+                            if pos['action'] == "BUY":
+                                _adverse = (_entry_px - _now_px) / _entry_px
+                            else:
+                                _adverse = (_now_px - _entry_px) / _entry_px
+                            _cur_fi = max(0, len(ad.closes) - 2 - ad.feat_start)
+                            _sigma = float(ad.E_therm[_cur_fi]) if _cur_fi < len(ad.E_therm) else 0.01
+                            if not np.isfinite(_sigma) or _sigma <= 1e-6:
+                                _sigma = 0.01
+                            _limit = CFG.POST_FILL_MAX_ADVERSE_SIGMA * _sigma
+                            if _adverse > _limit:
+                                log.warning(
+                                    f"[PostFill] {sym} adverse {_adverse*100:+.2f}% "
+                                    f"> {_limit*100:.2f}% — aborting"
+                                )
+                                # Close immediately at market
+                                try:
+                                    _s_close = 'sell' if pos['action'] == 'BUY' else 'buy'
+                                    o = exchange.create_order(sym, 'market', _s_close, pos['qty'])
+                                    v = verify_fill(exchange, o['id'], sym, timeout_s=3.0)
+                                    _px = v['avg_price'] if v and v['filled'] else price
+                                    log.info(f"⬛ [PostFill] closed {sym} @ {_px:.6f}")
+                                    last_exit_time[sym] = time.time()
+                                    del open_pos_live[sym]
+                                    continue
+                                except Exception as e:
+                                    log.error(f"[PostFill] close failed {sym}: {e}")
+                        except Exception as e:
+                            log.debug(f"[PostFill] check error {sym}: {e}")
+                        pos['_post_fill_ok'] = True
+
                 # ── Apex ──
                 is_apex, apex_rsn = check_thermodynamic_apex(
                     pos['action'], pos['entry'], price, ad, fi
@@ -4811,20 +5245,34 @@ def run_live(cfg, exchange):
                             ex = True
                             rsn = f"MaxHold({int(bars_held)}bars)"
 
-                # ── Trailing SL (dynamic σ-scaled) ──
+                # ── Trailing SL (multi-factor) ──
                 if not ex:
                     entry_px = pos['entry']
-                    _td = float(pos.get('trail_dist_frac', CFG.TRAIL_DISTANCE))
                     _ta = float(pos.get('trail_activate_frac', CFG.TRAIL_ACTIVATE_MFE))
 
-                    # Update peak from live price
+                    # Resolve feature index for current candle
+                    _cur_fi = max(0, len(ad.closes) - 2 - ad.feat_start)
+                    _entry_ci = int(pos.get('entry_ci', len(ad.closes) - 2))
+                    _entry_fi = max(0, _entry_ci - ad.feat_start)
+
+                    # Compute MFE from live price
+                    if pos['action'] == "BUY":
+                        _live_mfe = (price - entry_px) / entry_px
+                    else:
+                        _live_mfe = (entry_px - price) / entry_px
+
                     if pos['action'] == "BUY":
                         cur_peak = float(pos.get('peak_price', entry_px))
                         if price > cur_peak:
                             pos['peak_price'] = price
                             cur_peak = price
-                        if (cur_peak - entry_px) / entry_px >= _ta:
-                            new_sl = cur_peak * (1.0 - _td)
+                        if _live_mfe >= _ta and cur_peak > entry_px:
+                            # ══ [MF-TRAIL] dynamic per-bar distance ══
+                            _dyn_td = compute_dynamic_trail_dist(
+                                ad, _entry_fi, _cur_fi, max(_live_mfe, 0.0),
+                                pos['action'], entry_px, cur_peak
+                            )
+                            new_sl = cur_peak * (1.0 - _dyn_td)
                             if new_sl > pos['sl']:
                                 pos['sl'] = new_sl
                     else:
@@ -4832,19 +5280,40 @@ def run_live(cfg, exchange):
                         if price < cur_peak or cur_peak == entry_px:
                             pos['peak_price'] = price
                             cur_peak = price
-                        if (entry_px - cur_peak) / entry_px >= _ta:
-                            new_sl = cur_peak * (1.0 + _td)
+                        if _live_mfe >= _ta and cur_peak < entry_px:
+                            _dyn_td = compute_dynamic_trail_dist(
+                                ad, _entry_fi, _cur_fi, max(_live_mfe, 0.0),
+                                pos['action'], entry_px, cur_peak
+                            )
+                            new_sl = cur_peak * (1.0 + _dyn_td)
                             if new_sl < pos['sl']:
                                 pos['sl'] = new_sl
 
-                # ── SL / TP ──
+                # ── SL / TP (labeled) ──
                 if not ex:
+                    _init_sl = float(pos.get('initial_sl', pos['sl']))
                     if pos['action'] == "BUY":
-                        if price <= pos['sl']: ex = True; rsn = "Emergency SL"
-                        elif price >= pos.get('tp1', 1e18): ex = True; rsn = "Hard TP"
+                        if price <= pos['sl']:
+                            ex = True
+                            if pos['sl'] > _init_sl * (1.0 + 1e-6):
+                                rsn = f"Trail-Win(peak={pos.get('peak_price', price):.4f})"
+                            elif abs(pos['sl'] - _init_sl) / max(_init_sl, 1e-9) < 1e-6:
+                                rsn = "Initial-SL"
+                            else:
+                                rsn = "Emergency SL"
+                        elif price >= pos.get('tp1', 1e18):
+                            ex = True; rsn = "Hard TP"
                     else:
-                        if price >= pos['sl']: ex = True; rsn = "Emergency SL"
-                        elif price <= pos.get('tp1', 0.): ex = True; rsn = "Hard TP"
+                        if price >= pos['sl']:
+                            ex = True
+                            if pos['sl'] < _init_sl * (1.0 - 1e-6):
+                                rsn = f"Trail-Win(peak={pos.get('peak_price', price):.4f})"
+                            elif abs(pos['sl'] - _init_sl) / max(_init_sl, 1e-9) < 1e-6:
+                                rsn = "Initial-SL"
+                            else:
+                                rsn = "Emergency SL"
+                        elif price <= pos.get('tp1', 0.):
+                            ex = True; rsn = "Hard TP"
 
                 if not ex:
                     continue
@@ -4867,10 +5336,6 @@ def run_live(cfg, exchange):
                     else:
                         # ══ [TF-FIX] use actual bar duration ══
                         _tf_sec_wait = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
-#                        result = execute_limit_wait(
-#                            exchange, sym, sd, qty, sig.price,
-#                            wait_s=CFG.FILL_ENTRY_MAX_WAIT_BARS * _tf_sec_wait
-#                        )
                         result = execute_post_only(
                             exchange, sym, s, pos['qty'],
                             max_wait_s=CFG.PO_EXIT_MAX_WAIT_S,
@@ -5005,6 +5470,22 @@ def run_live(cfg, exchange):
                     # Store effective risk for heat tracking
                     sig.dynamic_risk = float(risk_frac)
                     
+                    # ══ [PRE-ENTRY GATE] Validate before placing anything ══
+                    _entry_ci = max(0, len(assets[sym].closes) - 2)
+                    _ok, _reason = validate_entry_signal(sig, assets[sym], _entry_ci)
+                    if not _ok:
+                        log.info(f"[Entry] {sym} rejected: {_reason}")
+                        continue
+
+                    try:
+                        sd = 'buy' if sig.action == 'BUY' else 'sell'
+
+                        # ══ 1. Setup ONCE — leverage/margin ══
+                        if not ensure_symbol_setup(exchange, sym, dynamic_leverage,
+                                                    margin_mode='isolated'):
+                            log.warning(f"[Entry] {sym} setup failed — skip")
+                            continue
+
                     try:
                         sd = 'buy' if sig.action == 'BUY' else 'sell'
 
@@ -5025,20 +5506,18 @@ def run_live(cfg, exchange):
                         except Exception:
                             pass
 
-                        # ══ 3. Entry — Post-Only (with fixed price) ══
-                        _fixed_target = None
-                        if getattr(CFG, 'PO_FIXED_PRICE', True):
-                            _fixed_target = float(sig.price)
+                        # ══ 3. Entry — Multi-Level Ladder (Post-Only) ══
+                        _tf_sec_wait = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
+                        _wait_s = CFG.FILL_ENTRY_MAX_WAIT_BARS * _tf_sec_wait
 
-                        result = execute_post_only(
-                            exchange, sym, sd, qty,
-                            fallback_market=False,
-                            fixed_target=_fixed_target,
+                        _ladder = build_entry_ladder(sig, assets[sym], _entry_ci)
+                        result = execute_ladder_wait(
+                            exchange, sym, sd, qty, _ladder, _wait_s,
+                            ad=assets[sym], current_ci=_entry_ci,
                         )
 
-                        if not result.get('filled_qty') or result['filled_qty'] <= 0:
-                            log.info(f"[Entry] {sym} {sd} no fill "
-                                     f"({result.get('reason')}) — skip signal")
+                        if result is None or result['filled_qty'] <= 0:
+                            log.info(f"[Entry] {sym} {sd} no fill — skip signal")
                             continue
 
                         entry_price = result['avg_price']
@@ -5237,12 +5716,52 @@ def main():
                    help="Max Live cache entries (default 40)")
     p.add_argument("--no-fixed-price", action="store_true",
                    help="Disable fixed-price entry (allow reprice chasing)")
+    p.add_argument("--no-trail-mfe", action="store_true",
+                   help="Disable MFE-graduated trail (Stage 1)")
+    p.add_argument("--no-trail-age", action="store_true",
+                   help="Disable age-decayed trail (Stage 2)")
+    p.add_argument("--no-trail-regime", action="store_true",
+                   help="Disable regime-aware trail (Stage 3)")
+    p.add_argument("--trail-structure", action="store_true",
+                   help="Enable structure-anchored trail (Stage 4, default OFF)")
+    p.add_argument("--trail-mfe-factors", type=str, default=None,
+                   help="Comma-separated MFE factors (e.g. '1.0,0.7,0.45,0.3')")
+    p.add_argument("--trail-age-beta", type=float, default=None,
+                   help="Age decay rate β (default 0.30)")
+    p.add_argument("--tp-rr", type=float, default=None,
+                   help="TP reward/risk ratio (default 5.0)")
+    p.add_argument("--trail-act-from-tp", action="store_true",
+                   help="Derive trail activation from TP distance (RR-adaptive)")
     p.add_argument("--po-max-attempts", type=int, default=None,
                    help="Max cancel/replace cycles (default 3)")
     p.add_argument("--po-max-drift-bps", type=float, default=None,
                    help="Abort if drift exceeds this (default 5.0)")
     p.add_argument("--po-min-accept", type=float, default=None,
                    help="Min fill ratio to accept partial (default 0.50)")
+    p.add_argument("--no-entry-validate", action="store_true",
+                   help="Disable pre-entry validation gate")
+    p.add_argument("--no-entry-ladder", action="store_true",
+                   help="Disable multi-level ladder entry")
+    p.add_argument("--no-post-fill-check", action="store_true",
+                   help="Disable post-fill adverse revalidation")
+    p.add_argument("--entry-max-age", type=int, default=None,
+                   help="Max signal age in bars (default 3)")
+    p.add_argument("--entry-vol-burst", type=float, default=None,
+                   help="Volume burst threshold (default 5.0)")
+    p.add_argument("--no-adaptive-pen", action="store_true",
+                   help="Disable spread-adaptive penetration (Level 2)")
+    p.add_argument("--no-queue-adjust", action="store_true",
+                   help="Disable queue-aware pricing (Level 3)")
+    p.add_argument("--no-latency-comp", action="store_true",
+                   help="Disable latency-compensated pricing (Level 6)")
+    p.add_argument("--pen-kappa", type=float, default=None,
+                   help="Adaptive penetration κ (default 0.50)")
+    p.add_argument("--pen-max-bps", type=float, default=None,
+                   help="Adaptive penetration ceiling (default 5.0)")
+    p.add_argument("--queue-kappa", type=float, default=None,
+                   help="Queue adjustment κ (default 0.30)")
+    p.add_argument("--latency-kappa", type=float, default=None,
+                   help="Latency compensation κ (default 0.80)")
     args = p.parse_args()
 
     CFG.mode = args.mode
@@ -5331,12 +5850,48 @@ def main():
         CFG.LIVE_ASSET_CACHE_MAX = int(args.live_cache_size)
     if args.no_fixed_price:
         CFG.PO_FIXED_PRICE = False
+    if args.no_trail_mfe:     CFG.TRAIL_MFE_GRADUATED = False
+    if args.no_trail_age:     CFG.TRAIL_AGE_DECAY = False
+    if args.no_trail_regime:  CFG.TRAIL_REGIME_AWARE = False
+    if args.trail_structure:  CFG.TRAIL_STRUCTURE_ANCHORED = True
+    if args.trail_age_beta is not None:
+        CFG.TRAIL_AGE_BETA = float(args.trail_age_beta)
+    if args.trail_mfe_factors:
+        try:
+            _facs = tuple(float(x.strip()) for x in args.trail_mfe_factors.split(',') if x.strip())
+            if len(_facs) >= 2:
+                CFG.TRAIL_MFE_FACTORS = _facs
+        except Exception as e:
+            log.warning(f"[Trail] bad --trail-mfe-factors: {e}")
+    if args.tp_rr is not None:
+        CFG.TP_RR_RATIO = float(args.tp_rr)
+    if args.trail_act_from_tp:
+        CFG.TRAIL_ACT_FROM_TP = True
     if args.po_max_attempts is not None:
         CFG.PO_MAX_ATTEMPTS = int(args.po_max_attempts)
     if args.po_max_drift_bps is not None:
         CFG.PO_MAX_DRIFT_BPS = float(args.po_max_drift_bps)
     if args.po_min_accept is not None:
         CFG.PO_MIN_ACCEPT_RATIO = float(args.po_min_accept)
+    if args.no_entry_validate:      CFG.ENTRY_VALIDATE_ENABLED = False
+    if args.no_entry_ladder:        CFG.ENTRY_LADDER_ENABLED = False
+    if args.no_post_fill_check:     CFG.POST_FILL_CHECK_ENABLED = False
+    if args.entry_max_age is not None:
+        CFG.ENTRY_MAX_AGE_BARS = int(args.entry_max_age)
+    if args.entry_vol_burst is not None:
+        CFG.ENTRY_VOL_BURST_MULT = float(args.entry_vol_burst)
+    if args.no_adaptive_pen:   CFG.PO_ADAPTIVE_PEN_ENABLED = False
+    if args.no_queue_adjust:   CFG.PO_QUEUE_ADJUST_ENABLED = False
+    if args.no_latency_comp:   CFG.PO_LATENCY_COMP_ENABLED = False
+    if args.pen_kappa is not None:
+        CFG.PO_PEN_KAPPA = float(args.pen_kappa)
+    if args.pen_max_bps is not None:
+        CFG.PO_PEN_MAX_BPS = float(args.pen_max_bps)
+    if args.queue_kappa is not None:
+        CFG.PO_QUEUE_KAPPA = float(args.queue_kappa)
+    if args.latency_kappa is not None:
+        CFG.PO_LATENCY_KAPPA = float(args.latency_kappa)
+
 
     print("╔"+"═"*70+"╗")
     print(f"  [Level-1] Parallel: {CFG.PARALLEL_PROCESSING}  "

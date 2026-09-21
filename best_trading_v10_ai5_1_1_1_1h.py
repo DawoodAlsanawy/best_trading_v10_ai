@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, ProcessPoolExec
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
-import requests
+
 import numpy as np
 import pandas as pd
 from scipy.stats import kurtosis, linregress, skew
@@ -124,7 +124,7 @@ class Config:
     DRAWDOWN_REDUCE_AT_70: float=0.70
 
     MAX_CONCURRENT_ASSETS: int   = 5
-    CORRELATION_THRESHOLD: float = 0.60
+    CORRELATION_THRESHOLD: float = 0.70
 
     MAX_HOLD_BARS: int = 168
 
@@ -201,7 +201,7 @@ class Config:
 
     # ══ [POST-ONLY EXECUTION] ══
     PO_PENETRATION_BPS: float = 1.0      # match backtest's FILL_PENETRATION_BPS
-    PO_MAX_WAIT_S: int = 30              # entry wait time
+    PO_MAX_WAIT_S: int = 3600            # 1 hour on 1h
     PO_EXIT_MAX_WAIT_S: int = 180         # exit wait time
     PO_REPRICE_S: float = 3.0            # cancel/replace interval
     PO_FILL_THRESHOLD: float = 0.50      # accept partial if ≥ 50%
@@ -288,191 +288,62 @@ CFG = Config()
 #            "ALGO/USDT","GRT/USDT","FET/USDT","RENDER/USDT",
 #            "LDO/USDT","KAS/USDT","WIF/USDT","THETA/USDT","EGLD/USDT",
 #            "SAND/USDT","MANA/USDT","AXS/USDT","XLM/USDT","CHZ/USDT"]
-#def _default_assets():
-#    # أعلى 50 عملة من حيث القيمة السوقية مع قبول رافعة 50x على Binance Futures
-#    return [
-#        "BTC/USDT",   # بيتكوين - أعلى سيولة، رافعة 125x
-#        "ETH/USDT",   # إيثيريوم - ثاني أعلى سيولة، رافعة 100x
-#        "BNB/USDT",   # بيнанс كوين - رافعة 75x
-#        "SOL/USDT",   # سولانا - رافعة 50x
-#        "XRP/USDT",   # ريبل - رافعة 50x
-#        "DOGE/USDT",  # دوجكوين - رافعة 50x
-#        "ADA/USDT",   # كاردانو - رافعة 50x
-#        "AVAX/USDT",  # أفالانش - رافعة 50x
-#        "LINK/USDT",  # تشين لينك - رافعة 50x
-#        "DOT/USDT",   # بولكادوت - رافعة 50x
-#        "LTC/USDT",   # لايتكوين - رافعة 50x
-#        "UNI/USDT",   # يونيسواب - رافعة 50x
-#        "ATOM/USDT",  # كوزموس - رافعة 50x
-#        "ETC/USDT",   # إيثيريوم كلاسيك - رافعة 50x
-#        "TRX/USDT",   # ترون - رافعة 50x
-#        "TON/USDT",   # تون كوين - رافعة 50x
-#        "BCH/USDT",   # بيتكوين كاش - رافعة 50x
-#        "NEAR/USDT",  # نير بروتوكول - رافعة 50x
-#        "APT/USDT",   # أبتوس - رافعة 50x
-#        "HBAR/USDT",  # هيدرا - رافعة 50x
-#        "VET/USDT",   # في تشين - رافعة 50x
-#        "STX/USDT",   # ستاكس - رافعة 50x
-#        "AAVE/USDT",  # آفي - رافعة 50x
-#        "ARB/USDT",   # أربيتروم - رافعة 50x
-#        "OP/USDT",    # أوبتيميزم - رافعة 50x
-#        "INJ/USDT",   # إنجكتيف - رافعة 50x
-#        "SUI/USDT",   # سوي - رافعة 50x
-#        "TIA/USDT",   # سيليستيا - رافعة 50x
-#        "SEI/USDT",   # ساي - رافعة 50x
-#        "ALGO/USDT",  # ألجوراند - رافعة 50x
-#        "GRT/USDT",   # ذا غراف - رافعة 50x
-#        "FET/USDT",   # فيتشد أيه آي - رافعة 50x
-#        "RENDER/USDT",# ريندر - رافعة 50x
-#        "LDO/USDT",   # ليدو داو - رافعة 50x
-#        "KAS/USDT",   # كاسبا - رافعة 50x
-#        "WIF/USDT",   # دوج ويف هات - رافعة 50x
-#        "THETA/USDT", # ثيتا - رافعة 50x
-#        "EGLD/USDT",  # مولتي فيرس إكس - رافعة 50x
-#        "SAND/USDT",  # ذا ساندبوكس - رافعة 50x
-#        "MANA/USDT",  # ديسنترالاند - رافعة 50x
-#        "AXS/USDT",   # أكسي إنفينيتي - رافعة 50x
-#        "XLM/USDT",   # ستيلر - رافعة 50x
-#        "CHZ/USDT",   # تشيليز - رافعة 50x
-#        "POL/USDT",   # بوليجون (سابقاً MATIC) - رافعة 50x
-#        "FIL/USDT",   # فيل كوين - رافعة 50x
-#        "QNT/USDT",   # كوانت - رافعة 50x
-#        "DASH/USDT",  # داش - رافعة 50x
-#        "ZEC/USDT",   # زدكاش - رافعة 50x
-#        "XMR/USDT",   # مونيرو - رافعة 50x
-##        "EOS/USDT"    # إيوس - رافعة 50x
-#    ]
-
 def _default_assets():
-    # 100 أصل: أعلى القيمة السوقية + دعم رافعة 50x+ على Binance Futures
+    # أعلى 50 عملة من حيث القيمة السوقية مع قبول رافعة 50x على Binance Futures
     return [
-        # --- الطبقة الأولى: أعلى سيولة ورافعة (75x-125x) ---
-        "BTC/USDT",    # بيتكوين - رافعة 125x
-        "ETH/USDT",    # إيثيريوم - رافعة 100x
-        "BNB/USDT",    # بيнанс كوين - رافعة 75x
-        "SOL/USDT",    # سولانا - رافعة 50x
-        "XRP/USDT",    # ريبل - رافعة 50x
-        "DOGE/USDT",   # دوجكوين - رافعة 50x
-        "ADA/USDT",    # كاردانو - رافعة 50x
-        "AVAX/USDT",   # أفالانش - رافعة 50x
-        "LINK/USDT",   # تشين لينك - رافعة 50x
-        "DOT/USDT",    # بولكادوت - رافعة 50x
-        "LTC/USDT",    # لايتكوين - رافعة 50x
-        "UNI/USDT",    # يونيسواب - رافعة 50x
-        "ATOM/USDT",   # كوزموس - رافعة 50x
-        "ETC/USDT",    # إيثيريوم كلاسيك - رافعة 50x
-        "TRX/USDT",    # ترون - رافعة 50x
-        "TON/USDT",    # تون كوين - رافعة 50x
-        "BCH/USDT",    # بيتكوين كاش - رافعة 50x
-        "NEAR/USDT",   # نير بروتوكول - رافعة 50x
-        "APT/USDT",    # أبتوس - رافعة 50x
-        "HBAR/USDT",   # هيدرا - رافعة 50x
-        "VET/USDT",    # في تشين - رافعة 50x
-        "STX/USDT",    # ستاكس - رافعة 50x
-        "AAVE/USDT",   # آفي - رافعة 50x
-        "ARB/USDT",    # أربيتروم - رافعة 50x
-        "OP/USDT",     # أوبتيميزم - رافعة 50x
-        "INJ/USDT",    # إنجكتيف - رافعة 50x
-        "SUI/USDT",    # سوي - رافعة 50x
-        "TIA/USDT",    # سيليستيا - رافعة 50x
-        "SEI/USDT",    # ساي - رافعة 50x
-        "ALGO/USDT",   # ألجوراند - رافعة 50x
-        "GRT/USDT",    # ذا غراف - رافعة 50x
-        "FET/USDT",    # فيتشد أيه آي - رافعة 50x
-        "RENDER/USDT", # ريندر - رافعة 50x
-        "LDO/USDT",    # ليدو داو - رافعة 50x
-        "KAS/USDT",    # كاسبا - رافعة 50x
-        "WIF/USDT",    # دوج ويف هات - رافعة 50x
-        "THETA/USDT",  # ثيتا - رافعة 50x
-        "SAND/USDT",   # ذا ساندبوكس - رافعة 50x
-        "MANA/USDT",   # ديسنترالاند - رافعة 50x
-        "AXS/USDT",    # أكسي إنفينيتي - رافعة 50x
-        "XLM/USDT",    # ستيلر - رافعة 50x
-        "CHZ/USDT",    # تشيليز - رافعة 50x
-        "POL/USDT",    # بوليجون - رافعة 50x
-        "FIL/USDT",    # فيل كوين - رافعة 50x
-        "QNT/USDT",    # كوانت - رافعة 50x
-        "DASH/USDT",   # داش - رافعة 50x
-#        "EOS/USDT",    # إيوس - رافعة 50x
-#        "FTM/USDT",    # فانتوم - رافعة 50x
-        "FLOW/USDT",   # فلو - رافعة 50x
-        "CAKE/USDT",   # بانكيك سواب - رافعة 50x
-#        "ROSE/USDT",   # أوايسيس نتوورك - رافعة 50x
-        "ZIL/USDT",    # زيلكا - رافعة 50x
-        "ONE/USDT",    # هارموني - رافعة 50x
-        "IOTA/USDT",   # أيوتا - رافعة 50x
-        "NEO/USDT",    # نيو - رافعة 50x
-        "KAVA/USDT",   # كافا - رافعة 50x
-        "CRV/USDT",    # كورف - رافعة 50x
-        "SNX/USDT",    # سينثيتيكس - رافعة 50x
-        "COMP/USDT",   # كومباووند - رافعة 50x
-#        "MKR/USDT",    # ميكر - رافعة 50x
-        "SUSHI/USDT",  # سوشي سواب - رافعة 50x
-        "YFI/USDT",    # يرن فايننس - رافعة 50x
-        "ZRX/USDT",    # زيرو إكس - رافعة 50x
-        "BAT/USDT",    # باسيك أتنشن توكن - رافعة 50x
-        "ENJ/USDT",    # إنجين - رافعة 50x
-        "ANKR/USDT",   # أنكر - رافعة 50x
-#        "OCEAN/USDT",  # أوشن بروتوكول - رافعة 50x
-        "BAND/USDT",   # باند بروتوكول - رافعة 50x
-        "NMR/USDT",    # نوميرا - رافعة 50x
-        "STORJ/USDT",  # ستورج - رافعة 50x
-        "KSM/USDT",    # كوساما - رافعة 50x
-#        "WAVES/USDT",  # ويفز - رافعة 50x
-        "ZEN/USDT",    # هوريزن - رافعة 50x
-#        "ICP/USDT",    # إنترنت كمبيوتر - رافعة 50x
-        "CELO/USDT",   # سيلو - رافعة 50x
-        "AR/USDT",     # أرويف - رافعة 50x
-        "MASK/USDT",   # ماسك نتوورك - رافعة 50x
-        "DYDX/USDT",   # دي واي دي إكس - رافعة 50x
-        "ENS/USDT",    # إيثيريوم نيم سيرفس - رافعة 50x
-        "GMX/USDT",    # جي إم إكس - رافعة 50x
-        "MAGIC/USDT",  # ماجيك - رافعة 50x
-        "HIGH/USDT",   # هاي - رافعة 50x
-        "PENDLE/USDT", # بيندل - رافعة 50x
-        "JOE/USDT",    # ترايدر جو - رافعة 50x
-        "CYBER/USDT",  # سايبر كونكت - رافعة 50x
-        "ARKM/USDT",   # أركهام - رافعة 50x
-        "WLD/USDT",    # وورلد كوين - رافعة 50x
-        "BLUR/USDT",   # بلور - رافعة 50x
-        "ID/USDT",     # سبيس آي دي - رافعة 50x
-        "EDU/USDT",    # إيدي - رافعة 50x
-#        "PEPE/USDT",   # بيبي - رافعة 50x
-#        "FLOKI/USDT",  # فلوكي - رافعة 50x
-#        "BONK/USDT",   # بونك - رافعة 50x
-        "MEME/USDT",   # ميم كوين - رافعة 50x
-        "ORDI/USDT",   # أوردينالز - رافعة 50x
-        "1000SATS/USDT", # ساتس - رافعة 50x
-        "JUP/USDT",    # جوبيتر - رافعة 50x
-        "PYTH/USDT",   # بايث - رافعة 50x
-        "JTO/USDT",    # جيتو - رافعة 50x
-        "DYM/USDT",    # دايمنشن - رافعة 50x
-        "STRK/USDT",   # ستارك نت - رافعة 50x
-        "MANTA/USDT",  # مانتا - رافعة 50x
-        "ALT/USDT",    # ألت لاير - رافعة 50x
-        "AEVO/USDT",   # أفيفو - رافعة 50x
-        "ETHFI/USDT",  # إيثير فاي - رافعة 50x
-        "BOME/USDT",   # بوك أوف ميم - رافعة 50x
-        "W/USDT",      # ورم هول - رافعة 50x
-        "SAGA/USDT",   # ساغا - رافعة 50x
-        "OMNI/USDT",   # أومني - رافعة 50x
-        "REZ/USDT",    # رينزو - رافعة 50x
-        "BB/USDT",     # باونس بيت - رافعة 50x
-        "IO/USDT",     # آي أو نت - رافعة 50x
-        "ZK/USDT",     # zkSync - رافعة 50x
-        "LISTA/USDT",  # ليستا - رافعة 50x
-        "TAIKO/USDT",  # تايكو - رافعة 50x
-        "ZRO/USDT",    # لاير زيرو - رافعة 50x
-        "G/USDT",      # جي - رافعة 50x
-        "RARE/USDT",   # رير - رافعة 50x
-        "SYN/USDT",    # سينابس - رافعة 50x
-        "MEW/USDT",    # ميو - رافعة 50x
-        "MERL/USDT",   # ميرلين - رافعة 50x
-        "BANANA/USDT", # بانانا - رافعة 50x
+        "BTC/USDT",   # بيتكوين - أعلى سيولة، رافعة 125x
+        "ETH/USDT",   # إيثيريوم - ثاني أعلى سيولة، رافعة 100x
+        "BNB/USDT",   # بيнанс كوين - رافعة 75x
+        "SOL/USDT",   # سولانا - رافعة 50x
+        "XRP/USDT",   # ريبل - رافعة 50x
+        "DOGE/USDT",  # دوجكوين - رافعة 50x
+        "ADA/USDT",   # كاردانو - رافعة 50x
+        "AVAX/USDT",  # أفالانش - رافعة 50x
+        "LINK/USDT",  # تشين لينك - رافعة 50x
+        "DOT/USDT",   # بولكادوت - رافعة 50x
+        "LTC/USDT",   # لايتكوين - رافعة 50x
+        "UNI/USDT",   # يونيسواب - رافعة 50x
+        "ATOM/USDT",  # كوزموس - رافعة 50x
+        "ETC/USDT",   # إيثيريوم كلاسيك - رافعة 50x
+        "TRX/USDT",   # ترون - رافعة 50x
+        "TON/USDT",   # تون كوين - رافعة 50x
+        "BCH/USDT",   # بيتكوين كاش - رافعة 50x
+        "NEAR/USDT",  # نير بروتوكول - رافعة 50x
+        "APT/USDT",   # أبتوس - رافعة 50x
+        "HBAR/USDT",  # هيدرا - رافعة 50x
+        "VET/USDT",   # في تشين - رافعة 50x
+        "STX/USDT",   # ستاكس - رافعة 50x
+        "AAVE/USDT",  # آفي - رافعة 50x
+        "ARB/USDT",   # أربيتروم - رافعة 50x
+        "OP/USDT",    # أوبتيميزم - رافعة 50x
+        "INJ/USDT",   # إنجكتيف - رافعة 50x
+        "SUI/USDT",   # سوي - رافعة 50x
+        "TIA/USDT",   # سيليستيا - رافعة 50x
+        "SEI/USDT",   # ساي - رافعة 50x
+        "ALGO/USDT",  # ألجوراند - رافعة 50x
+        "GRT/USDT",   # ذا غراف - رافعة 50x
+        "FET/USDT",   # فيتشد أيه آي - رافعة 50x
+        "RENDER/USDT",# ريندر - رافعة 50x
+        "LDO/USDT",   # ليدو داو - رافعة 50x
+        "KAS/USDT",   # كاسبا - رافعة 50x
+        "WIF/USDT",   # دوج ويف هات - رافعة 50x
+        "THETA/USDT", # ثيتا - رافعة 50x
+        "EGLD/USDT",  # مولتي فيرس إكس - رافعة 50x
+        "SAND/USDT",  # ذا ساندبوكس - رافعة 50x
+        "MANA/USDT",  # ديسنترالاند - رافعة 50x
+        "AXS/USDT",   # أكسي إنفينيتي - رافعة 50x
+        "XLM/USDT",   # ستيلر - رافعة 50x
+        "CHZ/USDT",   # تشيليز - رافعة 50x
+        "POL/USDT",   # بوليجون (سابقاً MATIC) - رافعة 50x
+        "FIL/USDT",   # فيل كوين - رافعة 50x
+        "QNT/USDT",   # كوانت - رافعة 50x
+        "DASH/USDT",  # داش - رافعة 50x
+        "ZEC/USDT",   # زدكاش - رافعة 50x
+        "XMR/USDT",   # مونيرو - رافعة 50x
+#        "EOS/USDT"    # إيوس - رافعة 50x
     ]
 
 # "ADA/USDT"
-
 def scan_top_assets(exchange, n=None) -> List[str]:
     n = n or CFG.n_assets
     try:
@@ -500,112 +371,6 @@ def scan_top_assets(exchange, n=None) -> List[str]:
         return _default_assets()[:n]
     log.info(f"مسح الأصول: {len(sel)} عملة مختارة")
     return sel
-
-
-
-#def scan_top_assets(exchange: Exchange, n: Optional[int] = None) -> List[str]:
-#    """
-#    دالة ديناميكية تختار أعلى n أصل من حيث القيمة السوقية
-#    مع ضمان: (1) مدرج في Binance Futures، (2) رافعة 50x على الأقل، (3) ضمن أعلى 100 عملة.
-#    """
-#    n = n or CFG.n_assets
-#
-#    # ── 1. جلب أعلى 100 عملة من حيث القيمة السوقية عبر CoinGecko ──
-#    top_100_symbols = set()
-#    try:
-#        url = "https://api.coingecko.com/api/v3/coins/markets"
-#        params = {
-#            "vs_currency": "usd",
-#            "order": "market_cap_desc",
-#            "per_page": 100,
-#            "page": 1,
-#            "sparkline": False
-#        }
-#        resp = requests.get(url, params=params, timeout=10)
-#        resp.raise_for_status()
-#        for coin in resp.json():
-#            # CoinGecko يعيد الرمز بأحرف صغيرة، نحوله للأحرف الكبيرة
-#            top_100_symbols.add(coin["symbol"].upper())
-#    except Exception as e:
-#        log.warning(f"scan_top_assets: فشل جلب ترتيب القيمة السوقية من CoinGecko: {e}")
-#        # في حال الفشل، نرجع إلى القائمة الافتراضية كخطة بديلة
-#        return _default_assets()[:n]
-#
-#    # ── 2. جلب الأسواق من البورصة وتصفية الرموز ──
-#    try:
-#        markets = exchange.fetch_markets()
-#    except Exception as e:
-#        log.warning(f"scan_top_assets: فشل جلب الأسواق: {e}")
-#        return _default_assets()[:n]
-#
-#    # ── 3. جلب معلومات الرافعة المالية لكل رمز ──
-#    # ملاحظة: fetchLeverageTiers قد تتطلب مصادقة على Binance، تأكد من إعداد مفاتيح API.
-#    try:
-#        leverage_tiers = exchange.fetch_leverage_tiers()
-#    except Exception as e:
-#        log.warning(f"scan_top_assets: فشل جلب مستويات الرافعة المالية: {e}")
-#        leverage_tiers = {}
-#
-#    # ── 4. جلب الأسعار وحجم التداول ──
-#    try:
-#        tickers = exchange.fetch_tickers()
-#    except Exception as e:
-#        log.warning(f"scan_top_assets: فشل جلب الأسعار: {e}")
-#        tickers = {}
-#
-#    scored = []
-#    for sym, market in markets.items():
-#        # شرط 1: يجب أن يكون الزوج مقابل USDT وفي سوق العقود الآجلة
-#        if not sym.endswith("/USDT"):
-#            continue
-#        if market.get("type") != "future":
-#            continue
-#        if market.get("contract") is not True:
-#            continue
-#
-#        base = sym.replace("/USDT", "")
-#
-#        # شرط 2: يجب أن يكون ضمن أعلى 100 عملة من حيث القيمة السوقية
-#        if base not in top_100_symbols:
-#            continue
-#
-#        # شرط 3: استبعاد الرموز المدرجة في CFG.exclude_tokens
-#        if any(ex in base for ex in CFG.exclude_tokens):
-#            continue
-#
-#        # شرط 4: التحقق من دعم رافعة 50x على الأقل
-#        max_leverage = 0
-#        if sym in leverage_tiers:
-#            tiers = leverage_tiers[sym]
-#            if isinstance(tiers, list) and len(tiers) > 0:
-#                # أقصى رافعة هي أعلى قيمة initialLeverage في جميع المستويات
-#                max_leverage = max(t.get("maxLeverage", 0) for t in tiers)
-#        # إذا لم نتمكن من الجلب، نعتمد على الحد الأقصى من معلومات السوق
-#        if max_leverage == 0:
-#            max_leverage = market.get("limits", {}).get("leverage", {}).get("max", 0) or 0
-#
-#        if max_leverage < 50:
-#            continue
-#
-#        # شرط 5: السيولة (حجم التداول بالدولار)
-#        qv = float(tickers.get(sym, {}).get("quoteVolume", 0) or 0)
-#        if qv < CFG.min_quote_vol_usd:
-#            continue
-#
-#        # حساب النتيجة: حجم التداول × (التغير المطلق + 1) لترتيب الأفضل
-#        chg = abs(float(tickers.get(sym, {}).get("percentage", 0) or 0))
-#        scored.append((qv * (chg + 1.0), sym, max_leverage))
-#
-#    # ── 5. الترتيب والاختيار ──
-#    scored.sort(key=lambda x: -x[0])
-#    sel = [s for _, s, _ in scored[:n]]
-#
-#    if not sel:
-#        log.warning("scan_top_assets: لم يتم العثور على أصول مطابقة، العودة للقائمة الافتراضية")
-#        return _default_assets()[:n]
-#
-#    log.info(f"مسح الأصول الديناميكي: {len(sel)} عملة مختارة (من أصل {len(scored)} مرشح)")
-#    return sel
 
 # ════════════════════════════════════════════════════════════════
 # § 2.05  Timeframe Scaling Helpers

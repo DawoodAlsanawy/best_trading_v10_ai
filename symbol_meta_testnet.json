@@ -1,10 +1,10 @@
 {
   "ALGO/USDT": {
-    "leverage": 30,
+    "leverage": 46,
     "margin_mode": "isolated",
     "setup_done": true,
     "reason": "fresh_setup",
-    "updated_ts": 1789857787.1791415
+    "updated_ts": 1789937883.098129
   },
   "OP/USDT": {
     "leverage": 30,
@@ -21,11 +21,11 @@
     "updated_ts": 1789859260.3903856
   },
   "ATOM/USDT": {
-    "leverage": 32,
+    "leverage": 46,
     "margin_mode": "isolated",
     "setup_done": true,
     "reason": "fresh_setup",
-    "updated_ts": 1789864707.5829701
+    "updated_ts": 1789948061.9103646
   },
   "WIF/USDT": {
     "leverage": 32,
@@ -76,11 +76,11 @@
     "updated_ts": 1789915238.2999065
   },
   "POL/USDT": {
-    "leverage": 47,
+    "leverage": 46,
     "margin_mode": "isolated",
     "setup_done": true,
     "reason": "fresh_setup",
-    "updated_ts": 1789916595.7968614
+    "updated_ts": 1789948970.0779543
   },
   "VET/USDT": {
     "leverage": 48,
@@ -90,10 +90,45 @@
     "updated_ts": 1789917113.0851011
   },
   "XMR/USDT": {
-    "leverage": 49,
+    "leverage": 45,
     "margin_mode": "isolated",
     "setup_done": true,
     "reason": "fresh_setup",
-    "updated_ts": 1789920457.0577455
+    "updated_ts": 1789922827.3061092
+  },
+  "ETC/USDT": {
+    "leverage": 46,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789938717.347499
+  },
+  "NEO/USDT": {
+    "leverage": 46,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789938114.5881734
+  },
+  "LINK/USDT": {
+    "leverage": 46,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789941699.099589
+  },
+  "SOL/USDT": {
+    "leverage": 46,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789941828.1132946
+  },
+  "ADA/USDT": {
+    "leverage": 46,
+    "margin_mode": "isolated",
+    "setup_done": true,
+    "reason": "fresh_setup",
+    "updated_ts": 1789946160.4065633
   }
 }

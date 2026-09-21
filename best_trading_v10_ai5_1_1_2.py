@@ -281,6 +281,22 @@ class Config:
     POST_FILL_CHECK_ENABLED: bool = True
     POST_FILL_GRACE_S: int = 60
     POST_FILL_MAX_ADVERSE_SIGMA: float = 1.5
+    # ══ [LEVEL 2: Adaptive Spread Penetration] ══
+    PO_ADAPTIVE_PEN_ENABLED: bool = True
+    PO_PEN_KAPPA: float = 0.50             # pen_bps = κ × spread_bps
+    PO_PEN_MIN_BPS: float = 0.5
+    PO_PEN_MAX_BPS: float = 5.0
+
+    # ══ [LEVEL 3: Queue-Aware Pricing] ══
+    PO_QUEUE_ADJUST_ENABLED: bool = True
+    PO_QUEUE_KAPPA: float = 0.30           # max price push (fraction of spread)
+    PO_QUEUE_SAMPLE_LEVELS: int = 3         # look at top N book levels
+
+    # ══ [LEVEL 6: Latency Compensation] ══
+    PO_LATENCY_COMP_ENABLED: bool = True
+    PO_LATENCY_KAPPA: float = 0.80         # apply fraction of predicted drift
+    PO_LATENCY_MAX_MS: float = 1000.0      # cap on latency estimate
+    PO_LATENCY_DRIFT_BARS: int = 5          # bars for drift estimate
 
 CFG = Config()
 
@@ -3446,8 +3462,168 @@ def build_entry_ladder(sig, ad, current_ci: int) -> List[Dict]:
     return levels
 
 
+# ════════════════════════════════════════════════════════════════
+# § 18.89  Market-Aware Ladder Adjustment (Levels 2, 3, 6)
+# ════════════════════════════════════════════════════════════════
+
+_LATENCY_EMA_MS: float = 50.0   # initial guess; updated after each order
+
+
+def _update_latency(sample_ms: float) -> None:
+    """Exponential moving average of round-trip latency."""
+    global _LATENCY_EMA_MS
+    alpha = 0.25
+    _LATENCY_EMA_MS = alpha * float(sample_ms) + (1.0 - alpha) * _LATENCY_EMA_MS
+
+
+def _get_latency_ms() -> float:
+    return float(min(_LATENCY_EMA_MS, getattr(CFG, 'PO_LATENCY_MAX_MS', 1000.0)))
+
+
+def _compute_adaptive_pen_bps(spread_bps: float) -> float:
+    """
+    Level 2: spread-adaptive penetration.
+    Wider spread → larger penetration → safer Maker placement.
+    """
+    if not getattr(CFG, 'PO_ADAPTIVE_PEN_ENABLED', True):
+        return float(CFG.PO_PENETRATION_BPS)
+    kappa = float(getattr(CFG, 'PO_PEN_KAPPA', 0.50))
+    pen = kappa * float(spread_bps)
+    return float(np.clip(
+        pen,
+        float(getattr(CFG, 'PO_PEN_MIN_BPS', 0.5)),
+        float(getattr(CFG, 'PO_PEN_MAX_BPS', 5.0)),
+    ))
+
+
+def _compute_queue_aggression(best_size: float, our_qty: float,
+                              spread_bps: float) -> float:
+    """
+    Level 3: aggression factor from best-level depth.
+    Deep queue → push price toward market.
+    Returns adjustment in bps (positive = toward market).
+    """
+    if not getattr(CFG, 'PO_QUEUE_ADJUST_ENABLED', True):
+        return 0.0
+    kappa = float(getattr(CFG, 'PO_QUEUE_KAPPA', 0.30))
+    if best_size <= 1e-9 or our_qty <= 1e-9:
+        return 0.0
+    ratio = float(our_qty) / float(best_size)
+    agg_frac = min(kappa, ratio * kappa)
+    return float(agg_frac * float(spread_bps))
+
+
+def _compute_latency_drift_bps(ad, current_ci: int) -> float:
+    """
+    Level 6: drift estimate (bps per second) from recent bars.
+    On 1h timeframe the value is tiny; on 1m it can be meaningful.
+    """
+    if not getattr(CFG, 'PO_LATENCY_COMP_ENABLED', True):
+        return 0.0
+    try:
+        n = int(getattr(CFG, 'PO_LATENCY_DRIFT_BARS', 5))
+        if ad is None or current_ci < n:
+            return 0.0
+        p_now = float(ad.closes[current_ci])
+        p_prev = float(ad.closes[current_ci - n])
+        if p_prev <= 0:
+            return 0.0
+        tf_sec = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
+        dt = max(1.0, n * tf_sec)
+        drift_frac_per_sec = (p_now - p_prev) / p_prev / dt
+        return float(drift_frac_per_sec * 10000.0)   # bps per second
+    except Exception:
+        return 0.0
+
+
+def _adjust_ladder_for_market(exchange, symbol: str, side: str,
+                               levels: List[Dict], our_qty: float,
+                               ad=None, current_ci: int = 0) -> List[Dict]:
+    """
+    Apply Levels 2, 3, 6 to ladder prices before placing orders.
+
+    Level 2: adaptive penetration (never cross the spread).
+    Level 3: push toward market if book is deep.
+    Level 6: latency-compensated price drift.
+
+    Returns a NEW list of {'price', 'weight'} dicts.
+    On any failure, returns the original list unchanged.
+    """
+    try:
+        t0 = time.monotonic()
+        ob = exchange.fetch_order_book(symbol, limit=5)
+        latency_ms = (time.monotonic() - t0) * 1000.0
+        _update_latency(latency_ms)
+    except Exception as e:
+        log.debug(f"[Ladder] book fetch failed {symbol}: {e}")
+        return levels
+
+    try:
+        best_bid = float(ob['bids'][0][0])
+        best_ask = float(ob['asks'][0][0])
+        best_bid_sz = float(ob['bids'][0][1])
+        best_ask_sz = float(ob['asks'][0][1])
+        mid = (best_bid + best_ask) / 2.0
+        if mid <= 0:
+            return levels
+        spread_bps = (best_ask - best_bid) / mid * 10000.0
+    except Exception:
+        return levels
+
+    # Level 2
+    pen_bps = _compute_adaptive_pen_bps(spread_bps)
+
+    # Level 3
+    best_size = best_bid_sz if side == 'buy' else best_ask_sz
+    queue_agg_bps = _compute_queue_aggression(best_size, our_qty, spread_bps)
+
+    # Level 6
+    drift_bps_per_sec = _compute_latency_drift_bps(ad, current_ci)
+    latency_s = _get_latency_ms() / 1000.0
+    lat_kappa = float(getattr(CFG, 'PO_LATENCY_KAPPA', 0.80))
+    lat_adj_bps = drift_bps_per_sec * latency_s * lat_kappa
+
+    adjusted: List[Dict] = []
+    for lvl in levels:
+        base_px = float(lvl['price'])
+        weight = float(lvl.get('weight', 1.0))
+
+        # ── Level 2: ensure Maker validity ──
+        if side == 'buy':
+            max_px = best_ask * (1.0 - pen_bps / 10000.0)
+            new_px = min(base_px, max_px)
+        else:
+            min_px = best_bid * (1.0 + pen_bps / 10000.0)
+            new_px = max(base_px, min_px)
+
+        # ── Level 3: push toward market ──
+        if queue_agg_bps > 0:
+            if side == 'buy':
+                new_px *= (1.0 + queue_agg_bps / 10000.0)
+            else:
+                new_px *= (1.0 - queue_agg_bps / 10000.0)
+
+        # ── Level 6: latency compensation ──
+        if abs(lat_adj_bps) > 1e-9:
+            if side == 'buy':
+                new_px *= (1.0 + lat_adj_bps / 10000.0)
+            else:
+                new_px *= (1.0 - lat_adj_bps / 10000.0)
+
+        adjusted.append({'price': float(new_px), 'weight': weight})
+
+    log.debug(
+        f"[Ladder] {symbol} {side} adjust: "
+        f"spread={spread_bps:.2f}bps pen={pen_bps:.2f}bps "
+        f"queue={queue_agg_bps:.3f}bps lat={lat_adj_bps:.4f}bps "
+        f"latency={_get_latency_ms():.1f}ms"
+    )
+    return adjusted
+
+
 def execute_ladder_wait(exchange, symbol: str, side: str, qty: float,
-                         levels: List[Dict], wait_s: float) -> Optional[Dict]:
+                         levels: List[Dict], wait_s: float,
+                         ad=None, current_ci: int = 0) -> Optional[Dict]:
     """
     Place a multi-level ladder of Post-Only orders and monitor.
 
@@ -3457,6 +3633,18 @@ def execute_ladder_wait(exchange, symbol: str, side: str, qty: float,
 
     Returns aggregate dict or None.
     """
+
+    # ══ [LEVELS 2, 3, 6] Market-aware pre-adjustment ══
+    if (getattr(CFG, 'PO_ADAPTIVE_PEN_ENABLED', False)
+            or getattr(CFG, 'PO_QUEUE_ADJUST_ENABLED', False)
+            or getattr(CFG, 'PO_LATENCY_COMP_ENABLED', False)):
+        try:
+            levels = _adjust_ladder_for_market(
+                exchange, symbol, side, levels, qty, ad, current_ci
+            )
+        except Exception as e:
+            log.debug(f"[Ladder] market adjust exception {symbol}: {e}")
+
     active: List[Dict] = []
     total_filled = 0.0
     total_cost = 0.0
@@ -3620,13 +3808,19 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
                 time.sleep(1.0)
                 continue
 
-            # 2. Target
+            # ══ [FIXED PRICE] Use fixed_target if provided; else compute from book ══
             _fixed = (fixed_target is not None and fixed_target > 0)
             if _fixed:
                 target = float(fixed_target)
             else:
-                target = (last_bid * (1.0 - pen)) if side == 'buy' \
-                         else (last_ask * (1.0 + pen))
+                # ══ [LEVEL 2] adaptive penetration for non-fixed targets ══
+                _spread_bps = (last_ask - last_bid) / max((last_ask + last_bid) / 2.0, 1e-12) * 10000.0
+                _pen_bps = _compute_adaptive_pen_bps(_spread_bps) if getattr(CFG, 'PO_ADAPTIVE_PEN_ENABLED', True) else (pen * 10000.0)
+                _pen_frac = _pen_bps * 1e-4
+                if side == 'buy':
+                    target = last_bid * (1.0 - _pen_frac)
+                else:
+                    target = last_ask * (1.0 + _pen_frac)
 
             # 3. Refresh active state (handles ALL statuses)
             _refresh_active()
@@ -4904,10 +5098,6 @@ def run_live(cfg, exchange):
                     else:
                         # ══ [TF-FIX] use actual bar duration ══
                         _tf_sec_wait = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
-#                        result = execute_limit_wait(
-#                            exchange, sym, sd, qty, sig.price,
-#                            wait_s=CFG.FILL_ENTRY_MAX_WAIT_BARS * _tf_sec_wait
-#                        )
                         result = execute_post_only(
                             exchange, sym, s, pos['qty'],
                             max_wait_s=CFG.PO_EXIT_MAX_WAIT_S,
@@ -5075,7 +5265,8 @@ def run_live(cfg, exchange):
 
                         _ladder = build_entry_ladder(sig, assets[sym], _entry_ci)
                         result = execute_ladder_wait(
-                            exchange, sym, sd, qty, _ladder, _wait_s
+                            exchange, sym, sd, qty, _ladder, _wait_s,
+                            ad=assets[sym], current_ci=_entry_ci,
                         )
 
                         if result is None or result['filled_qty'] <= 0:
@@ -5294,6 +5485,20 @@ def main():
                    help="Max signal age in bars (default 3)")
     p.add_argument("--entry-vol-burst", type=float, default=None,
                    help="Volume burst threshold (default 5.0)")
+    p.add_argument("--no-adaptive-pen", action="store_true",
+                   help="Disable spread-adaptive penetration (Level 2)")
+    p.add_argument("--no-queue-adjust", action="store_true",
+                   help="Disable queue-aware pricing (Level 3)")
+    p.add_argument("--no-latency-comp", action="store_true",
+                   help="Disable latency-compensated pricing (Level 6)")
+    p.add_argument("--pen-kappa", type=float, default=None,
+                   help="Adaptive penetration κ (default 0.50)")
+    p.add_argument("--pen-max-bps", type=float, default=None,
+                   help="Adaptive penetration ceiling (default 5.0)")
+    p.add_argument("--queue-kappa", type=float, default=None,
+                   help="Queue adjustment κ (default 0.30)")
+    p.add_argument("--latency-kappa", type=float, default=None,
+                   help="Latency compensation κ (default 0.80)")
     args = p.parse_args()
 
     CFG.mode = args.mode
@@ -5395,6 +5600,17 @@ def main():
         CFG.ENTRY_MAX_AGE_BARS = int(args.entry_max_age)
     if args.entry_vol_burst is not None:
         CFG.ENTRY_VOL_BURST_MULT = float(args.entry_vol_burst)
+    if args.no_adaptive_pen:   CFG.PO_ADAPTIVE_PEN_ENABLED = False
+    if args.no_queue_adjust:   CFG.PO_QUEUE_ADJUST_ENABLED = False
+    if args.no_latency_comp:   CFG.PO_LATENCY_COMP_ENABLED = False
+    if args.pen_kappa is not None:
+        CFG.PO_PEN_KAPPA = float(args.pen_kappa)
+    if args.pen_max_bps is not None:
+        CFG.PO_PEN_MAX_BPS = float(args.pen_max_bps)
+    if args.queue_kappa is not None:
+        CFG.PO_QUEUE_KAPPA = float(args.queue_kappa)
+    if args.latency_kappa is not None:
+        CFG.PO_LATENCY_KAPPA = float(args.latency_kappa)
 
     print("╔"+"═"*70+"╗")
     print(f"  [Level-1] Parallel: {CFG.PARALLEL_PROCESSING}  "
