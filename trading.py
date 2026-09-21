@@ -245,6 +245,11 @@ class Config:
     TRAIL_ACT_KAPPA: float = 0.40            # tuned to 1h timeframe
     TRAIL_ACT_MIN_FRAC: float = 0.003
     TRAIL_ACT_MAX_FRAC: float = 0.012
+    # ══ [SIGMA-SCALED APEX] ══
+    APEX_SIGMA_SCALED: bool = True
+    APEX_KAPPA_PNL: float = 0.5
+    APEX_KAPPA_ENERGY: float = 0.5
+    APEX_KAPPA_ACCEL: float = 0.3
     # ══ [RULE-BASED FILTER] ══
     RULE_FILTER_ENABLED: bool = False
     RULE_REJECT_RVOL24_PCT: float = 0.33    # reject if below this quantile
@@ -1344,18 +1349,40 @@ def build_signals(assets, mode="backtest"):
     sigs.sort(key=lambda s: (s.timestamp, -s.score))
     return sigs
 
-
 def deduplicate_signals(sigs):
-    """dedup per (symbol, hour) - محفوظ من v5"""
+    """
+    TF-aware dedup: groups signals by (symbol, time bucket).
+    The bucket is derived from CFG.TF_SECONDS so 1m/5m/1h all work correctly.
+    """
+    if not sigs:
+        return sigs
+
+    # Determine bucket label from TF_SECONDS
+    tf_sec = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
+    if tf_sec <= 60:
+        bucket = '1m'
+    elif tf_sec <= 300:
+        bucket = '5m'
+    elif tf_sec <= 900:
+        bucket = '15m'
+    elif tf_sec <= 3600:
+        bucket = '1h'
+    elif tf_sec <= 14400:
+        bucket = '4h'
+    else:
+        bucket = '1d'
+
     groups = defaultdict(list)
     for s in sigs:
-        key = (s.symbol, s.timestamp.floor('1h'))
+        key = (s.symbol, s.timestamp.floor(bucket))
         groups[key].append(s)
+
     result = []
     for _, grp in groups.items():
-        result.append(max(grp, key=lambda s:(s.score, s.lam)))
+        result.append(max(grp, key=lambda s: (s.score, s.lam)))
     result.sort(key=lambda s: s.timestamp)
     return result
+
 
 
 # ════════════════════════════════════════════════════════════════
@@ -3416,9 +3443,23 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
                 continue
 
             # 2. Target
+            # Defensive: if PO_FIXED_PRICE is True but caller didn't pass
+            # fixed_target, lock the FIRST observed target and never chase.
             _fixed = (fixed_target is not None and fixed_target > 0)
             if _fixed:
                 target = float(fixed_target)
+            elif getattr(CFG, 'PO_FIXED_PRICE', False):
+                # Lock target on first iteration
+                if not hasattr(execute_post_only, '_locked_target'):
+                    execute_post_only._locked_target = {}
+                lock_key = f"{symbol}:{side}"
+                if lock_key not in execute_post_only._locked_target:
+                    execute_post_only._locked_target[lock_key] = (
+                        last_bid * (1.0 - pen) if side == 'buy'
+                        else last_ask * (1.0 + pen)
+                    )
+                target = execute_post_only._locked_target[lock_key]
+                _fixed = True
             else:
                 target = (last_bid * (1.0 - pen)) if side == 'buy' \
                          else (last_ask * (1.0 + pen))
@@ -3767,7 +3808,7 @@ class AdaptiveFillEngine:
     def _execute_taker(self, side: str, qty: float):
         try:
             o = self.exchange.create_order(self.symbol, 'market', side, qty)
-            v = verify_fill_sync(self.exchange, o['id'], self.symbol, timeout_s=3.0)
+            v = verify_fill_sync(self.exchange, o['id'], self.symbol, timeout_s=1.5)
             if v['filled']:
                 return {'filled_qty': v['qty'], 'avg_price': v['price'],
                         'fill_rate': 1.0, 'mode': 'taker'}
@@ -3954,28 +3995,55 @@ def _get_fill_engine(exchange, symbol: str) -> AdaptiveFillEngine:
 
 def check_thermodynamic_apex(pos_action, entry_price, current_price, ad, fi):
     """
-    الطور الخامس: مستشعر الأوج بالتكامل الحركي (Action Integral).
-    يقيس معدل الاستهلاك الطاقي الإجمالي وتراجع القصور الذاتي لتفادي تكميم الزمكان المنفصل.
-    """
-    if fi < 3: return False, "" # نحتاج تاريخاً تراكمياً لاحتساب الفعل
-    
-    pnl = (current_price - entry_price)/entry_price if pos_action == "BUY" else (entry_price - current_price)/entry_price
-    if pnl < 0.005: return False, "" # حماية القصور الذاتي التراكمي (الحد الأدنى للربح)
+    مستشعر الأوج — σ-scaled thresholds when APEX_SIGMA_SCALED=True.
 
-    # حساب تكامل الفعل لتغير الطاقة الحرة لآخر 3 خطوات
-    dF_window = ad.dF[fi-2:fi+1]
+    Thresholds:
+      - min_pnl:      κ_pnl × σ_bar  (default κ_pnl = 0.5)
+      - energy_thr:   κ_e × σ_bar    (default κ_e = 0.5)
+      - accel_thr:    κ_a × σ_bar    (default κ_a = 0.3)
+
+    Falls back to absolute values (0.005, 0.005, 0.003) when flag is off.
+    """
+    if fi < 3:
+        return False, ""
+
+    # ── σ-scaled base ──
+    try:
+        sigma = float(ad.E_therm[fi]) if fi < len(ad.E_therm) else 0.01
+        if not np.isfinite(sigma) or sigma <= 1e-6:
+            sigma = 0.01
+    except Exception:
+        sigma = 0.01
+
+    if getattr(CFG, 'APEX_SIGMA_SCALED', True):
+        KAPPA_PNL = float(getattr(CFG, 'APEX_KAPPA_PNL', 0.5))
+        KAPPA_E   = float(getattr(CFG, 'APEX_KAPPA_ENERGY', 0.5))
+        KAPPA_A   = float(getattr(CFG, 'APEX_KAPPA_ACCEL', 0.3))
+        min_pnl    = KAPPA_PNL * sigma
+        energy_thr = KAPPA_E   * sigma
+        accel_thr  = KAPPA_A   * sigma
+    else:
+        min_pnl    = 0.005
+        energy_thr = 0.005
+        accel_thr  = 0.003
+
+    pnl = ((current_price - entry_price) / entry_price
+           if pos_action == "BUY"
+           else (entry_price - current_price) / entry_price)
+    if pnl < min_pnl:
+        return False, ""
+
+    dF_window = ad.dF[fi - 2:fi + 1]
     sum_dF = np.sum(dF_window)
-    
-    # حساب القصور الذاتي المتوسط للتسارع الجيوديسي لآخر 3 خطوات
-    accel_window = ad.geodesic_accel[fi-2:fi+1]
+
+    accel_window = ad.geodesic_accel[fi - 2:fi + 1]
     accel_mean = np.mean(accel_window)
 
-    # الشرط: الفعل التراكمي يثبت تراجع الزخم (استقرار طاقي)
-    energy_exhausted = (sum_dF > 0.005)
+    energy_exhausted = (sum_dF > energy_thr)
 
-    if pos_action == "BUY" and energy_exhausted and accel_mean < 0.003:
+    if pos_action == "BUY" and energy_exhausted and accel_mean < accel_thr:
         return True, "Apex: Action Integral Exhaustion"
-    if pos_action == "SELL" and energy_exhausted and accel_mean > -0.003:
+    if pos_action == "SELL" and energy_exhausted and accel_mean > -accel_thr:
         return True, "Apex: Action Integral Exhaustion"
 
     return False, ""
@@ -4788,8 +4856,21 @@ def run_live(cfg, exchange):
     log.info("⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...")
     top_syms = scan_top_assets(exchange)
     cached_data = fetch_all(top_syms, exchange, cfg.timeframe, days=60, workers=5)
+
+    # ══ [HELD SYMBOLS] Ensure open positions are always tracked ══
+    _held = list(open_pos_live.keys())
+    _missing = [s for s in _held if s not in top_syms]
+    if _missing:
+        log.info(f"[State] {len(_missing)} held symbols not in universe — adding")
+        top_syms = list(top_syms) + _missing
+        _extra_data = fetch_all(_missing, exchange, cfg.timeframe, days=60, workers=3)
+        cached_data.update(_extra_data)
+        log.info(f"[State] Added: {_missing}")
+
     last_scan_time = time.time()
     peak_cap_live = cfg.INITIAL_CAPITAL    
+    # ══ [Cap persistence] last known good cap_live ══
+    _last_known_cap = float(cfg.INITIAL_CAPITAL)
     if not cached_data:
         log.error("فشل في تحميل التاريخ الأولي، تأكد من الاتصال بالأنترنت.")
         return
@@ -4812,16 +4893,27 @@ def run_live(cfg, exchange):
             # تحديث دوري لقائمة الأزواج لتجنب جمود السيولة
             if time.time() - last_scan_time > 4 * 3600:
                 log.info("🔄 تحديث قائمة الأصول ومزامنة التاريخ العميق...")
-                top_syms = scan_top_assets(exchange)
-                cached_data = fetch_all(top_syms, exchange, cfg.timeframe, days=60, workers=5)
+                _new_syms = scan_top_assets(exchange)
+                # Preserve held symbols
+                _held_now = list(open_pos_live.keys())
+                _add_back = [s for s in _held_now if s not in _new_syms]
+                if _add_back:
+                    log.info(f"[State] Preserving {len(_add_back)} held symbols: {_add_back}")
+                    _new_syms = list(_new_syms) + _add_back
+                top_syms = _new_syms
+                cached_data = fetch_all(top_syms, exchange, cfg.timeframe,
+                                        days=60, workers=5)
                 last_scan_time = time.time()
                 corr_cache.clear()
 
             try:
                 bal = exchange.fetch_balance()
                 cap_live = float(bal['USDT']['free'])
-            except: 
-                cap_live = cfg.INITIAL_CAPITAL
+                _last_known_cap = cap_live
+            except Exception as e:
+                log.warning(f"[Balance] fetch failed ({e}); using last known "
+                            f"${_last_known_cap:.2f}")
+                cap_live = _last_known_cap
 
             peak_cap_live = max(peak_cap_live, cap_live)
             if int(time.time() / 60) % 5 == 0:  # once per 5 minutes
@@ -4971,7 +5063,7 @@ def run_live(cfg, exchange):
                         # Emergency → market directly
                         try:
                             o = exchange.create_order(sym, 'market', s, pos['qty'])
-                            v = verify_fill(exchange, o['id'], sym, timeout_s=3.0)
+                            v = verify_fill(exchange, o['id'], sym, timeout_s=1.5)
                             exec_price = v['avg_price'] if v and v['filled'] else price
                             exit_reason = f"{rsn} (market)"
                         except Exception as e:
@@ -5145,9 +5237,18 @@ def run_live(cfg, exchange):
                                 log.debug(f"[Pending] cap reached, skipping {sym}")
                                 continue
 
+                            # ══ [Parity] Entry timeout = bars × bar-duration ══
+                            _tf_sec_w = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
+                            _bars_wait = int(effective_bars(CFG.FILL_ENTRY_MAX_WAIT_BARS))
+                            _timeout_s = float(_bars_wait * _tf_sec_w)
+                            # Optional hard cap from PO_MAX_WAIT_S if > 0
+                            _cap = float(getattr(CFG, 'PO_MAX_WAIT_S', 0))
+                            if _cap > 0:
+                                _timeout_s = min(_timeout_s, _cap)
+
                             rec = place_pending_entry(
                                 exchange, sym, sd, qty, sig,
-                                timeout_s=float(CFG.PO_MAX_WAIT_S),
+                                timeout_s=_timeout_s,
                                 leverage=int(dynamic_leverage),
                                 ad=assets[sym],
                             )
