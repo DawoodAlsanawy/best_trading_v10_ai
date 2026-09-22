@@ -267,7 +267,7 @@ class Config:
     # ══ [FIXED PRICE ENTRY — no chasing] ══
     PO_FIXED_PRICE: bool = True              # use sig.price, hold it fixed
     # ══ [ATOMIC FILL ACCOUNTING] ══
-    PO_MAX_ATTEMPTS: int = 20              # reduced from 5 (rate-limit safety)
+    PO_MAX_ATTEMPTS: int = 3              # reduced from 5 (rate-limit safety)
     PO_MAX_DRIFT_BPS: float = 5.0
     PO_MIN_ACCEPT_RATIO: float = 0.50     # reject below 50% (was 0.15, comment was misleading)
 
@@ -554,6 +554,15 @@ def fetch_all(symbols, exchange, tf, days, workers=5):
 
 def compute_features(closes, volumes, N=None):
     N = N or CFG.N
+
+    if _NUMBA_AVAILABLE and CFG.NUMBA_ENABLED:
+        closes_f = np.ascontiguousarray(closes, dtype=np.float64)
+        volumes_f = np.ascontiguousarray(volumes, dtype=np.float64)
+        lr = np.diff(np.log(np.maximum(closes_f, 1e-12)))
+        lr = np.ascontiguousarray(lr, dtype=np.float64)
+        return _features_kernel(lr, closes_f, volumes_f, int(N))
+
+    # ── Python/scipy fallback (unchanged, only used if numba missing) ──
     n  = len(closes)
     lr = np.diff(np.log(np.maximum(closes, 1e-12)))
     out = []
@@ -831,6 +840,106 @@ def _entropy_kernel(sym_q, W, k):
 
     return H
 
+# ─── Kernel 0: Features (compute_features bottleneck) ───────────
+
+@njit(cache=True)
+def _features_kernel(lr, closes, volumes, N):
+    """
+    Numba-compiled feature extractor — replaces scipy-heavy Python loop.
+
+    For each i in [N, n):
+      r = lr[i-N : i]                      (N log-returns)
+      s = std(r, ddof=1)
+      vec = [mean(r), s, skew_bias_false(r), kurt_bias_false(r),
+             max(p)-min(p), mean(v), (p[i]-p[i-N])/p[i-N]]
+      normalize if ||vec|| > 1
+      if s < 1e-10 → leave row as zeros
+
+    Formulas verified against scipy 1.13:
+      skew  bias=False:  g1 * sqrt(N*(N-1)) / (N-2),  g1 = m3_pop/m2_pop^1.5
+      kurt  bias=False:  ((N^2-1)*R - 3*(N-1)^2) / ((N-2)*(N-3)),
+                         R = m4_pop / m2_pop^2
+    """
+    n = len(closes)
+    out = np.zeros((n - N, 7), dtype=np.float64)
+
+    for i in range(N, n):
+        # ── mean of returns ──
+        mean_r = 0.0
+        for j in range(N):
+            mean_r += lr[i - N + j]
+        mean_r /= N
+
+        # ── central moments (single pass) ──
+        var_sum = 0.0
+        m3_sum = 0.0
+        m4_sum = 0.0
+        for j in range(N):
+            diff = lr[i - N + j] - mean_r
+            diff2 = diff * diff
+            var_sum += diff2
+            m3_sum += diff2 * diff
+            m4_sum += diff2 * diff2
+
+        s = np.sqrt(var_sum / (N - 1))
+        if s < 1e-10:
+            continue
+
+        m2_pop = var_sum / N
+        m3_pop = m3_sum / N
+        m4_pop = m4_sum / N
+
+        # ── skew (bias=False) ──
+        if m2_pop > 0.0 and N > 2:
+            g1 = m3_pop / (m2_pop ** 1.5)
+            skew_val = g1 * np.sqrt(N * (N - 1.0)) / (N - 2.0)
+        else:
+            skew_val = 0.0
+
+        # ── kurtosis (bias=False, fisher=True — scipy default) ──
+        if m2_pop > 0.0 and N > 3:
+            R = m4_pop / (m2_pop * m2_pop)
+            kurt_val = (((N * N - 1.0) * R - 3.0 * (N - 1.0) ** 2)
+                        / ((N - 2.0) * (N - 3.0)))
+        else:
+            kurt_val = 0.0
+
+        # ── range of closes[i-N : i+1] ──
+        p_min = closes[i - N]
+        p_max = closes[i - N]
+        for j in range(1, N + 1):
+            v = closes[i - N + j]
+            if v < p_min:
+                p_min = v
+            if v > p_max:
+                p_max = v
+
+        # ── mean of volumes[i-N : i] ──
+        v_mean = 0.0
+        for j in range(N):
+            v_mean += volumes[i - N + j]
+        v_mean /= N
+        if v_mean <= 0.0:
+            v_mean = 1.0
+
+        pct_change = (closes[i] - closes[i - N]) / (closes[i - N] + 1e-12)
+
+        # ── build & normalize ──
+        prange = p_max - p_min
+        norm = np.sqrt(mean_r * mean_r + s * s + skew_val * skew_val +
+                       kurt_val * kurt_val + prange * prange +
+                       v_mean * v_mean + pct_change * pct_change)
+        scale = 1.0 / norm if norm > 1.0 else 1.0
+
+        out[i - N, 0] = mean_r * scale
+        out[i - N, 1] = s * scale
+        out[i - N, 2] = skew_val * scale
+        out[i - N, 3] = kurt_val * scale
+        out[i - N, 4] = prange * scale
+        out[i - N, 5] = v_mean * scale
+        out[i - N, 6] = pct_change * scale
+
+    return out
 
 # ════════════════════════════════════════════════════════════════
 # Wrapper functions — dispatch to numba or pure-Python depending on
@@ -857,6 +966,13 @@ def _warmup_numba_kernels():
         _ = _entropy_kernel(
             np.random.randint(0, 4, size=100).astype(np.int64),
             W=20, k=4
+        )
+        # NEW: features kernel (biggest hot loop)
+        _ = _features_kernel(
+            np.random.randn(200).astype(np.float64),
+            np.random.randn(201).astype(np.float64) + 100.0,
+            np.random.rand(201).astype(np.float64) + 1.0,
+            24,
         )
         log.info(f"[Level-2] Numba kernels warm (JIT ready in {time.time()-t0:.1f}s)")
     except Exception as e:
@@ -5694,7 +5810,19 @@ def run_live(cfg, exchange):
                 for sig in reversed(sigs):
                     sym = sig.symbol
                     if sym in open_pos_live: continue
-                    if len(open_pos_live) >= cfg.MAX_CONCURRENT_ASSETS: break
+                    # ══ [PARTIAL-FILL-FIX] ══
+                    # منع تراكم الأجزاء المنفذة:
+                    # - إذا كان للأصل أمر معلّق نشط، لا تعالجه مرة أخرى
+                    # - Anti-stacking كان يلغي الأمر المعلّق بعد أن نُفّذ جزئياً
+                    # - ثم يعيد الوضع بـ qty كامل → المركز النهائي = مضاعف
+                    if sym in _PENDING_ORDERS:
+                        log.debug(f"[Pending] {sym} already has active "
+                                  f"pending — skip signal")
+                        continue
+                    # احتساب التعرّض الإجمالي (مراكز + معلّقات) ضد maxcon
+                    _total_exposure = len(open_pos_live) + len(_PENDING_ORDERS)
+                    if _total_exposure >= int(cfg.MAX_CONCURRENT_ASSETS):
+                        break
 
                     # ══ [RE-ENTRY COOLDOWN] Block re-entry too soon after exit ══
                     if CFG.REENTRY_COOLDOWN_ENABLED:
