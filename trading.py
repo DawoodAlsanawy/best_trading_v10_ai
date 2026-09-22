@@ -269,7 +269,7 @@ class Config:
     # ══ [ATOMIC FILL ACCOUNTING] ══
     PO_MAX_ATTEMPTS: int = 3              # reduced from 5 (rate-limit safety)
     PO_MAX_DRIFT_BPS: float = 5.0
-    PO_MIN_ACCEPT_RATIO: float = 0.50     # reject below 50% (was 0.15, comment was misleading)
+    PO_MIN_ACCEPT_RATIO: float = 0.10     # reject below 50% (was 0.15, comment was misleading)
 
     # ══ [NON-BLOCKING PENDING ORDERS] ══
     PENDING_ENABLED: bool = True
@@ -432,7 +432,8 @@ def scan_top_assets(exchange, n=None) -> List[str]:
 
     scored = []
     for sym, t in tickers.items():
-        if not sym.endswith("/USDT"):
+        # if not sym.endswith("/USDT"):
+        if not "/USDT" in sym:
             continue
         base = sym.replace("/USDT","")
         if any(ex in base for ex in CFG.exclude_tokens):
