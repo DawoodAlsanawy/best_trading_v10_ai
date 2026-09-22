@@ -318,6 +318,9 @@ class Config:
     # ══ [ADAPTIVE FIX #4] Dynamic MIN_SCORE (per-asset quantile) ══
     DYNAMIC_MIN_SCORE_ENABLED: bool = False   # opt-in
     DYNAMIC_MIN_SCORE_Q: float = 0.95
+    LIVE_HISTORY_DAYS: int = 90   # [DATA-LENGTH] live bootstrap window
+    LIVE_TAIL_BARS: int = 800     # [DATA-LENGTH] keep last N bars per symbol
+    LIVE_MIN_BARS_FOR_PROCESS: int = 300  # [WARMUP] skip assets below this
 
 CFG = Config()
 
@@ -5028,6 +5031,24 @@ _LIVE_ASSET_CACHE_STATS = {
     'evictions': 0,
     'last_report_ts': 0.0,
 }
+# ══ [DEGENERATE-CACHE] Remember failures per (sym, tf, last_closed_ts) ══
+# Prevents reprocessing the same degenerate asset every 5 seconds.
+_DEGENERATE_CACHE: Dict[Tuple[str, str, int], float] = {}
+_DEGENERATE_CACHE_MAX = 500
+
+
+def _degenerate_get(sym: str, tf: str, last_closed_ts: int) -> bool:
+    """True if (sym, tf, bar) was already marked as degenerate."""
+    return (sym, tf, last_closed_ts) in _DEGENERATE_CACHE
+
+
+def _degenerate_put(sym: str, tf: str, last_closed_ts: int) -> None:
+    """Mark (sym, tf, bar) as degenerate (auto-evict when cache grows)."""
+    _DEGENERATE_CACHE[(sym, tf, last_closed_ts)] = time.time()
+    if len(_DEGENERATE_CACHE) > _DEGENERATE_CACHE_MAX:
+        # Drop oldest 100 by insertion order
+        for k in list(_DEGENERATE_CACHE.keys())[:100]:
+            _DEGENERATE_CACHE.pop(k, None)
 
 
 def _last_closed_bar_ts(df, tf_seconds: int) -> int:
@@ -5681,7 +5702,14 @@ def run_live(cfg, exchange):
 
     log.info("⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...")
     top_syms = scan_top_assets(exchange)
-    cached_data = fetch_all(top_syms, exchange, cfg.timeframe, days=60, workers=5)
+
+    # ══ [DATA-LENGTH-FIX] Live needs real history, not 60 days ══
+    # Backtest uses 730 days; live used 60 → KMeans collapsed (H_train ≈ 0.2).
+    # 365 days on 1h ≈ 8760 bars — enough for stable K=11 clustering.
+    # Startup cost: ~5–8 minutes for 50 symbols. One-time only.
+    _live_history_days = int(getattr(CFG, 'LIVE_HISTORY_DAYS', 365))
+    cached_data = fetch_all(top_syms, exchange, cfg.timeframe,
+                            days=_live_history_days, workers=5)
 
     # ══ [HELD SYMBOLS] Ensure open positions are always tracked ══
     _held = list(open_pos_live.keys())
@@ -5812,11 +5840,19 @@ def run_live(cfg, exchange):
                         _lc_ts = _last_closed_bar_ts(cached_data[sym], _tf_sec_s)
                         _current_last_closed[sym] = _lc_ts
                         ad = _live_cache_get(sym, cfg.timeframe, _lc_ts)
-                        if ad is None:
-                            ad = process_asset(sym, cached_data[sym],
-                                                current_capital=cap_live)
-                            if ad is not None:
-                                _live_cache_put(sym, cfg.timeframe, _lc_ts, ad)
+                        if ad is None and not _degenerate_get(sym, cfg.timeframe, _lc_ts):
+                            _min_bars = int(getattr(CFG, 'LIVE_MIN_BARS_FOR_PROCESS', 2000))
+                            if len(cached_data[sym]) < _min_bars:
+                                log.debug(f"[Warmup] {sym} has "
+                                          f"{len(cached_data[sym])} bars "
+                                          f"(< {_min_bars}) — skip")
+                            else:
+                                ad = process_asset(sym, cached_data[sym],
+                                                    current_capital=cap_live)
+                                if ad is not None:
+                                    _live_cache_put(sym, cfg.timeframe, _lc_ts, ad)
+                                else:
+                                    _degenerate_put(sym, cfg.timeframe, _lc_ts)
                         if ad:
                             assets[sym] = ad
                         continue
@@ -5827,7 +5863,13 @@ def run_live(cfg, exchange):
                     df_new['ts'] = pd.to_datetime(df_new['ts'], unit='ms', utc=True)
                     df_new = df_new.set_index('ts').astype(float)
                     df_combined = pd.concat([cached_data[sym], df_new])
-                    cached_data[sym] = df_combined[~df_combined.index.duplicated(keep='last')].sort_index().tail(cfg.N + cfg.W + 1000)
+                    # ══ [DATA-LENGTH-FIX] tail(1044) was too aggressive ══
+                    # KMeans needs thousands of bars to form stable clusters.
+                    # 8000 bars on 1h ≈ 11 months — matches the training scale.
+                    _keep = int(getattr(CFG, 'LIVE_TAIL_BARS', 8000))
+                    cached_data[sym] = (df_combined[
+                        ~df_combined.index.duplicated(keep='last')
+                    ].sort_index().tail(_keep))
 
                     # ══ [LIVE CACHE] Look up by (sym, tf, last_closed_ts) ══
                     _tf_sec = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
@@ -5835,11 +5877,21 @@ def run_live(cfg, exchange):
                     _current_last_closed[sym] = _lc_ts
 
                     ad = _live_cache_get(sym, cfg.timeframe, _lc_ts)
-                    if ad is None:
-                        ad = process_asset(sym, cached_data[sym], current_capital=cap_live)
-                        if ad is not None:
-                            _live_cache_put(sym, cfg.timeframe, _lc_ts, ad)
-                    if ad: assets[sym] = ad
+                    if ad is None and not _degenerate_get(sym, cfg.timeframe, _lc_ts):
+                        _min_bars = int(getattr(CFG, 'LIVE_MIN_BARS_FOR_PROCESS', 2000))
+                        if len(cached_data[sym]) < _min_bars:
+                            log.debug(f"[Warmup] {sym} has "
+                                      f"{len(cached_data[sym])} bars "
+                                      f"(< {_min_bars}) — skip")
+                        else:
+                            ad = process_asset(sym, cached_data[sym],
+                                                current_capital=cap_live)
+                            if ad is not None:
+                                _live_cache_put(sym, cfg.timeframe, _lc_ts, ad)
+                            else:
+                                _degenerate_put(sym, cfg.timeframe, _lc_ts)
+                    if ad:
+                        assets[sym] = ad
                 except Exception as e:
                     log.warning(f"فشل التحديث اللحظي لـ {sym}: {e}")
 
