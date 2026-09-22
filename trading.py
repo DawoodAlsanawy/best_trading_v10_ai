@@ -318,12 +318,114 @@ class Config:
     # ══ [ADAPTIVE FIX #4] Dynamic MIN_SCORE (per-asset quantile) ══
     DYNAMIC_MIN_SCORE_ENABLED: bool = False   # opt-in
     DYNAMIC_MIN_SCORE_Q: float = 0.95
-    LIVE_HISTORY_DAYS: int = 90   # [DATA-LENGTH] live bootstrap window
-    LIVE_TAIL_BARS: int = 800     # [DATA-LENGTH] keep last N bars per symbol
-    LIVE_MIN_BARS_FOR_PROCESS: int = 300  # [WARMUP] skip assets below this
+    # ══ [DATA AUTO-CONFIG] ══
+    # These values are IGNORED at runtime — _resolve_data_params() in main()
+    # overrides them based on (mode, timeframe, --history-days).
+    # Kept only as fallbacks if main() is bypassed (tests, imports).
+    LIVE_HISTORY_DAYS: int = 90
+    LIVE_TAIL_BARS: int = 800
+    LIVE_MIN_BARS_FOR_PROCESS: int = 300
 
 CFG = Config()
 
+
+def _resolve_data_params(cfg, mode: str, tf_hours: float,
+                          user_history_days: Optional[int] = None
+                          ) -> Tuple[int, int, int, str, str]:
+    """
+    Unified resolver for (history_days, tail_bars, min_bars_for_process).
+    Works for 1m … 1d and for backtest / testnet / live.
+
+    Design principle:
+      - BACKTEST prioritizes statistical power (max useful history).
+      - LIVE / TESTNET prioritize lightness (minimum for K=K_max).
+      - User override is respected, but physically clamped and quality-warned.
+
+    Physical constants:
+      strict_min_bars : minimum n_bars such that K is NOT data-capped
+                        = 2 * K_MAX * K_MIN_TRAIN_POINTS_PER_CLUSTER + N
+                        (default: 2*12*100 + 24 = 2424)
+      MAX_HISTORY_DAYS: 730 (Binance USDT-M futures age)
+      MIN_HISTORY_DAYS: 3
+      absolute_floor  : max(N + W + 100, 500) — absolute minimum to process
+
+    Mode-dependent hard cap on bars per symbol:
+      backtest        : 40000 bars (~40 API pages, ~12 s/symbol)
+      live / testnet  : 20000 bars (~20 API pages, ~6 s/symbol)
+
+    Returns:
+      (history_days, tail_bars, min_bars, source_label, quality_label)
+      quality_label ∈ {"full", "reduced", "degraded"}
+    """
+    N = int(cfg.N); W = int(cfg.W)
+    min_pts = int(getattr(cfg, 'K_MIN_TRAIN_POINTS_PER_CLUSTER', 100))
+    K_max = int(cfg.K_MAX)
+
+    # ── Physical constants ──
+    strict_min_bars = 2 * K_max * min_pts + N         # 2424
+    MAX_HISTORY_DAYS = 730
+    MIN_HISTORY_DAYS = 3
+    absolute_floor = max(N + W + 100, 500)
+
+    bars_per_day = 24.0 / max(tf_hours, 1e-6)
+
+    # ── Mode-dependent hard cap ──
+    if mode == "backtest":
+        HARD_CAP_BARS = 40000
+    else:
+        HARD_CAP_BARS = 20000
+
+    # ── Determine history_days ──
+    if user_history_days is not None and user_history_days > 0:
+        # User explicit override — respect, but clamp physically
+        hd = int(user_history_days)
+        capped_high = False
+        if hd > MAX_HISTORY_DAYS:
+            hd = MAX_HISTORY_DAYS
+            capped_high = True
+        if hd < MIN_HISTORY_DAYS:
+            hd = MIN_HISTORY_DAYS
+        source = f"user({user_history_days}d)"
+        if capped_high:
+            source += f"-cap{hd}"
+    else:
+        # Auto: derive from mode + TF
+        if mode == "backtest":
+            # Want as much history as possible, but not more than
+            # HARD_CAP_BARS per symbol (fetch time bound).
+            days_from_cap = int(HARD_CAP_BARS / bars_per_day)
+            # Also ensure ≥1.5× strict_min for statistical margin
+            days_from_min = int(np.ceil(strict_min_bars * 1.5 / bars_per_day))
+            hd = max(days_from_min, days_from_cap)
+            hd = min(hd, MAX_HISTORY_DAYS)
+            hd = max(hd, MIN_HISTORY_DAYS)
+        else:
+            # Live / testnet: minimum with 40% safety margin
+            days_needed = int(np.ceil(strict_min_bars * 1.4 / bars_per_day))
+            hd = max(MIN_HISTORY_DAYS, days_needed)
+            hd = min(hd, MAX_HISTORY_DAYS)
+        source = f"auto({mode})"
+
+    # ── tail_bars derived from history_days ──
+    tail_bars = int(hd * bars_per_day)
+    if tail_bars > HARD_CAP_BARS:
+        hd = max(MIN_HISTORY_DAYS, int(np.floor(HARD_CAP_BARS / bars_per_day)))
+        tail_bars = int(hd * bars_per_day)
+        source += f"-cap{HARD_CAP_BARS}"
+
+    # ── min_bars_for_process ──
+    # Want strict_min_bars when possible, but never exceed tail_bars.
+    min_bars = max(absolute_floor, min(strict_min_bars, tail_bars))
+
+    # ── Quality assessment ──
+    if tail_bars >= strict_min_bars:
+        quality = "full"
+    elif tail_bars >= strict_min_bars // 2:
+        quality = "reduced"
+    else:
+        quality = "degraded"
+
+    return int(hd), int(tail_bars), int(min_bars), source, quality
 
 # ════════════════════════════════════════════════════════════════
 # § 1  مسح الأصول
@@ -6408,7 +6510,9 @@ def main():
     p.add_argument("--cosm-const",  type=float, default=None)
     p.add_argument("--k-min",       type=int,   default=None)
     p.add_argument("--k-max",       type=int,   default=None)
-    p.add_argument("--timeframe",       choices=["4h","1h", "30m", "15m","5m","1m"],   default="1h")
+    p.add_argument("--timeframe",
+                   choices=["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
+                   default="1h")
     p.add_argument("--history-days",       type=int,   default=None)
     p.add_argument("--no-numba", action="store_true",
                    help="Disable Numba kernels and use pure-Python fallback")
@@ -6571,6 +6675,49 @@ def main():
              f"TF_SCALE={CFG.TF_SCALE:.4f} "
              f"TF_SECONDS={CFG.TF_SECONDS} "
              f"TF_HOURS={CFG.TF_HOURS:.3f}")
+
+    # ══ [SMART DATA AUTO-CONFIG] ══
+    # Applies to BOTH backtest and live/testnet. Backtest prioritizes
+    # statistical power (max history); live/testnet prioritize lightness.
+    # User override via --history-days is respected but physically clamped.
+    _user_hd = args.history_days if args.history_days is not None else None
+    _hd, _tb, _mb, _src, _qual = _resolve_data_params(
+        CFG, CFG.mode, CFG.TF_HOURS, user_history_days=_user_hd
+    )
+
+    if CFG.mode == "backtest":
+        CFG.history_days = int(_hd)
+        log.info(f"[Data] mode=backtest | tf={CFG.timeframe} | "
+                 f"history={_hd}d ({_tb} bars/symbol) | "
+                 f"quality={_qual} | source={_src}")
+    else:
+        CFG.LIVE_HISTORY_DAYS         = int(_hd)
+        CFG.LIVE_TAIL_BARS            = int(_tb)
+        CFG.LIVE_MIN_BARS_FOR_PROCESS = int(_mb)
+        log.info(f"[Data] mode={CFG.mode} | tf={CFG.timeframe} | "
+                 f"history={_hd}d | tail={_tb} bars/sym | "
+                 f"min_for_process={_mb} bars | "
+                 f"quality={_qual} | source={_src}")
+
+    # Quality indicators
+    _strict = 2 * int(CFG.K_MAX) * int(getattr(CFG, 'K_MIN_TRAIN_POINTS_PER_CLUSTER', 100)) + int(CFG.N)
+    if _qual == "full":
+        log.info(f"[Data] K can reach K_MAX={CFG.K_MAX} "
+                 f"(tail ≥ strict_min={_strict}).")
+    elif _qual == "reduced":
+        _k_est = max(int(CFG.K_MIN), _tb // 2 // int(getattr(CFG, 'K_MIN_TRAIN_POINTS_PER_CLUSTER', 100)))
+        _k_est = min(_k_est, int(CFG.K_MAX))
+        log.info(f"[Data] K will be capped near {_k_est} "
+                 f"(tail < strict_min={_strict}). "
+                 f"Normal for large TFs (4h, 1d) or low --history-days.")
+    else:  # degraded
+        log.warning(
+            f"[Data] degraded quality: tail={_tb} < strict_min/2={_strict//2}. "
+            f"Many assets may be skipped by degenerate detection. "
+            f"Recommended minimum for {CFG.timeframe}: "
+            f"--history-days {int(np.ceil(_strict * 1.4 * CFG.TF_HOURS / 24))}."
+        )
+
     if args.ml_filter:
         CFG.ML_FILTER_ENABLED = True
         if args.ml_model:
