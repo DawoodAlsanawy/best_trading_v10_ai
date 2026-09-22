@@ -297,6 +297,27 @@ class Config:
     KILL_STATE_ARMED: str = "ARMED"
     KILL_STATE_WARNING: str = "WARNING"
     KILL_STATE_TRIGGERED: str = "TRIGGERED"
+    # ══ [ADAPTIVE FIX #1] Z-score thresholds for dH/dF ══
+    # Absolute thresholds (0.005, -0.01) fire ~50% of bars → noise.
+    # Z-scores make thresholds fire ~16% of bars → real signal.
+    DH_ENTROPY_Z: float = -1.0
+    DF_FREE_E_Z:  float = -1.0
+    DH_HMM_UPPER_Z: float = 0.5
+    DH_HMM_LOWER_Z: float = -0.5
+
+    # ══ [ADAPTIVE FIX #2] Data-bound K ══
+    # Prevents degenerate clustering when train data is small (e.g. 4h TF).
+    K_MIN_TRAIN_POINTS_PER_CLUSTER: int = 100
+    K_SKIP_IF_DEGENERATE: bool = True
+    K_DEGENERATE_H_RATIO: float = 0.25
+
+    # ══ [ADAPTIVE FIX #3] Tick-based penetration ══
+    # WIF has 0.254 ticks/bps → 1 bps < 1 tick → orders can't fill properly.
+    PO_USE_TICK_PENETRATION: bool = True
+
+    # ══ [ADAPTIVE FIX #4] Dynamic MIN_SCORE (per-asset quantile) ══
+    DYNAMIC_MIN_SCORE_ENABLED: bool = False   # opt-in
+    DYNAMIC_MIN_SCORE_Q: float = 0.95
 
 CFG = Config()
 
@@ -314,9 +335,9 @@ def _default_assets():
     return ["BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT","XRP/USDT",
             "DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT","DOT/USDT",
             "LTC/USDT","UNI/USDT","ATOM/USDT","ETC/USDT","POL/USDT",
-            "XAG/USDT","TRX/USDT","TON/USDT","BCH/USDT","NEAR/USDT",
+            "TRX/USDT","TON/USDT","BCH/USDT","NEAR/USDT",
             "APT/USDT","HBAR/USDT","VET/USDT",
-            "STX/USDT","AAVE/USDT","ARB/USDT",
+            "AAVE/USDT","ARB/USDT",
             "OP/USDT","INJ/USDT","SUI/USDT","TIA/USDT","SEI/USDT",
             "ALGO/USDT","GRT/USDT","FET/USDT","RENDER/USDT",
             "LDO/USDT","KAS/USDT","WIF/USDT","THETA/USDT","EGLD/USDT",
@@ -377,6 +398,30 @@ def _default_assets():
 #    ]
 
 # "ADA/USDT"
+
+def _robust_center_scale(x):
+    """
+    Robust center and scale for z-scoring heavy-tailed features.
+    - Center: median (immune to outliers)
+    - Scale:  IQR / 1.349 (matches σ for normal distributions)
+    - Fallback to mean/std if IQR is degenerate.
+    Returns (center, scale) with scale > 0.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    x = x[np.isfinite(x)]
+    if len(x) < 10:
+        return 0.0, 1.0
+    med = float(np.median(x))
+    q25, q75 = np.percentile(x, [25, 75])
+    iqr = q75 - q25
+    if iqr > 1e-12:
+        scale = iqr / 1.349
+    else:
+        scale = float(np.std(x))
+        if scale <= 1e-12:
+            scale = 1.0
+    return med, scale
+
 def scan_top_assets(exchange, n=None) -> List[str]:
     n = n or CFG.n_assets
     try:
@@ -586,19 +631,33 @@ def compute_features(closes, volumes, N=None):
 # § 4  التكميم الديناميكي (التعديل ③)
 # ════════════════════════════════════════════════════════════════
 
-def compute_dynamic_k(current_capital: float, adv_usd: np.ndarray) -> int:
+def compute_dynamic_k(current_capital: float, adv_usd: np.ndarray,
+                       n_train_features: Optional[int] = None) -> int:
     """
-    التعديل ③: K(C) = max(K_MIN, floor(K_MAX · exp(-α · C/ADV)))
-    
-    الفيزياء: دقة القياس ∝ 1/كتلة_الجسيم
-    رأس المال الكبير = جسيم ثقيل = K صغير (تجاهل الضجيج الصغير)
-    رأس المال الصغير = جسيم خفيف = K كبير (رصد الفرص المجهرية)
+    Capital-based K, then capped by data-support bound.
+
+    Capital formula (unchanged):
+        K_C = clamp(K_MAX · exp(-α·C/ADV), K_MIN, K_MAX)
+
+    Data-support cap (new):
+        K_data = n_train_features / MIN_POINTS_PER_CLUSTER
+        K = min(K_C, K_data)
+
+    Rationale: on 4h TF with 930 features and train=465, K=11 produced
+    H/theo=0.107 (degenerate). Requiring ≥100 train points per cluster
+    yields K_data=4, preventing the collapse.
     """
     adv_mean = float(np.mean(adv_usd[adv_usd > 0])) if np.any(adv_usd > 0) else 1e6
     capital_ratio = current_capital / (adv_mean + CFG.EPSILON)
-    dynamic_k = int(np.floor(CFG.K_MAX * np.exp(-CFG.KQUANT_ALPHA * capital_ratio)))
-    dynamic_k = max(CFG.K_MIN, min(CFG.K_MAX, dynamic_k))
-    return dynamic_k
+    k_c = int(np.floor(CFG.K_MAX * np.exp(-CFG.KQUANT_ALPHA * capital_ratio)))
+    k_c = max(CFG.K_MIN, min(CFG.K_MAX, k_c))
+
+    if n_train_features is not None and n_train_features > 0:
+        min_pts = int(getattr(CFG, 'K_MIN_TRAIN_POINTS_PER_CLUSTER', 100))
+        k_data = max(CFG.K_MIN, n_train_features // max(min_pts, 1))
+        k_c = min(k_c, k_data)
+
+    return int(k_c)
 
 
 def fit_kmeans(X, k=None):
@@ -1139,6 +1198,7 @@ class AssetData:
     friction: np.ndarray        # الاحتكاك الإنتروبي Γ(S)
     delta_gap: np.ndarray       # فجوة التوازن الإحصائي Δ(n)
     geodesic_accel: np.ndarray  # التسارع الجيوديسي النهائي d/dτ(λ_dot)
+    score_q95_train: float      # [ADAPTIVE] Q95 of score on training portion
 
 @dataclass
 class Signal:
@@ -1247,7 +1307,8 @@ def process_asset(symbol, df, km_ext=None, current_capital=None):
     # ══ التعديل ③: K ديناميكي ════════════════════════════════
     adv_raw = pd.Series(vols*closes).rolling(24, min_periods=1).mean().values
     cap_now = current_capital if current_capital else CFG.INITIAL_CAPITAL
-    dyn_k   = compute_dynamic_k(cap_now, adv_raw[:train_end+feat_start])
+    dyn_k   = compute_dynamic_k(cap_now, adv_raw[:train_end+feat_start],
+                                 n_train_features=train_end)
     # ══════════════════════════════════════════════════════════
 
     km = km_ext if km_ext else fit_kmeans(X[:train_end], k=dyn_k)
@@ -1256,6 +1317,22 @@ def process_asset(symbol, df, km_ext=None, current_capital=None):
     H   = entropy_series(sym_q, k=dyn_k)
     dH  = np.diff(H,  prepend=H[0])
     d2H = np.diff(dH, prepend=dH[0])
+
+    # ══ [ADAPTIVE FIX #2b] Degenerate clustering detection ══
+    # If training-set entropy is far below theoretical max, KMeans has
+    # collapsed to a few effective clusters → features are meaningless.
+    # Skip this (symbol, TF) entirely.
+    if getattr(CFG, 'K_SKIP_IF_DEGENERATE', True):
+        _H_train_mean = float(np.mean(H[:max(train_end, 1)]))
+        _H_theo = np.log2(max(int(dyn_k), 2))
+        _ratio = _H_train_mean / max(_H_theo, 1e-9)
+        if _ratio < float(getattr(CFG, 'K_DEGENERATE_H_RATIO', 0.25)):
+            log.warning(
+                f"[process_asset] {symbol}: degenerate clustering "
+                f"(H_train={_H_train_mean:.3f}, H_theo={_H_theo:.3f}, "
+                f"ratio={_ratio:.3f}, K={dyn_k}) — returning None"
+            )
+            return None
 
     lr_full = np.diff(np.log(np.maximum(closes,1e-12)))
     E_therm = np.zeros(n)
@@ -1296,19 +1373,33 @@ def process_asset(symbol, df, km_ext=None, current_capital=None):
     V_q20 = np.percentile(vv,20) if len(vv)>0 else np.percentile(V_tr,20)
     V_q20a = np.full(n, V_q20)
 
-    h = np.ones(n, dtype=np.int32)
-    h[dH >  CFG.DH_HMM_UPPER] = 0
-    h[dH <  CFG.DH_HMM_LOWER] = 2
+    # ══ [ADAPTIVE FIX #1] Robust z-scores for dH and dF ══
+    # Fit center/scale on TRAINING portion only (causality preserved),
+    # then apply to entire series. This makes thresholds fire ~16% of
+    # bars (real signal) instead of ~50% (noise).
+    _dH_mu, _dH_sd = _robust_center_scale(dH[:max(train_end, 1)])
+    _dF_mu, _dF_sd = _robust_center_scale(dF[:max(train_end, 1)])
+    dH_z = (dH - _dH_mu) / max(_dH_sd, 1e-12)
+    dF_z = (dF - _dF_mu) / max(_dF_sd, 1e-12)
 
-    # تقييم نقاط القوة بناءً على القوة الجيوديسية الصافية بدلاً من الترجيح الخطي العشوائي
+    # HMM state from z-scored dH
+    h = np.ones(n, dtype=np.int32)
+    h[dH_z >  CFG.DH_HMM_UPPER_Z] = 0
+    h[dH_z <  CFG.DH_HMM_LOWER_Z] = 2
+
+    # Score uses z-thresholds
     sc = np.zeros(n)
-    sc += np.abs(geodesic_accel) * 10.0  
+    sc += np.abs(geodesic_accel) * 10.0
     sc += CFG.W_CURV    * (C > CFG.CURV_THRESHOLD).astype(float)
     sc += CFG.W_VOL     * (V < V_q20a).astype(float)
-    sc += CFG.W_ENTROPY * ((dH < CFG.DH_ENTROPY_THRESHOLD) & (d2H < 0)).astype(float)
-    sc += CFG.W_HMM     * ((h==2)|((h==0)&(dH<-CFG.DH_ENTROPY_THRESHOLD))).astype(float)
-    sc += CFG.W_FREE_E  * (dF < CFG.DF_FREE_E_THRESHOLD).astype(float)
+    sc += CFG.W_ENTROPY * ((dH_z < CFG.DH_ENTROPY_Z) & (d2H < 0)).astype(float)
+    sc += CFG.W_HMM     * ((h == 2) | ((h == 0) & (dH_z < -CFG.DH_ENTROPY_Z))).astype(float)
+    sc += CFG.W_FREE_E  * (dF_z < CFG.DF_FREE_E_Z).astype(float)
     # ══════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════
+
+    # ══ [ADAPTIVE FIX #4] Q95 of score on training portion ══
+    _score_q95_train = float(np.percentile(sc[:max(train_end, 1)], 95))
 
     # ══ حساب EMA وتسارعه (التعديل ⑤) ════════════════════════
     ema200_series = pd.Series(closes).ewm(span=CFG.EMA_SPAN, adjust=False).mean().values
@@ -1340,7 +1431,8 @@ def process_asset(symbol, df, km_ext=None, current_capital=None):
         train_end=train_end, feat_start=feat_start, km=km,
         dynamic_k=dyn_k,
         gauge_force=gauge_force, friction=friction,
-        delta_gap=delta_gap, geodesic_accel=geodesic_accel
+        delta_gap=delta_gap, geodesic_accel=geodesic_accel,
+        score_q95_train=_score_q95_train
     )
 
 
@@ -1634,7 +1726,12 @@ def build_signals(assets, mode="backtest"):
             if micro_momentum == 0: continue
             action = "BUY" if micro_momentum > 0 else "SELL"
 
-            if ad.score[fi] < CFG.MIN_SCORE: continue
+            # ══ [ADAPTIVE FIX #4] dynamic per-asset MIN_SCORE ══
+            _min_score = float(CFG.MIN_SCORE)
+            if getattr(CFG, 'DYNAMIC_MIN_SCORE_ENABLED', False):
+                _min_score = float(getattr(ad, 'score_q95_train',
+                                            CFG.MIN_SCORE))
+            if ad.score[fi] < _min_score: continue
 
             # ══ [SR FILTER] SL must be protected by strong support/resistance ══
             # (computed after SL/TP is known — moved below in this version)
@@ -1693,20 +1790,40 @@ def deduplicate_signals(sigs):
     if not sigs:
         return sigs
 
-    # Determine bucket label from TF_SECONDS
+#    # Determine bucket label from TF_SECONDS
+#    tf_sec = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
+#    if tf_sec <= 60:
+#        bucket = '1m'
+#    elif tf_sec <= 300:
+#        bucket = '5m'
+#    elif tf_sec <= 900:
+#        bucket = '15m'
+#    elif tf_sec <= 3600:
+#        bucket = '1h'
+#    elif tf_sec <= 14400:
+#        bucket = '4h'
+#    else:
+#        bucket = '1d'
+    # Determine bucket label from TF_SECONDS.
+    # [PANDAS-FIX] 'm' now means month-end in pandas ≥ 2.2.
+    # Use 'min' for minutes. Hours/days unchanged.
     tf_sec = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
     if tf_sec <= 60:
-        bucket = '1m'
+        bucket = '1min'
     elif tf_sec <= 300:
-        bucket = '5m'
+        bucket = '5min'
     elif tf_sec <= 900:
-        bucket = '15m'
+        bucket = '15min'
+    elif tf_sec <= 1800:
+        bucket = '30min'
     elif tf_sec <= 3600:
         bucket = '1h'
     elif tf_sec <= 14400:
         bucket = '4h'
+    elif tf_sec <= 86400:
+        bucket = '1D'
     else:
-        bucket = '1d'
+        bucket = '1D'
 
     groups = defaultdict(list)
     for s in sigs:
@@ -3715,6 +3832,49 @@ def urgency_kappa(t_elapsed: float, t_total: float, kappa: float) -> float:
     frac = t_elapsed / t_total
     return float(1.0 - np.exp(-kappa * frac))
 
+_TICK_SIZE_CACHE: Dict[str, float] = {}
+
+def _get_tick_size(exchange, symbol: str) -> Optional[float]:
+    """
+    Fetch and cache price tick size for a symbol.
+
+    Priority:
+      1. Binance PRICE_FILTER.tickSize (canonical for futures).
+      2. ccxt precision['price'] if it's a positive float.
+
+    Returns None if unavailable — caller must fall back to bps math.
+    """
+    if symbol in _TICK_SIZE_CACHE:
+        return _TICK_SIZE_CACHE[symbol]
+    try:
+        mkt = exchange.market(symbol)
+    except Exception:
+        return None
+    if not mkt:
+        return None
+
+    info = mkt.get('info') or {}
+    for f in (info.get('filters') or []):
+        if isinstance(f, dict) and f.get('filterType') == 'PRICE_FILTER':
+            try:
+                ts = float(f.get('tickSize', 0))
+                if ts > 0 and np.isfinite(ts):
+                    _TICK_SIZE_CACHE[symbol] = ts
+                    return ts
+            except Exception:
+                pass
+
+    prec = (mkt.get('precision') or {}).get('price')
+    if prec is not None:
+        try:
+            ts = float(prec)
+            if ts > 0 and np.isfinite(ts):
+                _TICK_SIZE_CACHE[symbol] = ts
+                return ts
+        except Exception:
+            pass
+    return None
+
 # ════════════════════════════════════════════════════════════════
 # § 18.5  بروتوكول مايسنر لمنع الانزلاق (Quantum Chunking)
 # ════════════════════════════════════════════════════════════════
@@ -3744,13 +3904,16 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
     max_drift = float(getattr(CFG, 'PO_MAX_DRIFT_BPS', 5.0))
 
     t0 = time.time()
-    active = None           # {'id','price','qty','counted_fill','counted_cost','terminal'}
+    active = None
     total_filled = 0.0
     total_cost = 0.0
     remaining = qty
     attempts = 0
     last_bid = 0.0
     last_ask = 0.0
+
+    # ══ [ADAPTIVE FIX #3] Fetch tick size once ══
+    _tick = _get_tick_size(exchange, symbol)
 
     def _refresh_active():
         """Fetch latest order state; update total_filled via DELTA only."""
@@ -3801,8 +3964,18 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
             if _fixed:
                 target = float(fixed_target)
             else:
-                target = (last_bid * (1.0 - pen)) if side == 'buy' \
-                         else (last_ask * (1.0 + pen))
+                _base = last_bid if side == 'buy' else last_ask
+                if (getattr(CFG, 'PO_USE_TICK_PENETRATION', True)
+                        and _tick and _tick > 0 and _base > 0):
+                    # Convert bps to ticks, ensure ≥ 1 tick penetration
+                    _pen_abs = max(pen * _base, _tick)
+                    _pen_ticks = int(np.ceil(_pen_abs / _tick))
+                    _pen_abs = _pen_ticks * _tick
+                    target = (_base - _pen_abs if side == 'buy'
+                              else _base + _pen_abs)
+                else:
+                    target = (_base * (1.0 - pen) if side == 'buy'
+                              else _base * (1.0 + pen))
 
             # 3. Refresh active state (handles ALL statuses)
             _refresh_active()
@@ -5187,8 +5360,21 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
             ob = exchange.fetch_order_book(sym, limit=5)
             last_bid = float(ob['bids'][0][0])
             last_ask = float(ob['asks'][0][0])
-            target = (last_bid * (1.0 - pen) if side == 'buy'
-                      else last_ask * (1.0 + pen))
+            _base = last_bid if side == 'buy' else last_ask
+
+            # ══ [ADAPTIVE FIX #3] tick-based penetration ══
+            _tick = _get_tick_size(exchange, sym)
+            if (getattr(CFG, 'PO_USE_TICK_PENETRATION', True)
+                    and _tick and _tick > 0 and _base > 0):
+                _pen_abs = max(pen * _base, _tick)
+                _pen_ticks = int(np.ceil(_pen_abs / _tick))
+                _pen_abs = _pen_ticks * _tick
+                target = (_base - _pen_abs if side == 'buy'
+                          else _base + _pen_abs)
+            else:
+                target = (_base * (1.0 - pen) if side == 'buy'
+                          else _base * (1.0 + pen))
+
             # Sanity gate: refuse if target drifts too far from mid
             _mid = (last_bid + last_ask) / 2.0
             if _mid > 0:
@@ -6169,6 +6355,8 @@ def main():
     p.add_argument("--cosm-const",  type=float, default=None)
     p.add_argument("--k-min",       type=int,   default=None)
     p.add_argument("--k-max",       type=int,   default=None)
+    p.add_argument("--timeframe",       choices=["4h","1h", "30m", "15m","5m","1m"],   default="1h")
+    p.add_argument("--history-days",       type=int,   default=None)
     p.add_argument("--no-numba", action="store_true",
                    help="Disable Numba kernels and use pure-Python fallback")
     p.add_argument("--nassets",       type=int,   default=15)
@@ -6261,6 +6449,8 @@ def main():
     if args.cosm_const is not None: CFG.COSMOLOGICAL_CONSTANT = args.cosm_const
     if args.k_min     is not None: CFG.K_MIN = args.k_min
     if args.k_max     is not None: CFG.K_MAX = args.k_max
+    if args.timeframe     is not None: CFG.timeframe = args.timeframe
+    if args.history_days     is not None: CFG.history_days = args.history_days
     if args.po_pen_bps is not None:  CFG.PO_PENETRATION_BPS = args.po_pen_bps
     if args.po_wait_s is not None:   CFG.PO_MAX_WAIT_S = args.po_wait_s
     if args.heat_max is not None: CFG.PORTFOLIO_HEAT_MAX = args.heat_max
