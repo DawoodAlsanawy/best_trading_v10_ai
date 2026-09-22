@@ -148,7 +148,7 @@ class Config:
 
     TRAIN_FRACTION: float=0.50
 
-    LIVE_POLL_SECS: int=60; LIVE_ORDER_TYPE: str = "MARKET"
+    LIVE_POLL_SECS: int=5; LIVE_ORDER_TYPE: str = "MARKET"
     EPSILON: float=1e-9
 
     GAMMA_0: float = 0.01

@@ -148,7 +148,7 @@ class Config:
 
     TRAIN_FRACTION: float=0.50
 
-    LIVE_POLL_SECS: int=60; LIVE_ORDER_TYPE: str = "MARKET"
+    LIVE_POLL_SECS: int=5 ; LIVE_ORDER_TYPE: str = "MARKET"
     EPSILON: float=1e-9
 
     GAMMA_0: float = 0.01
@@ -201,8 +201,8 @@ class Config:
 
     # ══ [POST-ONLY EXECUTION] ══
     PO_PENETRATION_BPS: float = 1.0      # match backtest's FILL_PENETRATION_BPS
-    PO_MAX_WAIT_S: int = 30              # entry wait time (per attempt)
-    PO_EXIT_MAX_WAIT_S: int = 30          # reduced from 180 to prevent long blocking
+    PO_MAX_WAIT_S: int = 200              # entry wait time (per attempt)
+    PO_EXIT_MAX_WAIT_S: int = 45          # reduced from 180 to prevent long blocking
     PO_REPRICE_S: float = 3.0            # cancel/replace interval
     PO_FILL_THRESHOLD: float = 0.50      # accept partial if ≥ 50%
     PO_EXIT_FALLBACK_MARKET: bool = True # exit → market after timeout
@@ -223,7 +223,8 @@ class Config:
     BUDGET_ENABLED: bool = True            # master switch
     # ══ [STATE MACHINE — Persistent Symbol Metadata] ══
     SYMBOL_META_FILE: str = "symbol_meta"
-    RECONCILE_INTERVAL_S: int = 30
+    RECONCILE_INTERVAL_S: int = 3600   # [PERF] 30s → 60min
+    FAST_MONITOR_SECS: float = 5.0     # [EXIT] فحص سريع للمراكز
     SETUP_VERIFY_LEVERAGE: bool = True
     FILL_VERIFY_TIMEOUT_S: float = 5.0
 
@@ -262,11 +263,11 @@ class Config:
     REENTRY_COOLDOWN_ENABLED: bool = True
     # ══ [LIVE ASSET CACHE — reuse AssetData when closed bar unchanged] ══
     LIVE_ASSET_CACHE_ENABLED: bool = True
-    LIVE_ASSET_CACHE_MAX: int = 200           # max entries (safety)
+    LIVE_ASSET_CACHE_MAX: int = 40           # max entries (safety)
     # ══ [FIXED PRICE ENTRY — no chasing] ══
     PO_FIXED_PRICE: bool = True              # use sig.price, hold it fixed
     # ══ [ATOMIC FILL ACCOUNTING] ══
-    PO_MAX_ATTEMPTS: int = 3              # reduced from 5 (rate-limit safety)
+    PO_MAX_ATTEMPTS: int = 20              # reduced from 5 (rate-limit safety)
     PO_MAX_DRIFT_BPS: float = 5.0
     PO_MIN_ACCEPT_RATIO: float = 0.50     # reject below 50% (was 0.15, comment was misleading)
 
@@ -309,71 +310,71 @@ CFG = Config()
 #            "DOGE/USDT","AVAX/USDT","LINK/USDT","DOT/USDT",
 #            "LTC/USDT","UNI/USDT","ATOM/USDT","ETC/USDT","POL/USDT"]
 
-#def _default_assets():
-#    return ["BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT","XRP/USDT",
-#            "DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT","DOT/USDT",
-#            "LTC/USDT","UNI/USDT","ATOM/USDT","ETC/USDT","POL/USDT",
-#            "XAG/USDT","TRX/USDT","TON/USDT","BCH/USDT","NEAR/USDT",
-#            "APT/USDT","HBAR/USDT","VET/USDT",
-#            "STX/USDT","AAVE/USDT","ARB/USDT",
-#            "OP/USDT","INJ/USDT","SUI/USDT","TIA/USDT","SEI/USDT",
-#            "ALGO/USDT","GRT/USDT","FET/USDT","RENDER/USDT",
-#            "LDO/USDT","KAS/USDT","WIF/USDT","THETA/USDT","EGLD/USDT",
-#            "SAND/USDT","MANA/USDT","AXS/USDT","XLM/USDT","CHZ/USDT"]
 def _default_assets():
-    # أعلى 50 عملة من حيث القيمة السوقية مع قبول رافعة 50x على Binance Futures
-    return [
-        "BTC/USDT",   # بيتكوين - أعلى سيولة، رافعة 125x
-        "ETH/USDT",   # إيثيريوم - ثاني أعلى سيولة، رافعة 100x
-        "BNB/USDT",   # بيнанс كوين - رافعة 75x
-        "SOL/USDT",   # سولانا - رافعة 50x
-        "XRP/USDT",   # ريبل - رافعة 50x
-        "DOGE/USDT",  # دوجكوين - رافعة 50x
-        "ADA/USDT",   # كاردانو - رافعة 50x
-        "AVAX/USDT",  # أفالانش - رافعة 50x
-        "LINK/USDT",  # تشين لينك - رافعة 50x
-        "DOT/USDT",   # بولكادوت - رافعة 50x
-        "LTC/USDT",   # لايتكوين - رافعة 50x
-        "UNI/USDT",   # يونيسواب - رافعة 50x
-        "ATOM/USDT",  # كوزموس - رافعة 50x
-        "ETC/USDT",   # إيثيريوم كلاسيك - رافعة 50x
-        "TRX/USDT",   # ترون - رافعة 50x
-        "TON/USDT",   # تون كوين - رافعة 50x
-        "BCH/USDT",   # بيتكوين كاش - رافعة 50x
-        "NEAR/USDT",  # نير بروتوكول - رافعة 50x
-        "APT/USDT",   # أبتوس - رافعة 50x
-        "HBAR/USDT",  # هيدرا - رافعة 50x
-        "VET/USDT",   # في تشين - رافعة 50x
-        "STX/USDT",   # ستاكس - رافعة 50x
-        "AAVE/USDT",  # آفي - رافعة 50x
-        "ARB/USDT",   # أربيتروم - رافعة 50x
-        "OP/USDT",    # أوبتيميزم - رافعة 50x
-        "INJ/USDT",   # إنجكتيف - رافعة 50x
-        "SUI/USDT",   # سوي - رافعة 50x
-        "TIA/USDT",   # سيليستيا - رافعة 50x
-        "SEI/USDT",   # ساي - رافعة 50x
-        "ALGO/USDT",  # ألجوراند - رافعة 50x
-        "GRT/USDT",   # ذا غراف - رافعة 50x
-        "FET/USDT",   # فيتشد أيه آي - رافعة 50x
-        "RENDER/USDT",# ريندر - رافعة 50x
-        "LDO/USDT",   # ليدو داو - رافعة 50x
-        "KAS/USDT",   # كاسبا - رافعة 50x
-        "WIF/USDT",   # دوج ويف هات - رافعة 50x
-        "THETA/USDT", # ثيتا - رافعة 50x
-        "EGLD/USDT",  # مولتي فيرس إكس - رافعة 50x
-        "SAND/USDT",  # ذا ساندبوكس - رافعة 50x
-        "MANA/USDT",  # ديسنترالاند - رافعة 50x
-        "AXS/USDT",   # أكسي إنفينيتي - رافعة 50x
-        "XLM/USDT",   # ستيلر - رافعة 50x
-        "CHZ/USDT",   # تشيليز - رافعة 50x
-        "POL/USDT",   # بوليجون (سابقاً MATIC) - رافعة 50x
-        "FIL/USDT",   # فيل كوين - رافعة 50x
-        "QNT/USDT",   # كوانت - رافعة 50x
-        "DASH/USDT",  # داش - رافعة 50x
-        "ZEC/USDT",   # زدكاش - رافعة 50x
-        "XMR/USDT",   # مونيرو - رافعة 50x
-#        "EOS/USDT"    # إيوس - رافعة 50x
-    ]
+    return ["BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT","XRP/USDT",
+            "DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT","DOT/USDT",
+            "LTC/USDT","UNI/USDT","ATOM/USDT","ETC/USDT","POL/USDT",
+            "XAG/USDT","TRX/USDT","TON/USDT","BCH/USDT","NEAR/USDT",
+            "APT/USDT","HBAR/USDT","VET/USDT",
+            "STX/USDT","AAVE/USDT","ARB/USDT",
+            "OP/USDT","INJ/USDT","SUI/USDT","TIA/USDT","SEI/USDT",
+            "ALGO/USDT","GRT/USDT","FET/USDT","RENDER/USDT",
+            "LDO/USDT","KAS/USDT","WIF/USDT","THETA/USDT","EGLD/USDT",
+            "SAND/USDT","MANA/USDT","AXS/USDT","XLM/USDT","CHZ/USDT"]
+#def _default_assets():
+#    # أعلى 50 عملة من حيث القيمة السوقية مع قبول رافعة 50x على Binance Futures
+#    return [
+#        "BTC/USDT",   # بيتكوين - أعلى سيولة، رافعة 125x
+#        "ETH/USDT",   # إيثيريوم - ثاني أعلى سيولة، رافعة 100x
+#        "BNB/USDT",   # بيнанс كوين - رافعة 75x
+#        "SOL/USDT",   # سولانا - رافعة 50x
+#        "XRP/USDT",   # ريبل - رافعة 50x
+#        "DOGE/USDT",  # دوجكوين - رافعة 50x
+#        "ADA/USDT",   # كاردانو - رافعة 50x
+#        "AVAX/USDT",  # أفالانش - رافعة 50x
+#        "LINK/USDT",  # تشين لينك - رافعة 50x
+#        "DOT/USDT",   # بولكادوت - رافعة 50x
+#        "LTC/USDT",   # لايتكوين - رافعة 50x
+#        "UNI/USDT",   # يونيسواب - رافعة 50x
+#        "ATOM/USDT",  # كوزموس - رافعة 50x
+#        "ETC/USDT",   # إيثيريوم كلاسيك - رافعة 50x
+#        "TRX/USDT",   # ترون - رافعة 50x
+#        "TON/USDT",   # تون كوين - رافعة 50x
+#        "BCH/USDT",   # بيتكوين كاش - رافعة 50x
+#        "NEAR/USDT",  # نير بروتوكول - رافعة 50x
+#        "APT/USDT",   # أبتوس - رافعة 50x
+#        "HBAR/USDT",  # هيدرا - رافعة 50x
+#        "VET/USDT",   # في تشين - رافعة 50x
+#        "STX/USDT",   # ستاكس - رافعة 50x
+#        "AAVE/USDT",  # آفي - رافعة 50x
+#        "ARB/USDT",   # أربيتروم - رافعة 50x
+#        "OP/USDT",    # أوبتيميزم - رافعة 50x
+#        "INJ/USDT",   # إنجكتيف - رافعة 50x
+#        "SUI/USDT",   # سوي - رافعة 50x
+#        "TIA/USDT",   # سيليستيا - رافعة 50x
+#        "SEI/USDT",   # ساي - رافعة 50x
+#        "ALGO/USDT",  # ألجوراند - رافعة 50x
+#        "GRT/USDT",   # ذا غراف - رافعة 50x
+#        "FET/USDT",   # فيتشد أيه آي - رافعة 50x
+#        "RENDER/USDT",# ريندر - رافعة 50x
+#        "LDO/USDT",   # ليدو داو - رافعة 50x
+#        "KAS/USDT",   # كاسبا - رافعة 50x
+#        "WIF/USDT",   # دوج ويف هات - رافعة 50x
+#        "THETA/USDT", # ثيتا - رافعة 50x
+#        "EGLD/USDT",  # مولتي فيرس إكس - رافعة 50x
+#        "SAND/USDT",  # ذا ساندبوكس - رافعة 50x
+#        "MANA/USDT",  # ديسنترالاند - رافعة 50x
+#        "AXS/USDT",   # أكسي إنفينيتي - رافعة 50x
+#        "XLM/USDT",   # ستيلر - رافعة 50x
+#        "CHZ/USDT",   # تشيليز - رافعة 50x
+#        "POL/USDT",   # بوليجون (سابقاً MATIC) - رافعة 50x
+#        "FIL/USDT",   # فيل كوين - رافعة 50x
+#        "QNT/USDT",   # كوانت - رافعة 50x
+#        "DASH/USDT",  # داش - رافعة 50x
+#        "ZEC/USDT",   # زدكاش - رافعة 50x
+#        "XMR/USDT",   # مونيرو - رافعة 50x
+##        "EOS/USDT"    # إيوس - رافعة 50x
+#    ]
 
 # "ADA/USDT"
 def scan_top_assets(exchange, n=None) -> List[str]:
@@ -1477,17 +1478,23 @@ def build_signals(assets, mode="backtest"):
     sigs = []
     for sym, ad in assets.items():
         n = len(ad.score)
-        for fi in range(ad.train_end+1, n):
+        # [PERF-FIX] في live نحتاج قيمة fi واحدة فقط، لا 17,500
+        if mode == "backtest":
+            fi_range = range(ad.train_end + 1, n)
+        else:
+            _target_ci = len(ad.closes) - 2
+            _target_fi = _target_ci - ad.feat_start
+            if _target_fi < ad.train_end + 1 or _target_fi >= n:
+                continue
+            fi_range = (_target_fi,)
+
+        for fi in fi_range:
             ci = ad.feat_start + fi
-            
+
             # كسر سجن الزمن
             if mode == "backtest":
                 if ci >= len(ad.closes) - 1: continue
             else:
-                # Live: use only the last CLOSED candle.
-                # In live data, closes[-1] is the currently-FORMING candle;
-                # closes[-2] is the last CLOSED candle.
-                # This matches backtest semantics exactly.
                 if ci != len(ad.closes) - 2: continue
 
             p = ad.closes[ci]
@@ -5429,12 +5436,19 @@ def run_live(cfg, exchange):
             except Exception as _e:
                 log.warning(f"[Pending] monitor error: {_e}")
             
-            # ══ [ReconcileMeta] verify symbol metadata every 30 min ══
+            # ══ [ReconcileMeta] verify symbol metadata rarely ══
+            # [PERF-FIX] 1) Init to NOW (was 0.0 → ran immediately on first loop
+            #              with 50 symbols = 100 API calls = 30-60s freeze)
+            #            2) Only held symbols
+            #            3) Every 6 hours (was 30 min)
             if not hasattr(run_live, '_last_meta_reconcile'):
-                run_live._last_meta_reconcile = 0.0
-            if time.time() - run_live._last_meta_reconcile > 1800:
+                run_live._last_meta_reconcile = time.time()
+            _meta_syms = list(set(open_pos_live.keys())
+                              | set(_PENDING_ORDERS.keys()))
+            if (_meta_syms
+                    and time.time() - run_live._last_meta_reconcile > 21600):
                 try:
-                    reconcile_symbol_meta(exchange, top_syms)
+                    reconcile_symbol_meta(exchange, _meta_syms)
                 except Exception as e:
                     log.warning(f"[ReconcileMeta] failed: {e}")
                 run_live._last_meta_reconcile = time.time()
@@ -5465,9 +5479,16 @@ def run_live(cfg, exchange):
                 cap_live = _last_known_cap
 
             peak_cap_live = max(peak_cap_live, cap_live)
-            if int(time.time() / 60) % 5 == 0:  # once per 5 minutes
-                open_pos_live = reconcile_positions(exchange, open_pos_live)
-            assets = {}
+            # [PERF-FIX] كان int(time.time()/60)%5 ينفَّذ لكل دورة داخل الدقيقة
+            if not hasattr(run_live, '_last_pos_reconcile'):
+                run_live._last_pos_reconcile = time.time()
+            if (time.time() - run_live._last_pos_reconcile > 1800
+                    and len(open_pos_live) > 0):
+                try:
+                    open_pos_live = reconcile_positions(exchange, open_pos_live)
+                except Exception as _e:
+                    log.warning(f"[Reconcile] positions failed: {_e}")
+                run_live._last_pos_reconcile = time.time()
             assets = {}
             # ══ [LIVE CACHE] track last_closed per symbol ══
             _current_last_closed: Dict[str, int] = {}
@@ -5933,13 +5954,22 @@ def run_live(cfg, exchange):
                     except Exception as e:
                         log.error(f"[Entry] {sym} exception: {e}")
 
-            # ══ Periodic reconcile (every RECONCILE_INTERVAL_S) ══
+            # ══ Periodic reconcile ══
+            # [PERF-FIX] 1) Init to NOW (not 0.0) — skip on first loop
+            #            2) Only held/pending symbols (not all 50)
             if not hasattr(run_live, '_last_reconcile'):
-                run_live._last_reconcile = 0.0
-            if time.time() - run_live._last_reconcile > CFG.RECONCILE_INTERVAL_S:
-                open_pos_live = reconcile_state_machine(
-                    exchange, open_pos_live, top_syms
-                )
+                run_live._last_reconcile = time.time()
+            _recon_syms = list(set(open_pos_live.keys())
+                               | set(_PENDING_ORDERS.keys()))
+            if (_recon_syms
+                    and time.time() - run_live._last_reconcile
+                        > CFG.RECONCILE_INTERVAL_S):
+                try:
+                    open_pos_live = reconcile_state_machine(
+                        exchange, open_pos_live, _recon_syms
+                    )
+                except Exception as _e:
+                    log.warning(f"[Reconcile] state machine failed: {_e}")
                 run_live._last_reconcile = time.time()
 
             # ══ Persist state ══
