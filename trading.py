@@ -351,6 +351,44 @@ class Config:
     LIQ_EMERGENCY_REFRESH_COOLDOWN_S: int = 30
     # Warn user if LiqProximity triggers too often (unsafe leverage regime).
     LIQ_EMERGENCY_WARN_AT: int = 5
+    # ══ [ADVANCED TRAILING — Physics-Adaptive Chandelier] ══
+    TRAIL_ADVANCED_ENABLED: bool = True
+    # Chandelier: SL = peak - k × ATR_current
+    TRAIL_CHANDELIER_K: float = 2.0
+    # R-Multiple Ratchet: (profit_R_threshold, lock_R)
+    TRAIL_RATCHET_LEVELS: Tuple = (
+        (0.7, 0.00),
+        (1.5, 0.50),
+        (2.5, 1.50),
+        (3.5, 2.50),
+        (4.5, 3.50),
+    )
+    # Floor: never closer than this fraction of initial R
+    TRAIL_MIN_R_FRACTION: float = 0.5
+    # Physics modulation
+    TRAIL_PHYSICS_ENABLED: bool = True
+    TRAIL_ACCEL_SCALE: float = 0.005
+    TRAIL_FRICTION_SCALE: float = 0.15
+    TRAIL_GAUGE_SCALE: float = 0.20
+    TRAIL_PHYSICS_CLAMP: Tuple = (0.5, 1.5)
+    # Regime modulation
+    TRAIL_REGIME_ENABLED: bool = True
+    TRAIL_REGIME_LOOKBACK: int = 100
+    TRAIL_REGIME_EXPLOSIVE_MULT: float = 1.4
+    TRAIL_REGIME_TRENDING_MULT: float = 1.2
+    TRAIL_REGIME_RANGING_MULT: float = 0.7
+    # Structure anchoring
+    TRAIL_STRUCTURE_ENABLED: bool = True
+    TRAIL_STRUCTURE_LOOKBACK: int = 50
+    TRAIL_STRUCTURE_BUFFER_SIGMA: float = 0.3
+    # Time decay
+    TRAIL_TIME_DECAY_ENABLED: bool = True
+    TRAIL_TIME_DECAY_BARS: int = 20
+    TRAIL_TIME_DECAY_FACTOR: float = 0.85
+    TRAIL_TIME_DECAY_MIN_MULT: float = 0.5
+    # API throttling
+    TRAIL_MIN_STEP_FRAC: float = 0.0015
+    TRAIL_UPDATE_MIN_INTERVAL_S: int = 3
 
     # ══ [LATENCY FIX — Exits] ══
     # Urgent exits (Emergency SL, Hard TP, LiqProximity) must not wait
@@ -4278,6 +4316,241 @@ def _sync_protective_orders(exchange, sym: str, pos: Dict) -> bool:
         log.warning(f"[Prot] {sym} sync fatal: {e}")
         return False
 
+
+# ════════════════════════════════════════════════════════════════
+# [ADVANCED TRAILING] — 5-layer SL optimizer
+# ════════════════════════════════════════════════════════════════
+
+def _classify_regime_local(ad, fi: int, lookback: int) -> str:
+    """
+    Classify current regime using E_therm (local volatility).
+    Compares current σ to its rolling mean over `lookback` bars.
+    """
+    try:
+        if fi < 5 or ad is None:
+            return "normal"
+        start = max(0, fi - lookback)
+        sig_now = float(ad.E_therm[fi])
+        sig_mean = float(np.mean(ad.E_therm[start:fi]))
+        if sig_mean <= 1e-9 or not np.isfinite(sig_now):
+            return "normal"
+        ratio = sig_now / sig_mean
+        if ratio > 1.6:
+            return "explosive"
+        elif ratio < 0.7:
+            return "ranging"
+        else:
+            return "trending"
+    except Exception:
+        return "normal"
+
+
+def _regime_multiplier(regime: str) -> float:
+    """Map regime to trail multiplier."""
+    if not getattr(CFG, 'TRAIL_REGIME_ENABLED', True):
+        return 1.0
+    if regime == "explosive":
+        return float(getattr(CFG, 'TRAIL_REGIME_EXPLOSIVE_MULT', 1.4))
+    if regime == "trending":
+        return float(getattr(CFG, 'TRAIL_REGIME_TRENDING_MULT', 1.2))
+    if regime == "ranging":
+        return float(getattr(CFG, 'TRAIL_REGIME_RANGING_MULT', 0.7))
+    return 1.0
+
+
+def _physics_trail_modifier(ad, fi: int) -> float:
+    """
+    Physics-based trail modifier in [clamp_lo, clamp_hi].
+    Widen when the system is trending with strong signal.
+    Tighten when friction / uncertainty dominate.
+    """
+    if not getattr(CFG, 'TRAIL_PHYSICS_ENABLED', True) or ad is None:
+        return 1.0
+    try:
+        accel = abs(float(ad.geodesic_accel[fi]))
+        fric = float(ad.friction[fi])
+        gauge = float(ad.gauge_force[fi])
+        V_now = float(ad.V[fi]) if fi < len(ad.V) else 1.0
+        V_mean = float(np.mean(ad.V[max(0, fi-100):fi+1])) + 1e-12
+        v_ratio = V_now / V_mean
+
+        a_s = float(np.tanh(accel / max(CFG.TRAIL_ACCEL_SCALE, 1e-9)))
+        f_s = float(np.tanh(fric / max(CFG.TRAIL_FRICTION_SCALE, 1e-9)))
+        g_s = float(np.tanh(gauge / max(CFG.TRAIL_GAUGE_SCALE, 1e-9)))
+        u_s = float(np.clip(np.log(max(v_ratio, 1e-6)) / np.log(3.0), -1.0, 1.0))
+
+        widen = 0.4 * a_s + 0.3 * g_s - 0.4 * f_s - 0.3 * u_s
+        mod = 1.0 + widen
+        lo, hi = CFG.TRAIL_PHYSICS_CLAMP
+        return float(np.clip(mod, float(lo), float(hi)))
+    except Exception:
+        return 1.0
+
+
+def _lock_R_from_peak(peak_R: float) -> float:
+    """Interpolate R-ratchet table → current locked R."""
+    levels = getattr(CFG, 'TRAIL_RATCHET_LEVELS', ((0.7, 0.0),))
+    lock = 0.0
+    for thr, lr in levels:
+        if peak_R >= float(thr):
+            lock = float(lr)
+    return lock
+
+
+def _find_recent_swing(ad, from_ci: int, to_ci: int,
+                        side: str) -> Optional[float]:
+    """
+    Most recent swing point in [from_ci, to_ci] (exclusive to_ci).
+    LONG  → latest swing low  (price makes lower low vs both neighbors)
+    SHORT → latest swing high
+    """
+    if not getattr(CFG, 'TRAIL_STRUCTURE_ENABLED', True) or ad is None:
+        return None
+    try:
+        lo = max(1, from_ci)
+        hi = min(len(ad.lows) - 1, to_ci)
+        if hi - lo < 3:
+            return None
+        arr_l = ad.lows[lo:hi]
+        arr_h = ad.highs[lo:hi]
+        if side == "BUY":
+            for j in range(len(arr_l) - 2, 0, -1):
+                if (arr_l[j] < arr_l[j-1] and arr_l[j] < arr_l[j+1]):
+                    return float(arr_l[j])
+        else:
+            for j in range(len(arr_h) - 2, 0, -1):
+                if (arr_h[j] > arr_h[j-1] and arr_h[j] > arr_h[j+1]):
+                    return float(arr_h[j])
+    except Exception:
+        pass
+    return None
+
+
+def compute_advanced_trail(pos: Dict, ad, price: float,
+                            current_ci: int) -> Tuple[float, str]:
+    """
+    Compute new SL using 5-layer fusion. Returns (new_sl, reason).
+    Reason is "" if no change is warranted.
+    """
+    if not getattr(CFG, 'TRAIL_ADVANCED_ENABLED', True):
+        return float(pos.get('sl') or 0.0), ""
+
+    try:
+        entry = float(pos['entry'])
+        side = pos['action']
+        current_sl = float(pos.get('sl') or 0.0)
+        sl_dist0 = float(pos.get('sl_dist_initial') or
+                          abs(entry - current_sl) or 1e-9)
+        if sl_dist0 <= 1e-9:
+            return current_sl, ""
+
+        # ── Profit in R units ──
+        if side == "BUY":
+            profit_R = (price - entry) / sl_dist0
+        else:
+            profit_R = (entry - price) / sl_dist0
+
+        # ── Peak R ──
+        peak_R_prev = float(pos.get('_trail_peak_R', 0.0))
+        peak_R = max(peak_R_prev, profit_R)
+        pos['_trail_peak_R'] = peak_R
+
+        # ── Not activated yet ──
+        activate_R = 0.7
+        if peak_R < activate_R:
+            return current_sl, ""
+
+        # ── Chandelier component ──
+        fi = current_ci - ad.feat_start if ad is not None else -1
+        atr_val = 1e-9
+        if ad is not None and 0 <= current_ci < len(ad.atr14):
+            atr_val = float(ad.atr14[current_ci])
+        if atr_val <= 1e-9 and ad is not None and 0 <= fi < len(ad.E_therm):
+            atr_val = float(ad.E_therm[fi]) * entry
+
+        physics_mod = _physics_trail_modifier(ad, fi) if fi >= 0 else 1.0
+        regime = _classify_regime_local(ad, fi,
+                    int(getattr(CFG, 'TRAIL_REGIME_LOOKBACK', 100))) \
+                 if fi >= 0 else "normal"
+        regime_mod = _regime_multiplier(regime)
+
+        chand_dist = float(CFG.TRAIL_CHANDELIER_K) * atr_val \
+                     * physics_mod * regime_mod
+
+        # ── Time decay ──
+        if getattr(CFG, 'TRAIL_TIME_DECAY_ENABLED', True):
+            bars_held = int(pos.get('_trail_bars_held', 0))
+            td_thr = int(getattr(CFG, 'TRAIL_TIME_DECAY_BARS', 20))
+            if bars_held > td_thr and peak_R < 1.5:
+                steps = (bars_held - td_thr) // max(td_thr, 1)
+                fac = float(getattr(CFG, 'TRAIL_TIME_DECAY_FACTOR', 0.85)) ** steps
+                fac = max(fac, float(getattr(CFG,
+                    'TRAIL_TIME_DECAY_MIN_MULT', 0.5)))
+                chand_dist *= fac
+
+        # ── Floor: never closer than MIN_R × sl_dist0 ──
+        chand_dist = max(chand_dist,
+                          float(CFG.TRAIL_MIN_R_FRACTION) * sl_dist0)
+
+        # ── Candidate 1: Chandelier ──
+        if side == "BUY":
+            peak_price = float(pos.get('peak_price') or entry)
+            c1 = peak_price - chand_dist
+        else:
+            peak_price = float(pos.get('peak_price') or entry)
+            c1 = peak_price + chand_dist
+
+        # ── Candidate 2: R-Ratchet ──
+        lock_R = _lock_R_from_peak(peak_R)
+        if side == "BUY":
+            c2 = entry + lock_R * sl_dist0
+        else:
+            c2 = entry - lock_R * sl_dist0
+
+        # ── Candidate 3: Structure (swing) ──
+        c3 = None
+        if ad is not None and getattr(CFG, 'TRAIL_STRUCTURE_ENABLED', True):
+            lookback = int(getattr(CFG, 'TRAIL_STRUCTURE_LOOKBACK', 50))
+            entry_ci = int(pos.get('_entry_ci') or
+                            (current_ci - bars_held if 'bars_held' in dir()
+                             else current_ci - lookback))
+            from_ci = max(entry_ci, current_ci - lookback)
+            swing = _find_recent_swing(ad, from_ci, current_ci + 1, side)
+            if swing is not None:
+                buf = float(getattr(CFG,
+                    'TRAIL_STRUCTURE_BUFFER_SIGMA', 0.3)) * atr_val
+                c3 = (swing - buf) if side == "BUY" else (swing + buf)
+
+        # ── Fusion ──
+        if side == "BUY":
+            cands = [c1, c2] + ([c3] if c3 is not None else [])
+            new_sl = max(cands)
+            new_sl = min(new_sl, price * 0.9999)   # don't cross price
+            if new_sl <= current_sl * (1.0 + CFG.TRAIL_MIN_STEP_FRAC):
+                return current_sl, ""
+            reason_bits = []
+            if abs(new_sl - c1) < 1e-9: reason_bits.append("chand")
+            if abs(new_sl - c2) < 1e-9: reason_bits.append(f"ratchet{lock_R:.1f}R")
+            if c3 is not None and abs(new_sl - c3) < 1e-9:
+                reason_bits.append("swing")
+            return float(new_sl), "+".join(reason_bits)
+        else:
+            cands = [c1, c2] + ([c3] if c3 is not None else [])
+            new_sl = min(cands)
+            new_sl = max(new_sl, price * 1.0001)
+            if new_sl >= current_sl * (1.0 - CFG.TRAIL_MIN_STEP_FRAC):
+                return current_sl, ""
+            reason_bits = []
+            if abs(new_sl - c1) < 1e-9: reason_bits.append("chand")
+            if abs(new_sl - c2) < 1e-9: reason_bits.append(f"ratchet{lock_R:.1f}R")
+            if c3 is not None and abs(new_sl - c3) < 1e-9:
+                reason_bits.append("swing")
+            return float(new_sl), "+".join(reason_bits)
+
+    except Exception as e:
+        log.debug(f"[AdvTrail] {pos.get('_sym','?')} compute failed: {e}")
+        return float(pos.get('sl') or 0.0), ""
+
 # ════════════════════════════════════════════════════════════════
 # § 18.5  بروتوكول مايسنر لمنع الانزلاق (Quantum Chunking)
 # ════════════════════════════════════════════════════════════════
@@ -5731,12 +6004,13 @@ def _promote_pending_to_position(exchange, sym: str, rec: Dict,
         'trail_activate_frac': float(trail_a),
         'liq_price_estimated': _liq_estimated,
         'mmr': _mmr,
+        'sl_dist_initial': float(abs(entry_price - adapted_sl)),
+        '_entry_ci': int(rec.get('close_idx') or 0),
+        '_trail_bars_held': 0,
+        '_trail_peak_R': 0.0,
+        '_trail_last_update_ts': 0.0,
+        '_sym': sym,
     }
-    log.info(
-        f"✅ [Pending→Entry] {rec['action']} {sym} @ {entry_price:.6f} "
-        f"qty={filled_qty:.6f} (fill={fill_ratio*100:.0f}%) "
-        f"sl={adapted_sl:.6f} tp={adapted_tp:.6f}"
-    )
 
     # ══ [LAYER 7] Place protective orders on the exchange ══
     if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
@@ -6481,41 +6755,50 @@ def run_live(cfg, exchange):
                             ex = True
                             rsn = f"MaxHold({int(bars_held)}bars)"
 
-                # ── Trailing SL (dynamic σ-scaled) ──
+                # ── [ADVANCED TRAILING] 5-layer fusion ──
                 if not ex:
-                    entry_px = pos['entry']
-                    _td = float(pos.get('trail_dist_frac', CFG.TRAIL_DISTANCE))
-                    _ta = float(pos.get('trail_activate_frac', CFG.TRAIL_ACTIVATE_MFE))
+                    entry_px = float(pos['entry'])
                     _sl_before = float(pos['sl'])
 
-                    # Update peak from live price
+                    # 1. Update peak from live price (must be first)
                     if pos['action'] == "BUY":
-                        cur_peak = float(pos.get('peak_price', entry_px))
-                        if price > cur_peak:
+                        _cp = float(pos.get('peak_price') or entry_px)
+                        if price > _cp:
                             pos['peak_price'] = price
-                            cur_peak = price
-                        if (cur_peak - entry_px) / entry_px >= _ta:
-                            new_sl = cur_peak * (1.0 - _td)
-                            if new_sl > pos['sl']:
-                                pos['sl'] = new_sl
                     else:
-                        cur_peak = float(pos.get('peak_price', entry_px))
-                        if price < cur_peak or cur_peak == entry_px:
+                        _cp = float(pos.get('peak_price') or entry_px)
+                        if price < _cp or _cp == entry_px:
                             pos['peak_price'] = price
-                            cur_peak = price
-                        if (entry_px - cur_peak) / entry_px >= _ta:
-                            new_sl = cur_peak * (1.0 + _td)
-                            if new_sl < pos['sl']:
-                                pos['sl'] = new_sl
 
-                    # ══ [LAYER 7] If SL moved, sync protective orders ══
-                    if (getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True)
-                            and abs(float(pos['sl']) - _sl_before)
-                                > 1e-12):
-                        try:
-                            _sync_protective_orders(exchange, sym, pos)
-                        except Exception as _e:
-                            log.debug(f"[Prot] {sym} sync error: {_e}")
+                    # 2. Increment bar counter
+                    pos['_trail_bars_held'] = int(pos.get('_trail_bars_held', 0)) + 1
+
+                    # 3. Compute candidate SL via advanced model
+                    current_ci = len(ad.closes) - 1 if ad is not None else -1
+                    _new_sl, _trail_reason = compute_advanced_trail(
+                        pos, ad, price, current_ci
+                    )
+
+                    # 4. Apply only if improved and outside throttle
+                    if (abs(_new_sl - _sl_before) > 1e-12
+                            and _new_sl > 0):
+                        _min_gap = float(getattr(CFG,
+                            'TRAIL_UPDATE_MIN_INTERVAL_S', 3))
+                        _last_upd = float(pos.get('_trail_last_update_ts', 0.0))
+                        if (time.time() - _last_upd) >= _min_gap:
+                            pos['sl'] = float(_new_sl)
+                            pos['_trail_last_update_ts'] = time.time()
+                            log.debug(
+                                f"[AdvTrail] {sym} SL: {_sl_before:.6f} → "
+                                f"{_new_sl:.6f} via {_trail_reason}"
+                            )
+
+                            # 5. Sync Layer 7 protective orders
+                            if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
+                                try:
+                                    _sync_protective_orders(exchange, sym, pos)
+                                except Exception as _e:
+                                    log.debug(f"[Prot] {sym} sync error: {_e}")
 
                 # ── SL / TP ──
                 if not ex:
@@ -7003,6 +7286,12 @@ def run_live(cfg, exchange):
                             'trail_activate_frac': trail_a,
                             'liq_price_estimated': _liq_est,
                             'mmr': _mmr_reg,
+                            'sl_dist_initial': float(abs(entry_price - adapted_sl)),
+                            '_entry_ci': int(sig.close_idx),
+                            '_trail_bars_held': 0,
+                            '_trail_peak_R': 0.0,
+                            '_trail_last_update_ts': 0.0,
+                            '_sym': sym,
                         }
 
                         log.info(f"✅ [Entry] {sig.action} {sym} @ {entry_price:.6f} "
