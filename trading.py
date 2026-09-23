@@ -354,29 +354,31 @@ class Config:
     # ══ [ADVANCED TRAILING — Physics-Adaptive Chandelier] ══
     TRAIL_ADVANCED_ENABLED: bool = True
     # Chandelier: SL = peak - k × ATR_current
-    TRAIL_CHANDELIER_K: float = 2.0
-    # R-Multiple Ratchet: (profit_R_threshold, lock_R)
+    TRAIL_CHANDELIER_K: float = 0.50
+    TRAIL_ACTIVATE_SIGMA_MULT: float = 0.40
     TRAIL_RATCHET_LEVELS: Tuple = (
-        (0.7, 0.00),
-        (1.5, 0.50),
-        (2.5, 1.50),
-        (3.5, 2.50),
-        (4.5, 3.50),
+        (0.4, 0.10),
+        (0.6, 0.30),
+        (0.8, 0.50),
+        (1.0, 0.70),
+        (1.5, 1.20),
+        (2.0, 1.70),
+        (3.0, 2.70),
+        (4.0, 3.70),
+        (5.0, 4.70),
     )
-    # Floor: never closer than this fraction of initial R
-    TRAIL_MIN_R_FRACTION: float = 0.5
-    # Physics modulation
+    TRAIL_MIN_R_FRACTION: float = 0.3
     TRAIL_PHYSICS_ENABLED: bool = True
     TRAIL_ACCEL_SCALE: float = 0.005
     TRAIL_FRICTION_SCALE: float = 0.15
     TRAIL_GAUGE_SCALE: float = 0.20
-    TRAIL_PHYSICS_CLAMP: Tuple = (0.5, 1.5)
-    # Regime modulation
+    TRAIL_PHYSICS_CLAMP: Tuple = (0.7, 1.3)
     TRAIL_REGIME_ENABLED: bool = True
     TRAIL_REGIME_LOOKBACK: int = 100
-    TRAIL_REGIME_EXPLOSIVE_MULT: float = 1.4
-    TRAIL_REGIME_TRENDING_MULT: float = 1.2
-    TRAIL_REGIME_RANGING_MULT: float = 0.7
+    TRAIL_REGIME_EXPLOSIVE_MULT: float = 1.1
+    TRAIL_REGIME_TRENDING_MULT: float = 1.0
+    TRAIL_REGIME_RANGING_MULT: float = 0.9
+    TRAIL_LEGACY_FLOOR_ENABLED: bool = True
     # Structure anchoring
     TRAIL_STRUCTURE_ENABLED: bool = True
     TRAIL_STRUCTURE_LOOKBACK: int = 50
@@ -1408,8 +1410,10 @@ class OpenPosition:
     slip_paid: float; opt_entry: bool; tri_entry: float
     mfe_frac: float = 0.0
     peak_price: float = 0.0
-    trail_dist_frac: float = 0.003       # ← جديد
-    trail_activate_frac: float = 0.004   # ← جديد
+    trail_dist_frac: float = 0.003       # legacy — unused with advanced trail
+    trail_activate_frac: float = 0.004   # legacy — unused with advanced trail
+    sl_dist_initial: float = 0.0         # [ADV-TRAIL] |entry - initial_SL|
+    trail_peak_R: float = 0.0            # [ADV-TRAIL] highest R reached
 
 
 # ════════════════════════════════════════════════════════════════
@@ -2191,8 +2195,9 @@ def _advance(pos, ad, to_ci):
         if mfe_cand > pos.mfe_frac:
             pos.mfe_frac = mfe_cand
 
-        # ── Trailing Stop (protection layer, runs parallel to Apex) ──
-        # Uses per-position volatility-scaled parameters
+        # ── Trailing Stop (legacy — proven formula) ──
+        # Restored from the original design that produced the best results.
+        # Trailing Stop (protection layer, runs parallel to Apex)
         _td = pos.trail_dist_frac if pos.trail_dist_frac > 0 else CFG.TRAIL_DISTANCE
         _ta = pos.trail_activate_frac if pos.trail_activate_frac > 0 else CFG.TRAIL_ACTIVATE_MFE
 
@@ -2566,6 +2571,8 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
             slip_paid=slip_paid, opt_entry=opt_entry, tri_entry=sig.tri_val,
             trail_dist_frac=trail_d,
             trail_activate_frac=trail_a,
+            sl_dist_initial=float(abs(eff_px - sl_h)),
+            trail_peak_R=0.0,
         )
 
     for sym, pos in list(open_pos.items()):
@@ -4426,42 +4433,47 @@ def _find_recent_swing(ad, from_ci: int, to_ci: int,
     return None
 
 
-def compute_advanced_trail(pos: Dict, ad, price: float,
-                            current_ci: int) -> Tuple[float, str]:
+def _compute_advanced_trail_core(side, entry, current_sl, sl_dist_initial,
+                                    peak_price, price, prev_peak_R,
+                                    bars_held, ad, current_ci):
     """
-    Compute new SL using 5-layer fusion. Returns (new_sl, reason).
-    Reason is "" if no change is warranted.
+    Primitive-based core of the advanced trailing model.
+    Returns (new_sl, new_peak_R, reason). new_sl == current_sl if no change.
+    Used by BOTH live (dict) and backtest (OpenPosition).
     """
-    if not getattr(CFG, 'TRAIL_ADVANCED_ENABLED', True):
-        return float(pos.get('sl') or 0.0), ""
-
     try:
-        entry = float(pos['entry'])
-        side = pos['action']
-        current_sl = float(pos.get('sl') or 0.0)
-        sl_dist0 = float(pos.get('sl_dist_initial') or
-                          abs(entry - current_sl) or 1e-9)
-        if sl_dist0 <= 1e-9:
-            return current_sl, ""
+        if not getattr(CFG, 'TRAIL_ADVANCED_ENABLED', True):
+            return current_sl, prev_peak_R, ""
+        if sl_dist_initial <= 1e-9:
+            return current_sl, prev_peak_R, ""
 
-        # ── Profit in R units ──
         if side == "BUY":
-            profit_R = (price - entry) / sl_dist0
+            profit_R = (price - entry) / sl_dist_initial
         else:
-            profit_R = (entry - price) / sl_dist0
+            profit_R = (entry - price) / sl_dist_initial
+        peak_R = max(prev_peak_R, profit_R)
 
-        # ── Peak R ──
-        peak_R_prev = float(pos.get('_trail_peak_R', 0.0))
-        peak_R = max(peak_R_prev, profit_R)
-        pos['_trail_peak_R'] = peak_R
-
-        # ── Not activated yet ──
-        activate_R = 0.7
-        if peak_R < activate_R:
-            return current_sl, ""
-
-        # ── Chandelier component ──
+        # Activation: matches the ORIGINAL behaviour.
+        # Original activated when MFE >= 0.4 * sigma_entry.
+        # We use current sigma (dynamic) at 0.4 multiplier.
         fi = current_ci - ad.feat_start if ad is not None else -1
+
+        # Activation (see block above)
+        _act_mult = float(getattr(CFG, 'TRAIL_ACTIVATE_SIGMA_MULT', 0.40))
+        _sig_now = 0.01
+        if ad is not None and 0 <= fi < len(ad.E_therm):
+            _sn = float(ad.E_therm[fi])
+            if np.isfinite(_sn) and _sn > 1e-6:
+                _sig_now = _sn
+        _act_thr = _act_mult * _sig_now
+        if side == "BUY":
+            _peak_move = (peak_price - entry) / max(abs(entry), 1e-9)
+        else:
+            _peak_move = (entry - peak_price) / max(abs(entry), 1e-9)
+        if _peak_move < _act_thr:
+            return current_sl, peak_R, ""
+        
+
         atr_val = 1e-9
         if ad is not None and 0 <= current_ci < len(ad.atr14):
             atr_val = float(ad.atr14[current_ci])
@@ -4469,86 +4481,121 @@ def compute_advanced_trail(pos: Dict, ad, price: float,
             atr_val = float(ad.E_therm[fi]) * entry
 
         physics_mod = _physics_trail_modifier(ad, fi) if fi >= 0 else 1.0
-        regime = _classify_regime_local(ad, fi,
-                    int(getattr(CFG, 'TRAIL_REGIME_LOOKBACK', 100))) \
-                 if fi >= 0 else "normal"
+        regime = (_classify_regime_local(ad, fi,
+                    int(getattr(CFG, 'TRAIL_REGIME_LOOKBACK', 100)))
+                  if fi >= 0 else "normal")
         regime_mod = _regime_multiplier(regime)
 
-        chand_dist = float(CFG.TRAIL_CHANDELIER_K) * atr_val \
-                     * physics_mod * regime_mod
+        chand_dist = float(CFG.TRAIL_CHANDELIER_K) * atr_val * physics_mod * regime_mod
 
-        # ── Time decay ──
         if getattr(CFG, 'TRAIL_TIME_DECAY_ENABLED', True):
-            bars_held = int(pos.get('_trail_bars_held', 0))
             td_thr = int(getattr(CFG, 'TRAIL_TIME_DECAY_BARS', 20))
             if bars_held > td_thr and peak_R < 1.5:
                 steps = (bars_held - td_thr) // max(td_thr, 1)
                 fac = float(getattr(CFG, 'TRAIL_TIME_DECAY_FACTOR', 0.85)) ** steps
-                fac = max(fac, float(getattr(CFG,
-                    'TRAIL_TIME_DECAY_MIN_MULT', 0.5)))
+                fac = max(fac, float(getattr(CFG, 'TRAIL_TIME_DECAY_MIN_MULT', 0.5)))
                 chand_dist *= fac
 
-        # ── Floor: never closer than MIN_R × sl_dist0 ──
-        chand_dist = max(chand_dist,
-                          float(CFG.TRAIL_MIN_R_FRACTION) * sl_dist0)
+        chand_dist = max(chand_dist, float(CFG.TRAIL_MIN_R_FRACTION) * sl_dist_initial)
 
-        # ── Candidate 1: Chandelier ──
         if side == "BUY":
-            peak_price = float(pos.get('peak_price') or entry)
             c1 = peak_price - chand_dist
         else:
-            peak_price = float(pos.get('peak_price') or entry)
             c1 = peak_price + chand_dist
 
-        # ── Candidate 2: R-Ratchet ──
         lock_R = _lock_R_from_peak(peak_R)
         if side == "BUY":
-            c2 = entry + lock_R * sl_dist0
+            c2 = entry + lock_R * sl_dist_initial
         else:
-            c2 = entry - lock_R * sl_dist0
+            c2 = entry - lock_R * sl_dist_initial
 
-        # ── Candidate 3: Structure (swing) ──
         c3 = None
         if ad is not None and getattr(CFG, 'TRAIL_STRUCTURE_ENABLED', True):
             lookback = int(getattr(CFG, 'TRAIL_STRUCTURE_LOOKBACK', 50))
-            entry_ci = int(pos.get('_entry_ci') or
-                            (current_ci - bars_held if 'bars_held' in dir()
-                             else current_ci - lookback))
-            from_ci = max(entry_ci, current_ci - lookback)
+            from_ci = max(current_ci - bars_held, current_ci - lookback)
             swing = _find_recent_swing(ad, from_ci, current_ci + 1, side)
             if swing is not None:
                 buf = float(getattr(CFG,
                     'TRAIL_STRUCTURE_BUFFER_SIGMA', 0.3)) * atr_val
                 c3 = (swing - buf) if side == "BUY" else (swing + buf)
 
-        # ── Fusion ──
+        # ── Candidate 4: Legacy floor ──
+        # Guarantee: never less protective than the old formula
+        # (peak × (1 − kappa × σ_current)). This makes the advanced
+        # trailing at least as tight as the previous working design,
+        # while chandelier/ratchet/structure can only tighten further.
+        c4 = None
+        if getattr(CFG, 'TRAIL_LEGACY_FLOOR_ENABLED', True):
+            try:
+                if ad is not None and 0 <= fi < len(ad.E_therm):
+                    _sig_now = float(ad.E_therm[fi])
+                else:
+                    _sig_now = sl_dist_initial / max(entry, 1e-9)
+                _leg_dist = float(CFG.TRAIL_KAPPA) * _sig_now * entry
+                _leg_dist = max(_leg_dist, 0.001 * entry)
+                if side == "BUY":
+                    c4 = peak_price - _leg_dist
+                else:
+                    c4 = peak_price + _leg_dist
+            except Exception:
+                c4 = None
+
+        # ── Fusion (4 candidates) ──
         if side == "BUY":
-            cands = [c1, c2] + ([c3] if c3 is not None else [])
+            cands = [c1, c2] + ([c3] if c3 is not None else []) \
+                             + ([c4] if c4 is not None else [])
             new_sl = max(cands)
-            new_sl = min(new_sl, price * 0.9999)   # don't cross price
+            new_sl = min(new_sl, price * 0.9999)
             if new_sl <= current_sl * (1.0 + CFG.TRAIL_MIN_STEP_FRAC):
-                return current_sl, ""
-            reason_bits = []
-            if abs(new_sl - c1) < 1e-9: reason_bits.append("chand")
-            if abs(new_sl - c2) < 1e-9: reason_bits.append(f"ratchet{lock_R:.1f}R")
-            if c3 is not None and abs(new_sl - c3) < 1e-9:
-                reason_bits.append("swing")
-            return float(new_sl), "+".join(reason_bits)
+                return current_sl, peak_R, ""
+            bits = []
+            if abs(new_sl - c1) < 1e-9: bits.append("chand")
+            if abs(new_sl - c2) < 1e-9: bits.append(f"ratchet{lock_R:.1f}R")
+            if c3 is not None and abs(new_sl - c3) < 1e-9: bits.append("swing")
+            if c4 is not None and abs(new_sl - c4) < 1e-9: bits.append("legacy")
+            return float(new_sl), peak_R, "+".join(bits)
         else:
-            cands = [c1, c2] + ([c3] if c3 is not None else [])
+            cands = [c1, c2] + ([c3] if c3 is not None else []) \
+                             + ([c4] if c4 is not None else [])
             new_sl = min(cands)
             new_sl = max(new_sl, price * 1.0001)
             if new_sl >= current_sl * (1.0 - CFG.TRAIL_MIN_STEP_FRAC):
-                return current_sl, ""
-            reason_bits = []
-            if abs(new_sl - c1) < 1e-9: reason_bits.append("chand")
-            if abs(new_sl - c2) < 1e-9: reason_bits.append(f"ratchet{lock_R:.1f}R")
-            if c3 is not None and abs(new_sl - c3) < 1e-9:
-                reason_bits.append("swing")
-            return float(new_sl), "+".join(reason_bits)
-
+                return current_sl, peak_R, ""
+            bits = []
+            if abs(new_sl - c1) < 1e-9: bits.append("chand")
+            if abs(new_sl - c2) < 1e-9: bits.append(f"ratchet{lock_R:.1f}R")
+            if c3 is not None and abs(new_sl - c3) < 1e-9: bits.append("swing")
+            if c4 is not None and abs(new_sl - c4) < 1e-9: bits.append("legacy")
+            return float(new_sl), peak_R, "+".join(bits)
     except Exception as e:
-        log.debug(f"[AdvTrail] {pos.get('_sym','?')} compute failed: {e}")
+        log.debug(f"[AdvTrail] core compute failed: {e}")
+        return current_sl, prev_peak_R, ""
+
+
+def compute_advanced_trail(pos, ad, price, current_ci):
+    """
+    Live wrapper — reads from dict, calls core, writes back.
+    """
+    try:
+        entry = float(pos['entry'])
+        side = pos['action']
+        current_sl = float(pos.get('sl') or 0.0)
+        sl_dist0 = float(pos.get('sl_dist_initial') or
+                          abs(entry - current_sl) or 1e-9)
+        peak_price = float(pos.get('peak_price') or entry)
+        peak_R_prev = float(pos.get('_trail_peak_R', 0.0))
+        bars_held = int(pos.get('_trail_bars_held', 0))
+
+        new_sl, new_peak_R, reason = _compute_advanced_trail_core(
+            side=side, entry=entry, current_sl=current_sl,
+            sl_dist_initial=sl_dist0, peak_price=peak_price,
+            price=price, prev_peak_R=peak_R_prev,
+            bars_held=bars_held, ad=ad, current_ci=current_ci,
+        )
+        pos['_trail_peak_R'] = new_peak_R
+        return new_sl, reason
+    except Exception as e:
+        log.debug(f"[AdvTrail] live wrapper failed: {e}")
         return float(pos.get('sl') or 0.0), ""
 
 # ════════════════════════════════════════════════════════════════
@@ -4560,7 +4607,13 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
                       reprice_s: float = None,
                       fallback_market: bool = False,
                       fixed_target: Optional[float] = None,
-                      cross_spread: bool = False):
+                      cross_spread: bool = False,
+                      reduce_only: bool = False):
+    """
+    reduce_only=True → attach reduceOnly to every order placed.
+    Prevents accidental reverse-position if protective orders fire
+    simultaneously. Critical for exits.
+    """
     """
     cross_spread=True → Marketable limit: place SELL at best_bid,
     BUY at best_ask. Fills immediately as taker at ~1 spread cost
@@ -4726,6 +4779,8 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
                     # GTX = post-only (must not cross book). Do NOT use it
                     # for marketable limit — the exchange would reject.
                     _ord_params = {} if cross_spread else {'timeInForce': 'GTX'}
+                    if reduce_only:
+                        _ord_params['reduceOnly'] = True
                     o = exchange.create_order(
                         symbol, 'limit', side, remaining, target,
                         params=_ord_params
@@ -4763,7 +4818,9 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
             if fallback_market:
                 try:
                     mp = last_ask if side == 'buy' else last_bid
-                    o = exchange.create_order(symbol, 'market', side, qty)
+                    _fp = {'reduceOnly': True} if reduce_only else {}
+                    o = exchange.create_order(symbol, 'market', side, qty,
+                                              None, params=_fp)
                     fp = float(o.get('average') or mp)
                     return {
                         'filled_qty': qty, 'avg_price': fp, 'fill_ratio': 1.0,
@@ -6755,50 +6812,44 @@ def run_live(cfg, exchange):
                             ex = True
                             rsn = f"MaxHold({int(bars_held)}bars)"
 
-                # ── [ADVANCED TRAILING] 5-layer fusion ──
+                # ── Trailing SL (legacy — proven formula, restored) ──
                 if not ex:
                     entry_px = float(pos['entry'])
                     _sl_before = float(pos['sl'])
+                    _td = float(pos.get('trail_dist_frac', CFG.TRAIL_DISTANCE))
+                    _ta = float(pos.get('trail_activate_frac', CFG.TRAIL_ACTIVATE_MFE))
 
-                    # 1. Update peak from live price (must be first)
+                    # Update peak from live price and compute MFE
                     if pos['action'] == "BUY":
-                        _cp = float(pos.get('peak_price') or entry_px)
-                        if price > _cp:
+                        cur_peak = float(pos.get('peak_price', entry_px))
+                        if price > cur_peak:
                             pos['peak_price'] = price
+                            cur_peak = price
+                        _mfe = (cur_peak - entry_px) / entry_px
                     else:
-                        _cp = float(pos.get('peak_price') or entry_px)
-                        if price < _cp or _cp == entry_px:
+                        cur_peak = float(pos.get('peak_price', entry_px))
+                        if price < cur_peak or cur_peak == entry_px:
                             pos['peak_price'] = price
+                            cur_peak = price
+                        _mfe = (entry_px - cur_peak) / entry_px
 
-                    # 2. Increment bar counter
-                    pos['_trail_bars_held'] = int(pos.get('_trail_bars_held', 0)) + 1
+                    if _mfe >= _ta:
+                        if pos['action'] == "BUY":
+                            new_sl = cur_peak * (1.0 - _td)
+                            if new_sl > pos['sl']:
+                                pos['sl'] = new_sl
+                        else:
+                            new_sl = cur_peak * (1.0 + _td)
+                            if new_sl < pos['sl']:
+                                pos['sl'] = new_sl
 
-                    # 3. Compute candidate SL via advanced model
-                    current_ci = len(ad.closes) - 1 if ad is not None else -1
-                    _new_sl, _trail_reason = compute_advanced_trail(
-                        pos, ad, price, current_ci
-                    )
-
-                    # 4. Apply only if improved and outside throttle
-                    if (abs(_new_sl - _sl_before) > 1e-12
-                            and _new_sl > 0):
-                        _min_gap = float(getattr(CFG,
-                            'TRAIL_UPDATE_MIN_INTERVAL_S', 3))
-                        _last_upd = float(pos.get('_trail_last_update_ts', 0.0))
-                        if (time.time() - _last_upd) >= _min_gap:
-                            pos['sl'] = float(_new_sl)
-                            pos['_trail_last_update_ts'] = time.time()
-                            log.debug(
-                                f"[AdvTrail] {sym} SL: {_sl_before:.6f} → "
-                                f"{_new_sl:.6f} via {_trail_reason}"
-                            )
-
-                            # 5. Sync Layer 7 protective orders
-                            if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
-                                try:
-                                    _sync_protective_orders(exchange, sym, pos)
-                                except Exception as _e:
-                                    log.debug(f"[Prot] {sym} sync error: {_e}")
+                    # ══ [LAYER 7] If SL moved, sync protective orders ══
+                    if (getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True)
+                            and abs(float(pos['sl']) - _sl_before) > 1e-12):
+                        try:
+                            _sync_protective_orders(exchange, sym, pos)
+                        except Exception as _e:
+                            log.debug(f"[Prot] {sym} sync error: {_e}")
 
                 # ── SL / TP ──
                 if not ex:
@@ -6888,33 +6939,42 @@ def run_live(cfg, exchange):
                     continue
 
                 # ── Execute exit ──
+                # ══ [ORDER-OF-OPERATIONS] Design principle ══
+                # 1. Exit attempt FIRST (with reduceOnly=True internally)
+                # 2. Only cancel protective orders AFTER exit confirms
+                # 3. On failure: DO NOT touch protective orders
+                # Reason: the exchange's closePosition=True auto-cancels the
+                # protective bracket when the position closes. So we don't
+                # need to cancel them ourselves. If the exit fails, the
+                # protective orders remain and continue to protect.
                 try:
                     s = 'sell' if pos['action'] == 'BUY' else 'buy'
 
-                    # ══ [LAYER 7] Cancel protective orders BEFORE any bot exit ══
-                    # If we don't, the exchange might fire SL/TP while our
-                    # exit order is also in flight → double-close attempt.
-                    _cancel_all_protective_orders(exchange, sym)
-
-                    # ══ [LATENCY] Classify urgency ══
                     _urgent = (
                         'Emergency' in rsn
                         or 'Hard TP' in rsn
                         or 'LiqProximity' in rsn
                     )
 
+                    _exit_ok = False
+                    exec_price = 0.0
+                    exit_reason = ""
+
                     if 'Emergency LiqProximity' in rsn:
                         # Absolute last resort — market (Liq is imminent)
                         try:
-                            o = exchange.create_order(sym, 'market', s, pos['qty'])
+                            # reduceOnly ensures no reverse-position risk
+                            o = exchange.create_order(
+                                sym, 'market', s, pos['qty'], None,
+                                params={'reduceOnly': True},
+                            )
                             v = verify_fill(exchange, o['id'], sym, timeout_s=1.5)
                             exec_price = v['avg_price'] if v and v['filled'] else price
                             exit_reason = f"{rsn} (market)"
+                            _exit_ok = True
                         except Exception as e:
                             log.error(f"[Exit] market failed {sym}: {e}")
-                            continue
                     else:
-                        # Marketable limit for urgent, post-only for soft.
                         _cross = bool(_urgent and
                                       getattr(CFG, 'PO_EXIT_URGENT_CROSS_SPREAD', True))
                         _wait = (
@@ -6925,16 +6985,37 @@ def run_live(cfg, exchange):
                         result = execute_post_only(
                             exchange, sym, s, pos['qty'],
                             max_wait_s=_wait,
-                            fallback_market=False,   # never raw market
+                            fallback_market=False,
                             cross_spread=_cross,
+                            reduce_only=True,   # ← NEW param
                         )
 
                         if not result['filled_qty'] or result['filled_qty'] <= 0:
-                            log.warning(f"⚠️ [Exit] {sym} no fill "
-                                        f"({result['reason']}) — retry next loop")
+                            log.warning(
+                                f"⚠️ [Exit] {sym} no fill "
+                                f"({result['reason']}) — position stays, "
+                                f"protective orders INTACT on exchange"
+                            )
+                            # NO cancel. NO restore. Orders were never touched.
                             continue
                         exec_price = result['avg_price']
                         exit_reason = f"{rsn} ({result['reason']})"
+                        _exit_ok = True
+
+                    if not _exit_ok:
+                        continue
+
+                    # ══ Position now closed. Clean any leftover protective
+                    # orders. With closePosition=True, Binance auto-cancels
+                    # them; this is defensive for edge cases (partial fills,
+                    # exchange lag). ══
+                    try:
+                        _leftovers = _cancel_all_protective_orders(exchange, sym)
+                        if _leftovers > 0:
+                            log.debug(f"[Prot] {sym} cleaned "
+                                      f"{_leftovers} leftover order(s)")
+                    except Exception as _e:
+                        log.debug(f"[Prot] {sym} post-exit cleanup: {_e}")
 
                     del open_pos_live[sym]
                     last_exit_time[sym] = time.time()
