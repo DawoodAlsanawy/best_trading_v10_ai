@@ -7105,13 +7105,106 @@ def run_live(cfg, exchange):
                     try:
                         sd = 'buy' if sig.action == 'BUY' else 'sell'
 
-                        # ══ 1. Setup ONCE — leverage/margin ══
+                        # ══════════════════════════════════════════════════
+                        # STEP 1 — PRE-SETUP CLEANUP (runs BEFORE set_leverage)
+                        # ══════════════════════════════════════════════════
+                        # Ordering matters:
+                        #   set_leverage can fail with -4046 if the exchange
+                        #   sees an orphan position OR a protective bracket
+                        #   from a prior session. Cleaning first removes that
+                        #   risk, so setup is guaranteed a clean symbol.
+                        #
+                        # Safety:
+                        #   - Verify no exchange-side position exists before
+                        #     cancelling protective orders. If an orphan
+                        #     position IS found → skip entry entirely and let
+                        #     reconcile adopt it next cycle.
+                        #   - On fetch failure, assume position exists
+                        #     (fail-safe, not fail-open).
+                        _has_exch_pos = False
+                        try:
+                            for _p in exchange.fetch_positions([sym]):
+                                _amt = float(
+                                    _p['info'].get('positionAmt', 0) or 0
+                                )
+                                if abs(_amt) > 0:
+                                    _has_exch_pos = True
+                                    break
+                        except Exception as _e:
+                            log.debug(f"[Entry-Cleanup] {sym} position "
+                                      f"check failed: {_e}")
+                            _has_exch_pos = True
+
+                        if _has_exch_pos:
+                            log.warning(
+                                f"[Entry-Cleanup] {sym} exchange has an "
+                                f"open position not in local state — "
+                                f"skipping entry. Next reconcile will "
+                                f"adopt it."
+                            )
+                            continue
+
+                        # No position → all orders on this symbol are stale.
+                        try:
+                            _cancelled_entries = 0
+                            _cancelled_prot = 0
+                            for o in exchange.fetch_open_orders(sym):
+                                _is_prot = _is_protective_order(o)
+                                _is_same_entry = (
+                                    (not _is_prot)
+                                    and o.get('side') == sd
+                                )
+                                if not (_is_prot or _is_same_entry):
+                                    continue
+                                try:
+                                    exchange.cancel_order(o['id'], sym)
+                                    if _is_prot:
+                                        _cancelled_prot += 1
+                                        log.info(
+                                            f"[Entry-Cleanup] {sym} "
+                                            f"cancelled stale "
+                                            f"{o.get('type','?')} "
+                                            f"id={o['id']} "
+                                            f"trigger="
+                                            f"{o.get('stopPrice') or o.get('price')}"
+                                        )
+                                    else:
+                                        _cancelled_entries += 1
+                                        log.debug(
+                                            f"[Entry-Cleanup] {sym} "
+                                            f"cancelled same-side entry "
+                                            f"id={o['id']}"
+                                        )
+                                except Exception as _e:
+                                    log.warning(
+                                        f"[Entry-Cleanup] {sym} cancel "
+                                        f"{o['id']} failed: {_e}"
+                                    )
+                            if _cancelled_prot > 0 or _cancelled_entries > 0:
+                                log.info(
+                                    f"[Entry-Cleanup] {sym} removed "
+                                    f"{_cancelled_entries} entry + "
+                                    f"{_cancelled_prot} protective "
+                                    f"order(s) before new entry"
+                                )
+                                time.sleep(0.2)
+                        except Exception as _e:
+                            log.warning(
+                                f"[Entry-Cleanup] {sym} "
+                                f"fetch_open_orders failed: {_e}"
+                            )
+
+                        # ══════════════════════════════════════════════════
+                        # STEP 2 — LEVERAGE / MARGIN SETUP (clean symbol now)
+                        # ══════════════════════════════════════════════════
                         if not ensure_symbol_setup(exchange, sym, dynamic_leverage,
                                                     margin_mode='isolated'):
                             log.warning(f"[Entry] {sym} setup failed — skip")
                             continue
 
-                        # ══ [LIQ-GATE] Verify SL safely inside Liq at sig price ══
+                        # ══════════════════════════════════════════════════
+                        # STEP 3 — LIQUIDATION GATE (uses confirmed leverage)
+                        # ══════════════════════════════════════════════════
                         if getattr(CFG, 'LIQ_ENABLED', True) and _mmr_sig is not None:
                             _confirmed_lev = int(
                                 _SYMBOL_META.get(sym, {}).get('leverage',
@@ -7133,21 +7226,6 @@ def run_live(cfg, exchange):
                                     f"MMR={_mmr_sig*100:.3f}%)"
                                 )
                                 continue
-
-                        # ══ 2. Anti-stacking: cancel stale entry orders ══
-                        try:
-                            for o in exchange.fetch_open_orders(sym):
-                                if o['side'] == sd:
-                                    try:
-                                        exchange.cancel_order(o['id'], sym)
-                                        log.debug(f"[AntiStack] cancelled {sym} "
-                                                  f"{sd} oid={o['id']}")
-                                    except Exception as e:
-                                        log.warning(f"[AntiStack] cancel {sym} "
-                                                    f"oid={o['id']} failed: {e}")
-                        except Exception as e:
-                            log.warning(f"[AntiStack] fetch_open_orders "
-                                        f"{sym} failed: {e}")
 
                         # ══ 3. Entry — Non-Blocking Pending Order ══
                         if getattr(CFG, 'PENDING_ENABLED', True):
