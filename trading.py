@@ -325,6 +325,11 @@ class Config:
     LIVE_HISTORY_DAYS: int = 90
     LIVE_TAIL_BARS: int = 800
     LIVE_MIN_BARS_FOR_PROCESS: int = 300
+    # ══ [LIQ AWARENESS] Liquidation safety envelope ══
+    LIQ_SAFETY_MULT: float = 1.5          # SL gap × this < Liq gap
+    LIQ_EMERGENCY_PROGRESS: float = 0.7    # 70% toward Liq → emergency exit
+    LIQ_FALLBACK_MMR: float = 0.02         # 2% if exchange MMR unavailable
+    LIQ_ENABLED: bool = True               # master switch (for testing)
 
 CFG = Config()
 
@@ -537,8 +542,8 @@ def scan_top_assets(exchange, n=None) -> List[str]:
 
     scored = []
     for sym, t in tickers.items():
-        # if not sym.endswith("/USDT"):
-        if not "/USDT" in sym:
+        if not sym.endswith("/USDT"):
+        # if not "/USDT" in sym:
             continue
         base = sym.replace("/USDT","")
         if any(ex in base for ex in CFG.exclude_tokens):
@@ -3982,6 +3987,93 @@ def _get_tick_size(exchange, symbol: str) -> Optional[float]:
     return None
 
 # ════════════════════════════════════════════════════════════════
+# [LIQ AWARENESS] — MMR fetching + liquidation math
+# ════════════════════════════════════════════════════════════════
+
+_MMR_CACHE: Dict[str, float] = {}
+
+
+def _get_mmr_for_symbol(exchange, symbol: str) -> float:
+    """
+    Maintenance margin rate for a symbol.
+    - Cached per session.
+    - Returns tier-0 (smallest notional) MMR, since our positions are small.
+    - Falls back to CFG.LIQ_FALLBACK_MMR on any failure.
+    """
+    if symbol in _MMR_CACHE:
+        return _MMR_CACHE[symbol]
+    try:
+        tiers = exchange.fetch_leverage_tiers([symbol])
+        if tiers and len(tiers) > 0:
+            t0 = tiers[0]
+            tiers_list = t0.get('tiers', []) or []
+            if tiers_list:
+                mmr = float(tiers_list[0].get('maintenanceMarginRate', 0))
+                if mmr > 0:
+                    _MMR_CACHE[symbol] = mmr
+                    return mmr
+    except Exception as e:
+        log.debug(f"[MMR] fetch failed for {symbol}: {e}")
+    _MMR_CACHE[symbol] = float(getattr(CFG, 'LIQ_FALLBACK_MMR', 0.02))
+    return _MMR_CACHE[symbol]
+
+
+def compute_liquidation_price(entry: float, side: str,
+                                leverage: int, mmr: float) -> float:
+    """
+    Binance isolated-margin liquidation price.
+
+    Derivation (LONG):
+        margin + (Liq - Entry) × qty = MMR × Liq × qty
+        Entry/L + Liq - Entry = MMR × Liq
+        Liq × (1 - MMR) = Entry × (1 - 1/L)
+        Liq = Entry × (1 - 1/L) / (1 - MMR)
+
+    SHORT by symmetry:
+        Liq = Entry × (1 + 1/L) / (1 + MMR)
+    """
+    L = max(int(leverage), 1)
+    m = max(float(mmr), 0.0)
+    if side == "BUY":
+        return float(entry * (1.0 - 1.0 / L) / max(1.0 - m, 1e-6))
+    else:
+        return float(entry * (1.0 + 1.0 / L) / max(1.0 + m, 1e-6))
+
+
+def compute_max_leverage_by_liq(sl_frac_max: float, mmr: float,
+                                  safety_mult: float = 1.5) -> int:
+    """
+    Max leverage such that: sl_gap × safety_mult < liq_gap  (relative to Entry).
+
+    Derivation:
+        sl_frac × safety_mult < 1 - (1 - 1/L)/(1 - MMR)
+        L < 1 / (1 - (1 - MMR) × (1 - sl_frac × safety_mult))
+    """
+    s = max(sl_frac_max * safety_mult, 1e-6)
+    m = max(float(mmr), 0.0)
+    denom = 1.0 - (1.0 - m) * (1.0 - s)
+    if denom <= 1e-9:
+        return 1
+    return max(1, int(np.floor(1.0 / denom)))
+
+
+def _estimate_liq_for_position(pos: dict, default_leverage: int = 10) -> Optional[float]:
+    """
+    Best-effort Liq estimate for a position dict. Returns None if not feasible.
+    Used when backfilling old positions from state files.
+    """
+    try:
+        entry = float(pos.get('entry') or 0)
+        side = pos.get('action') or 'BUY'
+        if entry <= 0:
+            return None
+        lev = int(pos.get('leverage') or default_leverage)
+        mmr = float(getattr(CFG, 'LIQ_FALLBACK_MMR', 0.02))
+        return compute_liquidation_price(entry, side, lev, mmr)
+    except Exception:
+        return None
+
+# ════════════════════════════════════════════════════════════════
 # § 18.5  بروتوكول مايسنر لمنع الانزلاق (Quantum Chunking)
 # ════════════════════════════════════════════════════════════════
 def execute_post_only(exchange, symbol: str, side: str, qty: float,
@@ -5310,7 +5402,7 @@ def _sweep_pending_once(exchange, sym: str) -> Optional[Dict]:
     return rec
 
 
-def _promote_pending_to_position(sym: str, rec: Dict,
+def _promote_pending_to_position(exchange, sym: str, rec: Dict,
                                  open_pos_live: Dict) -> bool:
     """Convert a filled pending order into an open position record."""
     filled_qty = float(rec.get('filled') or 0.0)
@@ -5360,6 +5452,36 @@ def _promote_pending_to_position(sym: str, rec: Dict,
         adapted_sl = entry_price + orig_sl_dist
         adapted_tp = entry_price - orig_tp_dist
 
+    # ══ [LIQ-GATE-PROMOTE] Final safety check at actual fill price ══
+    _lev = int(rec.get('leverage') or 10)
+    _mmr = float(rec.get('mmr_at_placement') or
+                 getattr(CFG, 'LIQ_FALLBACK_MMR', 0.02))
+    if getattr(CFG, 'LIQ_ENABLED', True) and _lev > 0 and _mmr > 0:
+        _liq_px = compute_liquidation_price(entry_price, rec['action'],
+                                              _lev, _mmr)
+        _liq_gap = abs(entry_price - _liq_px)
+        _sl_gap = orig_sl_dist
+        _safe_mult = float(getattr(CFG, 'LIQ_SAFETY_MULT', 1.5))
+        if _liq_gap <= 1e-12 or _sl_gap * _safe_mult > _liq_gap:
+            log.warning(
+                f"[LiqGate-Promote] {sym} SL unsafe at fill "
+                f"(SL gap={_sl_gap:.6f}, Liq gap={_liq_gap:.6f}, "
+                f"mult={_safe_mult}, L={_lev}x, MMR={_mmr*100:.3f}%) "
+                f"— closing filled position"
+            )
+            try:
+                close_side = 'sell' if rec['action'] == 'BUY' else 'buy'
+                exchange.create_order(sym, 'market', close_side, filled_qty)
+                log.info(f"[LiqGate-Promote] {sym} closed filled position")
+            except Exception as e:
+                log.error(f"[LiqGate-Promote] close failed {sym}: {e}")
+            return False
+
+    _liq_estimated = None
+    if getattr(CFG, 'LIQ_ENABLED', True) and _lev > 0 and _mmr > 0:
+        _liq_estimated = compute_liquidation_price(entry_price, rec['action'],
+                                                     _lev, _mmr)
+
     # σ-scaled trailing params at entry
     trail_d, trail_a = (0.003, 0.004)
     try:
@@ -5383,6 +5505,8 @@ def _promote_pending_to_position(sym: str, rec: Dict,
         'leverage': int(rec.get('leverage') or 1),
         'trail_dist_frac': float(trail_d),
         'trail_activate_frac': float(trail_a),
+        'liq_price_estimated': _liq_estimated,
+        'mmr': _mmr,
     }
     log.info(
         f"✅ [Pending→Entry] {rec['action']} {sym} @ {entry_price:.6f} "
@@ -5420,13 +5544,13 @@ def monitor_pending_orders(exchange, open_pos_live: Dict,
             filled = float(rec.get('filled') or 0.0)
             total = float(rec.get('qty') or 0.0)
             if total > 0 and filled >= total * 0.98:
-                ok = _promote_pending_to_position(sym, rec, open_pos_live)
+                ok = _promote_pending_to_position(exchange, sym, rec, open_pos_live)
                 if not ok:
                     log.info(f"[Pending] {sym} dropped after non-promotable fill")
                 _PENDING_ORDERS.pop(sym, None)
             else:
                 # Partial close on exchange side; treat as filled and adapt
-                ok = _promote_pending_to_position(sym, rec, open_pos_live)
+                ok = _promote_pending_to_position(exchange, sym, rec, open_pos_live)
                 if not ok:
                     log.info(f"[Pending] {sym} dropped after partial fill")
                 _PENDING_ORDERS.pop(sym, None)
@@ -5548,8 +5672,9 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
         'status': 'open',
         'filled': 0.0,
         'avg_price': 0.0,
-        # NOTE: ad_ref is intentionally NOT serialized; it is lost on restart.
-        # On restart, trail params fall back to defaults.
+        'mmr_at_placement': float(
+            _get_mmr_for_symbol(exchange, sym)
+        ),
         'ad_ref': ad,
     }
     _PENDING_ORDERS[sym] = rec
@@ -5780,6 +5905,18 @@ def run_live(cfg, exchange):
             with open(state_file) as f:
                 open_pos_live = json.load(f)
             log.info(f"  [State] Restored {len(open_pos_live)} positions from {state_file}")
+
+            # ══ [LIQ-BACKFILL] Ensure every loaded position has a Liq estimate ══
+            _backfilled = 0
+            for _sym_bf, _pos_bf in open_pos_live.items():
+                if _pos_bf.get('liq_price_estimated') is None:
+                    _est = _estimate_liq_for_position(_pos_bf)
+                    if _est is not None:
+                        _pos_bf['liq_price_estimated'] = _est
+                        _backfilled += 1
+            if _backfilled > 0:
+                log.info(f"  [State] Backfilled liq_price_estimated for "
+                         f"{_backfilled} positions (fallback MMR)")
         except Exception as e:
             log.warning(f"  [State] load failed: {e}")
 
@@ -6010,21 +6147,45 @@ def run_live(cfg, exchange):
             # 1. مراقبة وإغلاق المراكز الحية
             for sym in list(open_pos_live.keys()):
                 pos = open_pos_live[sym]
-                if sym not in assets: continue
 
-                ad = assets[sym]
-                fi = len(ad.score) - 1
+                # ══ [MON-FALLBACK] Monitor even if `ad` unavailable ══
+                # Physics-based exits (Apex, Topo-Div) require `ad`.
+                # SL/TP/Liq/MaxHold/Trailing work without it (ticker only).
+                ad = assets.get(sym)
+                if ad is not None:
+                    price = float(ad.closes[-1])
+                    fi = len(ad.score) - 1
+                else:
+                    try:
+                        _tk = exchange.fetch_ticker(sym)
+                        price = float(_tk.get('last') or 0)
+                        _rate_record(2.0)
+                    except Exception as _e:
+                        log.debug(f"[MonFallback] {sym} ticker failed: {_e}")
+                        continue
+                    if price <= 0:
+                        continue
+                    fi = -1
+                    log.debug(f"[MonFallback] {sym} monitoring via ticker "
+                              f"only (ad unavailable)")
 
-                price = ad.closes[-1]
                 ex = False
                 rsn = ""
 
-                # ── Apex ──
-                is_apex, apex_rsn = check_thermodynamic_apex(
-                    pos['action'], pos['entry'], price, ad, fi
-                )
-                if is_apex:
-                    ex = True; rsn = apex_rsn
+                # ── Physics-based exits (require ad) ──
+                if ad is not None:
+                    # Apex
+                    is_apex, apex_rsn = check_thermodynamic_apex(
+                        pos['action'], pos['entry'], price, ad, fi
+                    )
+                    if is_apex:
+                        ex = True; rsn = apex_rsn
+
+                    # Topo-Div
+                    if not ex and fi > 0:
+                        div_t = (ad.V[fi] - ad.V[fi-1]) / (ad.V[fi-1] + 1e-12)
+                        if div_t > cfg.TOPO_DIV_THRESHOLD and ad.dH[fi] > 0:
+                            ex = True; rsn = f"Topo-Div({div_t:.3f})"
 
                 # ── Topo-Div ──
                 if not ex and fi > 0:
@@ -6077,6 +6238,23 @@ def run_live(cfg, exchange):
                     else:
                         if price >= pos['sl']: ex = True; rsn = "Emergency SL"
                         elif price <= pos.get('tp1', 0.): ex = True; rsn = "Hard TP"
+
+                # ── [LIQ-PROXIMITY] Emergency exit near Liq ──
+                if not ex and getattr(CFG, 'LIQ_ENABLED', True):
+                    _liq_px = pos.get('liq_price_estimated')
+                    _entry_px = float(pos.get('entry') or 0)
+                    if (_liq_px is not None and _liq_px > 0
+                            and _entry_px > 0):
+                        _liq_gap_entry = abs(_entry_px - float(_liq_px))
+                        if _liq_gap_entry > 1e-12:
+                            if pos['action'] == "BUY":
+                                _progress = (_entry_px - price) / _liq_gap_entry
+                            else:
+                                _progress = (price - _entry_px) / _liq_gap_entry
+                            _thr = float(getattr(CFG, 'LIQ_EMERGENCY_PROGRESS', 0.7))
+                            if _progress >= _thr:
+                                ex = True
+                                rsn = f"Emergency LiqProximity({_progress*100:.0f}%)"
 
                 if not ex:
                     continue
@@ -6241,6 +6419,34 @@ def run_live(cfg, exchange):
                     qty_risk_based = risk_amt / delta
 
                     dynamic_leverage = compute_dynamic_leverage(cap_live, cfg)
+
+                    # ══ [LIQ-CAP] Cap leverage so SL is safely inside Liq ══
+                    _mmr_sig = None
+                    if getattr(CFG, 'LIQ_ENABLED', True):
+                        _mmr_sig = _get_mmr_for_symbol(exchange, sym)
+                        _sl_frac_max = 0.015
+                        _lev_by_liq = compute_max_leverage_by_liq(
+                            sl_frac_max=_sl_frac_max,
+                            mmr=_mmr_sig,
+                            safety_mult=float(getattr(CFG, 'LIQ_SAFETY_MULT', 1.5)),
+                        )
+                        if dynamic_leverage > _lev_by_liq:
+                            log.info(
+                                f"[LevCap] {sym} capping "
+                                f"{dynamic_leverage}x → {_lev_by_liq}x "
+                                f"(MMR={_mmr_sig*100:.3f}%)"
+                            )
+                            dynamic_leverage = max(
+                                int(cfg.LEVERAGE_MIN), _lev_by_liq
+                            )
+
+                    if dynamic_leverage < int(cfg.LEVERAGE_MIN):
+                        log.info(
+                            f"[LevCap] {sym} leverage {dynamic_leverage}x "
+                            f"< LEVERAGE_MIN={cfg.LEVERAGE_MIN}x — skip signal"
+                        )
+                        continue
+
                     max_notional = cap_live * dynamic_leverage
                     qty_leverage_based = max_notional / lmt
 
@@ -6263,6 +6469,29 @@ def run_live(cfg, exchange):
                                                     margin_mode='isolated'):
                             log.warning(f"[Entry] {sym} setup failed — skip")
                             continue
+
+                        # ══ [LIQ-GATE] Verify SL safely inside Liq at sig price ══
+                        if getattr(CFG, 'LIQ_ENABLED', True) and _mmr_sig is not None:
+                            _confirmed_lev = int(
+                                _SYMBOL_META.get(sym, {}).get('leverage',
+                                                                dynamic_leverage)
+                            )
+                            _liq_px = compute_liquidation_price(
+                                float(sig.price), sig.action,
+                                _confirmed_lev, _mmr_sig,
+                            )
+                            _liq_gap = abs(float(sig.price) - _liq_px)
+                            _sl_gap = abs(float(sig.price) - float(sig.sl))
+                            _safe_mult = float(getattr(CFG, 'LIQ_SAFETY_MULT', 1.5))
+                            if _liq_gap <= 1e-12 or _sl_gap * _safe_mult > _liq_gap:
+                                log.info(
+                                    f"[LiqGate] {sym} {sig.action} REJECT: "
+                                    f"SL gap={_sl_gap:.6f} × {_safe_mult} > "
+                                    f"Liq gap={_liq_gap:.6f} "
+                                    f"(L={_confirmed_lev}x, "
+                                    f"MMR={_mmr_sig*100:.3f}%)"
+                                )
+                                continue
 
                         # ══ 2. Anti-stacking: cancel stale entry orders ══
                         try:
@@ -6392,6 +6621,15 @@ def run_live(cfg, exchange):
                         trail_d, trail_a = compute_trail_params(assets[sym], entry_fi)
 
                         # ══ 6. Register position ══
+                        _lev_reg = int(_SYMBOL_META.get(sym, {}).get('leverage',
+                                                                       dynamic_leverage))
+                        _mmr_reg = float(_mmr_sig or
+                                          getattr(CFG, 'LIQ_FALLBACK_MMR', 0.02))
+                        _liq_est = None
+                        if getattr(CFG, 'LIQ_ENABLED', True):
+                            _liq_est = compute_liquidation_price(
+                                entry_price, sig.action, _lev_reg, _mmr_reg
+                            )
                         open_pos_live[sym] = {
                             'action': sig.action,
                             'entry': entry_price,
@@ -6402,9 +6640,11 @@ def run_live(cfg, exchange):
                             'dyn_risk': sig.dynamic_risk,
                             'entry_ts': time.time(),
                             'fill_ratio': fill_ratio,
-                            'leverage': _SYMBOL_META.get(sym, {}).get('leverage', dynamic_leverage),
+                            'leverage': _lev_reg,
                             'trail_dist_frac': trail_d,
                             'trail_activate_frac': trail_a,
+                            'liq_price_estimated': _liq_est,
+                            'mmr': _mmr_reg,
                         }
 
                         log.info(f"✅ [Entry] {sig.action} {sym} @ {entry_price:.6f} "
