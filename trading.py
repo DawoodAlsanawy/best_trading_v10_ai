@@ -335,6 +335,22 @@ class Config:
     PROTECTIVE_WORKING_TYPE: str = "MARK_PRICE"
     PROTECTIVE_SYNC_MIN_STEP_FRAC: float = 0.001   # 0.1% SL movement → resync
     PROTECTIVE_MAX_RETRIES: int = 2
+    # ══ [LAYER 4 — Live price feed for SL/TP checks] ══
+    # ad.closes[-1] only refreshes on new bar; on 1h it's frozen for up to
+    # 60 min. Ticker gives fresh price every poll (weight=2). Physics
+    # checks (Apex, Topo-Div) keep using ad.closes[-1] for reproducibility.
+    LIVE_PRICE_ENABLED: bool = True
+    LIVE_PRICE_RATE_WEIGHT: float = 2.0
+    LIVE_PRICE_FALLBACK_TO_STALE: bool = True
+
+    # ══ [LAYER 5 — Emergency exit near Liq] ══
+    LIQ_EMERGENCY_ENABLED: bool = True
+    # Refresh exchange-reported Liq when progress crosses this threshold.
+    LIQ_EMERGENCY_REFRESH_AT: float = 0.40
+    # Cooldown between refreshes of the same symbol.
+    LIQ_EMERGENCY_REFRESH_COOLDOWN_S: int = 30
+    # Warn user if LiqProximity triggers too often (unsafe leverage regime).
+    LIQ_EMERGENCY_WARN_AT: int = 5
 
     # ══ [LATENCY FIX — Exits] ══
     # Urgent exits (Emergency SL, Hard TP, LiqProximity) must not wait
@@ -5432,6 +5448,12 @@ _LIVE_ASSET_CACHE_STATS = {
 _DEGENERATE_CACHE: Dict[Tuple[str, str, int], float] = {}
 _DEGENERATE_CACHE_MAX = 500
 
+# ══ [LAYER 5] LiqProximity trigger counter ══
+_LIQ_EMERGENCY_STATS: Dict = {
+    'triggers': 0,
+    'last_warned_at': 0.0,
+}
+
 
 def _degenerate_get(sym: str, tf: str, last_closed_ts: int) -> bool:
     """True if (sym, tf, bar) was already marked as degenerate."""
@@ -6388,22 +6410,41 @@ def run_live(cfg, exchange):
                 # Physics-based exits (Apex, Topo-Div) require `ad`.
                 # SL/TP/Liq/MaxHold/Trailing work without it (ticker only).
                 ad = assets.get(sym)
-                if ad is not None:
-                    price = float(ad.closes[-1])
-                    fi = len(ad.score) - 1
-                else:
+
+                # ══ [LAYER 4] Always prefer live ticker for SL/TP/Liq ══
+                # ad.closes[-1] is only refreshed when a new bar opens.
+                # On 15m/1h/4h, it can be stale for many minutes. The ticker
+                # is fresh every poll. Cost: weight 2 per symbol per cycle.
+                price = None
+                _live_src = "none"
+                if getattr(CFG, 'LIVE_PRICE_ENABLED', True):
                     try:
                         _tk = exchange.fetch_ticker(sym)
-                        price = float(_tk.get('last') or 0)
-                        _rate_record(2.0)
+                        _rate_record(float(getattr(CFG,
+                            'LIVE_PRICE_RATE_WEIGHT', 2.0)))
+                        _p = float(_tk.get('last') or 0)
+                        if _p > 0:
+                            price = _p
+                            _live_src = "ticker"
                     except Exception as _e:
-                        log.debug(f"[MonFallback] {sym} ticker failed: {_e}")
-                        continue
-                    if price <= 0:
-                        continue
-                    fi = -1
-                    log.debug(f"[MonFallback] {sym} monitoring via ticker "
-                              f"only (ad unavailable)")
+                        log.debug(f"[LivePrice] {sym} ticker failed: {_e}")
+
+                # Fallback: stale close from ad if ticker failed
+                if (price is None
+                        and getattr(CFG, 'LIVE_PRICE_FALLBACK_TO_STALE', True)
+                        and ad is not None):
+                    try:
+                        price = float(ad.closes[-1])
+                        _live_src = "stale_close"
+                    except Exception:
+                        price = None
+
+                if price is None or price <= 0:
+                    log.debug(f"[LivePrice] {sym} no price source — skip")
+                    continue
+
+                # fi is only needed for physics-based checks
+                fi = (len(ad.score) - 1) if ad is not None else -1
 
                 ex = False
                 rsn = ""
@@ -6485,22 +6526,80 @@ def run_live(cfg, exchange):
                         if price >= pos['sl']: ex = True; rsn = "Emergency SL"
                         elif price <= pos.get('tp1', 0.): ex = True; rsn = "Hard TP"
 
-                # ── [LIQ-PROXIMITY] Emergency exit near Liq ──
-                if not ex and getattr(CFG, 'LIQ_ENABLED', True):
-                    _liq_px = pos.get('liq_price_estimated')
+                # ── [LAYER 5] LiqProximity with exchange-verified Liq ──
+                if not ex and getattr(CFG, 'LIQ_EMERGENCY_ENABLED', True):
                     _entry_px = float(pos.get('entry') or 0)
+                    _liq_px = pos.get('liq_price_estimated')
+
+                    # Step 1: compute progress with current estimate
+                    _progress = 0.0
                     if (_liq_px is not None and _liq_px > 0
                             and _entry_px > 0):
-                        _liq_gap_entry = abs(_entry_px - float(_liq_px))
-                        if _liq_gap_entry > 1e-12:
+                        _gap = abs(_entry_px - float(_liq_px))
+                        if _gap > 1e-12:
                             if pos['action'] == "BUY":
-                                _progress = (_entry_px - price) / _liq_gap_entry
+                                _progress = (_entry_px - price) / _gap
                             else:
-                                _progress = (price - _entry_px) / _liq_gap_entry
-                            _thr = float(getattr(CFG, 'LIQ_EMERGENCY_PROGRESS', 0.7))
-                            if _progress >= _thr:
-                                ex = True
-                                rsn = f"Emergency LiqProximity({_progress*100:.0f}%)"
+                                _progress = (price - _entry_px) / _gap
+
+                    # Step 2: if progress high, refresh Liq from exchange
+                    _refresh_thr = float(getattr(CFG,
+                        'LIQ_EMERGENCY_REFRESH_AT', 0.40))
+                    _cooldown = int(getattr(CFG,
+                        'LIQ_EMERGENCY_REFRESH_COOLDOWN_S', 30))
+                    _now_ts = time.time()
+                    _last_refresh = float(pos.get('_liq_last_refresh_ts', 0.0))
+
+                    if (_progress > _refresh_thr
+                            and (_now_ts - _last_refresh) > _cooldown):
+                        try:
+                            _pos_list = exchange.fetch_positions([sym])
+                            for _p in _pos_list:
+                                _amt = float(_p['info'].get(
+                                    'positionAmt', 0) or 0)
+                                if abs(_amt) > 0:
+                                    _exch_liq = float(_p['info'].get(
+                                        'liquidationPrice', 0) or 0)
+                                    if _exch_liq > 0:
+                                        # Use whichever is closer to entry
+                                        # (more conservative for our check)
+                                        if pos['action'] == "BUY":
+                                            _cand = max(float(_liq_px or 0),
+                                                        _exch_liq)
+                                        else:
+                                            _cand = min(float(_liq_px or 1e18),
+                                                        _exch_liq)
+                                        pos['liq_price_estimated'] = _cand
+                                        pos['_liq_source'] = 'exchange'
+                                        _liq_px = _cand
+                                        # Recompute progress with new Liq
+                                        _g2 = abs(_entry_px - _cand)
+                                        if _g2 > 1e-12:
+                                            if pos['action'] == "BUY":
+                                                _progress = ((_entry_px - price)
+                                                             / _g2)
+                                            else:
+                                                _progress = ((price - _entry_px)
+                                                             / _g2)
+                                    break
+                        except Exception as _e:
+                            log.debug(f"[Liq5] {sym} exchange Liq fetch "
+                                      f"failed: {_e}")
+                        pos['_liq_last_refresh_ts'] = _now_ts
+
+                    # Step 3: trigger emergency if threshold crossed
+                    _thr = float(getattr(CFG, 'LIQ_EMERGENCY_PROGRESS', 0.7))
+                    if _progress >= _thr:
+                        ex = True
+                        rsn = f"Emergency LiqProximity({_progress*100:.0f}%)"
+                        _liq_source = pos.get('_liq_source', 'estimated')
+                        log.warning(
+                            f"[Liq5] {sym} EMERGENCY: progress={_progress*100:.0f}% "
+                            f"entry={_entry_px:.6f} liq={float(_liq_px or 0):.6f} "
+                            f"price={price:.6f} source={_liq_source}"
+                        )
+                        # Update warning counter
+                        _LIQ_EMERGENCY_STATS['triggers'] += 1
 
                 if not ex:
                     continue
@@ -6939,6 +7038,20 @@ def run_live(cfg, exchange):
                 except Exception as _e:
                     log.warning(f"[Reconcile] state machine failed: {_e}")
                 run_live._last_reconcile = time.time()
+
+            # ══ [LAYER 5] Warn if LiqProximity triggers too often ══
+            _warn_at = int(getattr(CFG, 'LIQ_EMERGENCY_WARN_AT', 5))
+            _trig = _LIQ_EMERGENCY_STATS['triggers']
+            if (_trig >= _warn_at
+                    and time.time() - _LIQ_EMERGENCY_STATS['last_warned_at']
+                        > 600):
+                log.warning(
+                    f"[Liq5] WARNING: {_trig} emergency LiqProximity exits "
+                    f"triggered this session. Leverage on some assets may be "
+                    f"too aggressive. Consider reducing MAX_CONCURRENT_ASSETS "
+                    f"or checking MMR values."
+                )
+                _LIQ_EMERGENCY_STATS['last_warned_at'] = time.time()
 
             # ══ Persist state ══
             try:
