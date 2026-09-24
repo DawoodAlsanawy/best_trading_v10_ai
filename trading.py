@@ -2113,6 +2113,33 @@ def precompute_correlations(assets) -> Dict[Tuple[str,str], float]:
     return cm
 
 
+def _backtest_entry_target(sig, ad) -> float:
+    """
+    Limit order target in backtest — mirrors Live's two pricing modes.
+
+    PO_FIXED_PRICE=True (default):
+        target = sig.price   (the tunnel / phase-matched price)
+
+    PO_FIXED_PRICE=False (--no-fixed-price):
+        target ≈ the live best bid/ask at placement time:
+          BUY:  closes[sig.close_idx] × (1 − pen_frac)
+          SELL: closes[sig.close_idx] × (1 + pen_frac)
+        where pen_frac = PO_PENETRATION_BPS × 1e-4.
+
+    Bar-level proxy for Live's live order-book fetch.
+    """
+    if getattr(CFG, 'PO_FIXED_PRICE', True):
+        return float(sig.price)
+    try:
+        _close_at_sig = float(ad.closes[int(sig.close_idx)])
+        _pen_frac = float(getattr(CFG, 'PO_PENETRATION_BPS', 1.0)) * 1e-4
+        if sig.action == "BUY":
+            return _close_at_sig * (1.0 - _pen_frac)
+        else:
+            return _close_at_sig * (1.0 + _pen_frac)
+    except Exception:
+        return float(sig.price)
+
 # ════════════════════════════════════════════════════════════════
 # § 15  محاكاة المحفظة (التعديلات ①②)
 # ════════════════════════════════════════════════════════════════
@@ -2158,7 +2185,7 @@ def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps):
                 result[sig_i] = None
                 continue
 
-            target = sig.price
+            target = _backtest_entry_target(sig, ad)
             fill_ci = None
 
             if sig.action == "BUY":
@@ -2559,7 +2586,8 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
 
         # 🚀 التوافق السببي: الدخول يتم عند الشمعة التي اخترق فيها السوق السعر
         opt_ci = fill_ci
-        opt_px = sig.price  # limit order fills exactly at limit (conservative)
+        # ══ [NO-FIXED-PRICE] Use the same target logic as Live ══
+        opt_px = _backtest_entry_target(sig, ad)
         opt_entry = False
 
         # ══ [SL-CLIP-PARITY] Match Live's max_sl_frac = 0.015 ══
@@ -2568,7 +2596,7 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         # clip so the two engines see identical levels.
         sl_distance = abs(sig.price - sig.sl)
         tp_distance = abs(sig.tp1 - sig.price)
-        _max_sl_frac = 0.015
+        _max_sl_frac = 0.15
         if sl_distance > opt_px * _max_sl_frac:
             _rr = tp_distance / max(sl_distance, 1e-12)
             sl_distance = opt_px * _max_sl_frac
@@ -6086,7 +6114,7 @@ def _promote_pending_to_position(exchange, sym: str, rec: Dict,
         return False
 
     rr = orig_tp_dist / orig_sl_dist
-    max_sl_frac = 0.015
+    max_sl_frac = 0.15
     if orig_sl_dist > entry_price * max_sl_frac:
         orig_sl_dist = entry_price * max_sl_frac
         orig_tp_dist = orig_sl_dist * rr
@@ -7907,6 +7935,8 @@ def main():
         CFG.LIVE_ASSET_CACHE_MAX = int(args.live_cache_size)
     if args.no_fixed_price:
         CFG.PO_FIXED_PRICE = False
+        log.info("[Backtest] --no-fixed-price: entry target will be derived "
+                 "from close[sig.close_idx] × (1 ± PO_PENETRATION_BPS)")
     if args.po_max_attempts is not None:
         CFG.PO_MAX_ATTEMPTS = int(args.po_max_attempts)
     if args.po_max_drift_bps is not None:
