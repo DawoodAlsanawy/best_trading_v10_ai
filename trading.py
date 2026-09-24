@@ -106,7 +106,13 @@ class Config:
     LEVERAGE: int = 5
     INITIAL_CAPITAL: float = 10.0 # الانطلاق بـ 10$
     CAPITAL_FLOOR: float = 5.0    # قوة التنافر اللانهائية (نقطة استحالة التصفية)
-    MAKER_FEE: float = 0.0    # (-) تعني أننا نكسب عمولة الصانع لأننا سنستخدم النفق الكمي!
+    # ══ [REALISTIC FEES — Binance USDT-M Futures VIP0] ══
+    # Maker: 0.020% (orders that add liquidity: entry GTX, exit post-only)
+    # Taker: 0.050% (orders that cross the book: SL, TP-urgent, market)
+    # These apply to BOTH entry and exit; the backtest computes each side
+    # separately in _close().
+    MAKER_FEE: float = 0.0002
+    TAKER_FEE: float = 0.0005
     MAX_CHUNK_USD: float = 10000.0 # أقصى حجم للحزمة الكمومية الواحدة بالدولار لتجنب صدمة دفتر الأوامر
     MIN_NOTIONAL: float = 5.0
     SL_FACTOR: float = 0.15
@@ -1323,15 +1329,80 @@ def find_optimal_entry(ci0, closes, KE, atr, action, feat_start):
 
 
 # ════════════════════════════════════════════════════════════════
+# [BACKTEST REALISM] — Slippage & fee helpers
+# ════════════════════════════════════════════════════════════════
+
+def _taker_slippage_bps(adv_usd) -> float:
+    """
+    Taker slippage (half-spread + small impact) in basis points,
+    derived from 24h quote volume. Calibrated to typical Binance
+    USDT-M Futures order books:
+
+        adv ≥ 5e10 (BTC)       → 1.0 bps
+        adv ≥ 5e9  (ETH)       → 1.5 bps
+        adv ≥ 1e9  (SOL, BNB)  → 2.5 bps
+        adv ≥ 1e8  (WIF, DOGE) → 5.0 bps
+        adv ≥ 1e7  (small alt) → 10.0 bps
+        adv <  1e7             → 20.0 bps
+    """
+    try:
+        a = float(adv_usd)
+    except Exception:
+        return 5.0
+    if a >= 5e10: return 1.0
+    if a >= 5e9:  return 1.5
+    if a >= 1e9:  return 2.5
+    if a >= 1e8:  return 5.0
+    if a >= 1e7:  return 10.0
+    return 20.0
+
+
+def _exit_is_taker(exit_rsn: str) -> bool:
+    """
+    Classify the exit reason as taker (crosses the book) or maker.
+    Matches Live's classification in run_live():
+        - Emergency SL / Hard TP / LiqProximity → taker
+          (marketable limit or market order)
+        - Apex / Topo-Div / MaxHold / EndOfData → maker
+          (post-only GTX exit)
+    """
+    r = str(exit_rsn or "")
+    if ("Emergency" in r) or ("Hard TP" in r) or ("LiqProximity" in r):
+        return True
+    return False
+
+
+# ════════════════════════════════════════════════════════════════
 # § 10  نموذج الانزلاق (كايل)
 # ════════════════════════════════════════════════════════════════
 
-def apply_slippage(price, qty, adv_usd, action, mode="backtest"):
+def apply_slippage(price, qty, adv_usd, action, mode="backtest",
+                   is_taker=False):
     """
-    [تعديل التوصيل الفائق]: الانزلاق صفر لأننا نستخدم أوامر Limit (Maker).
-    يتم تنفيذ السعر كما هو بالضبط دون احتكاك.
+    Realistic slippage model (Backtest only).
+
+    - Maker fills (entry GTX, exit post-only) → 0 slippage.
+    - Taker fills (market, marketable-limit, stop-market) → adverse
+      slippage from half-spread, scaled by asset liquidity.
+
+    Live (mode != 'backtest') returns price unchanged: the exchange
+    applies real slippage.
     """
-    return price  # لا يوجد انزلاق (Zero Slippage)
+    if mode != "backtest":
+        return price
+    if not is_taker:
+        return price
+    if price <= 0:
+        return price
+
+    bps = _taker_slippage_bps(adv_usd)
+    slip_frac = bps * 1e-4
+
+    # Adverse: buyer pays more, seller receives less
+    if action == "BUY":
+        return float(price * (1.0 + slip_frac))
+    else:
+        return float(price * (1.0 - slip_frac))
 
 # ════════════════════════════════════════════════════════════════
 # § 11  بنية البيانات
@@ -2387,34 +2458,38 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         sig         = pos.signal
         exit_act    = "SELL" if sig.action=="BUY" else "BUY"
         adv_here    = ad.adv_usd[min(exit_ci, len(ad.adv_usd)-1)]
-        exit_eff    = apply_slippage(exit_px, pos.pos_size, adv_here, exit_act, mode)
-        slip_x      = abs(exit_eff-exit_px)*pos.pos_size
 
-        if sig.action=="BUY": 
+        # ══ [SLIPPAGE] taker exits suffer adverse slippage ══
+        _is_taker = _exit_is_taker(exit_rsn)
+        exit_eff  = apply_slippage(exit_px, pos.pos_size, adv_here,
+                                    exit_act, mode, is_taker=_is_taker)
+        slip_x    = abs(exit_eff-exit_px)*pos.pos_size
+
+        if sig.action=="BUY":
             gross = (exit_eff - pos.entry_px) * pos.pos_size
-        else:                  
+        else:
             gross = (pos.entry_px - exit_eff) * pos.pos_size
 
-        # رسوم الصانع المعكوسة (نربح عمولة توفير السيولة Maker Rebate)
-        fee  = pos.pos_size * (pos.entry_px + exit_eff) * CFG.MAKER_FEE
-        
-        # رسوم التمويل الزمنية
-        # ══ [FUNDING FIX] Apply to both BUY and SELL (conservative) ══
+        # ══ [FEES] entry is maker (GTX); exit is maker or taker ══
+        entry_fee = pos.pos_size * pos.entry_px * CFG.MAKER_FEE
+        _exit_fee_rate = CFG.TAKER_FEE if _is_taker else CFG.MAKER_FEE
+        exit_fee  = pos.pos_size * exit_eff * _exit_fee_rate
+        fee       = entry_fee + exit_fee
+
+        # Funding (unchanged)
         hold_bars = exit_ci - pos.entry_ci
         funding_payments = max(0, hold_bars) // CFG.FUNDING_INTERVAL_BARS
-        # Both directions pay the same rate in this conservative model.
-        # (In reality, shorts may receive or pay depending on funding sign.)
         funding_cost = pos.pos_size * pos.entry_px * CFG.FUNDING_RATE_COST * funding_payments
 
-        net  = gross - fee - slip_x - funding_cost
+        net  = gross - fee - funding_cost
         cap0 = pos.entry_cap
         capital = max(capital+net, 0.)
         peak_cap= max(peak_cap, capital)
         equity.append(capital)
-        
+
         lr = float(np.log((cap0+net)/cap0)) if cap0>0 else 0.
         lw = (pos.pos_size*pos.entry_px) > (adv_here*24*CFG.MAX_ADV_FRACTION)
-        
+
         trades_out.append(Trade(
             symbol=sig.symbol, action=sig.action,
             entry_price=pos.entry_px, exit_price=exit_eff,
@@ -2426,7 +2501,7 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
             entry_optimized=pos.opt_entry, tri_at_entry=pos.tri_entry,
             dynamic_risk_used=sig.dynamic_risk,
             T_info_at_entry=sig.T_info_val,
-            mfe_frac=pos.mfe_frac   # ← أضف هذا السطر
+            mfe_frac=pos.mfe_frac
         ))
 
     for sig_i, sig in enumerate(signals):
@@ -2487,9 +2562,26 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         opt_px = sig.price  # limit order fills exactly at limit (conservative)
         opt_entry = False
 
-        # مسافة الوقف الجيوديسي المحددة مسبقاً في الإشارة
+        # ══ [SL-CLIP-PARITY] Match Live's max_sl_frac = 0.015 ══
+        # Live clips SL at 1.5% of entry (and scales TP to preserve R/R)
+        # in _promote_pending_to_position. Backtest must apply the same
+        # clip so the two engines see identical levels.
         sl_distance = abs(sig.price - sig.sl)
-        
+        tp_distance = abs(sig.tp1 - sig.price)
+        _max_sl_frac = 0.015
+        if sl_distance > opt_px * _max_sl_frac:
+            _rr = tp_distance / max(sl_distance, 1e-12)
+            sl_distance = opt_px * _max_sl_frac
+            tp_distance = sl_distance * _rr
+            # Update sig.sl / sig.tp1 in place so _advance uses clipped
+            # levels for the SL/TP trigger checks and exit prices.
+            if sig.action == "BUY":
+                sig.sl  = sig.price - sl_distance
+                sig.tp1 = sig.price + tp_distance
+            else:
+                sig.sl  = sig.price + sl_distance
+                sig.tp1 = sig.price - tp_distance
+
         if sig.action == "BUY":
             sl_h = opt_px - sl_distance
         else:
