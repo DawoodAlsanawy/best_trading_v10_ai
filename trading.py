@@ -85,7 +85,7 @@ class Config:
     EMA_SPAN: int = 200; ATR_PERIOD: int = 14
 
     W_CURV: float=1.0; W_VOL: float=1.0; W_ENTROPY: float=2.0
-    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=5.5
+    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=2
 
     CURV_THRESHOLD: float=0.01; DH_ENTROPY_THRESHOLD: float=0.005
     DH_HMM_UPPER: float=0.01;  DH_HMM_LOWER: float=-0.01
@@ -115,7 +115,7 @@ class Config:
     TAKER_FEE: float = 0.0005
     MAX_CHUNK_USD: float = 10000.0 # أقصى حجم للحزمة الكمومية الواحدة بالدولار لتجنب صدمة دفتر الأوامر
     MIN_NOTIONAL: float = 5.0
-    SL_FACTOR: float = 0.15
+    SL_FACTOR: float = 0.5
     TP_BETAS: Tuple = (1.5,)
 
     FUNDING_RATE_COST: float = 0.0001
@@ -194,7 +194,11 @@ class Config:
 
     # ══ [BACKTEST REALISM — Penetration & Fill Search] ══
     FILL_PENETRATION_BPS: float = 1.0            # 0.01% penetration required
-    FILL_ENTRY_MAX_WAIT_BARS: int = 15           # order lifetime in backtest
+    # [FILL-WINDOW] 15 bars was too tight: with σ_bar ≈ 1%, the theoretical
+    # probability of reaching a 1% dip within 15 bars is only ~40%.
+    # 25 bars recovers roughly +15pp fill rate on 1h without letting the
+    # signal age past its validity window.
+    FILL_ENTRY_MAX_WAIT_BARS: int = 25           # order lifetime in backtest
     FILL_APPLY_TO_EXITS: bool = True             # also apply to SL/TP
     # ══ [LEVEL-1 PERFORMANCE] ══
     PARALLEL_PROCESSING: bool = True
@@ -207,7 +211,7 @@ class Config:
 
     # ══ [POST-ONLY EXECUTION] ══
     PO_PENETRATION_BPS: float = 1.0      # match backtest's FILL_PENETRATION_BPS
-    PO_MAX_WAIT_S: int = 200              # entry wait time (per attempt)
+    PO_MAX_WAIT_S: int = 0 # 200              # entry wait time (per attempt)
     PO_EXIT_MAX_WAIT_S: int = 45          # reduced from 180 to prevent long blocking
     PO_REPRICE_S: float = 3.0            # cancel/replace interval
     PO_FILL_THRESHOLD: float = 0.50      # accept partial if ≥ 50%
@@ -303,9 +307,16 @@ class Config:
     KILL_STATE_ARMED: str = "ARMED"
     KILL_STATE_WARNING: str = "WARNING"
     KILL_STATE_TRIGGERED: str = "TRIGGERED"
-    # ══ [ADAPTIVE FIX #1] Z-score thresholds for dH/dF ══
-    # Absolute thresholds (0.005, -0.01) fire ~50% of bars → noise.
-    # Z-scores make thresholds fire ~16% of bars → real signal.
+    # ══ [THRESHOLD MODE] ══
+    # True  → use the ABSOLUTE thresholds (DH_ENTROPY_THRESHOLD,
+    #         DF_FREE_E_THRESHOLD, DH_HMM_UPPER, DH_HMM_LOWER).
+    #         This is the original design.
+    # False → use Z-SCORE thresholds (DH_ENTROPY_Z, ...), the experiment.
+    # The diagnostic showed the z-score experiment produced 1.8× signals
+    # and a different score distribution. Restored to absolute.
+    USE_ABSOLUTE_THRESHOLDS: bool = True
+
+    # Z-score thresholds (kept for the opt-in path)
     DH_ENTROPY_Z: float = -1.0
     DF_FREE_E_Z:  float = -1.0
     DH_HMM_UPPER_Z: float = 0.5
@@ -316,6 +327,16 @@ class Config:
     K_MIN_TRAIN_POINTS_PER_CLUSTER: int = 100
     K_SKIP_IF_DEGENERATE: bool = True
     K_DEGENERATE_H_RATIO: float = 0.25
+    # ══ [SL WIDENING — breathing room] ══
+    # Multiplier on the geodesic SL/TP distance. Compensates for the fact
+    # that compute_geodesic_stop yields 1.0–1.5% on most assets, which is
+    # smaller than typical hourly noise. Widen both SL and TP so R/R is
+    # preserved while giving trades room to survive normal volatility.
+    #   1.0 → original tight SL
+    #   1.5 → moderate widening
+    #   2.0 → recommended starting point
+    #   2.5 → aggressive widening (fewer SL hits, larger drawdowns)
+    SL_WIDEN_MULT: float = 2.0
 
     # ══ [ADAPTIVE FIX #3] Tick-based penetration ══
     # WIF has 0.254 ticks/bps → 1 bps < 1 tick → orders can't fill properly.
@@ -357,6 +378,43 @@ class Config:
     LIQ_EMERGENCY_REFRESH_COOLDOWN_S: int = 30
     # Warn user if LiqProximity triggers too often (unsafe leverage regime).
     LIQ_EMERGENCY_WARN_AT: int = 5
+    # ══ [SMART ENTRY — 4-layer dip model] ══
+    # Layer 1: ATR-based base dip
+    ENTRY_ATR_MULT: float = 0.40            # base_dip = k × ATR
+    ENTRY_MIN_DIP_MULT: float = 0.15        # clamp: ≥ 0.15 × ATR
+    ENTRY_MAX_DIP_MULT: float = 1.00        # clamp: ≤ 1.00 × ATR
+    # Layer 2: regime scaling
+    ENTRY_REGIME_SCALE: bool = True
+    ENTRY_REGIME_LOOKBACK: int = 100
+    ENTRY_REGIME_RANGING_MULT: float = 0.60
+    ENTRY_REGIME_TRENDING_MULT: float = 1.00
+    ENTRY_REGIME_EXPLOSIVE_MULT: float = 1.30
+    # Layer 3: structure anchor (nearest swing)
+    ENTRY_STRUCTURE_ANCHOR: bool = True
+    ENTRY_STRUCTURE_MIN_ADV_USD: float = 1e8   # only liquid assets
+    ENTRY_STRUCTURE_RANGE_MULT_LO: float = 0.30  # don't anchor closer than this × dip
+    ENTRY_STRUCTURE_RANGE_MULT_HI: float = 2.00  # don't anchor farther than this × dip
+    ENTRY_STRUCTURE_BUFFER_MULT: float = 0.10    # buffer above support = 0.1 × ATR
+    # Layer 4: time decay (applied during repricing)
+    # [DISABLED] Restored from diagnostic: with base dip = 0.34%,
+    # Stage-3 decays it to 0.10% — essentially a market order.
+    # With the restored friction dip (≈2%), time decay would chase
+    # the market down and destroy the mean-reversion edge.
+    ENTRY_TIME_DECAY: bool = False
+    ENTRY_TIME_DECAY_BARS_1: int = 5
+    ENTRY_TIME_DECAY_BARS_2: int = 10
+    ENTRY_TIME_DECAY_BARS_3: int = 15
+    ENTRY_TIME_DECAY_BARS_4: int = 20
+    ENTRY_TIME_DECAY_MULT_1: float = 0.70
+    ENTRY_TIME_DECAY_MULT_2: float = 0.50
+    ENTRY_TIME_DECAY_MULT_3: float = 0.30
+    # ══ [SUB-BAR PRECISION] ══
+    # Resolves intrabar path ambiguity in backtest by using finer bars
+    # around the entry bar and (optionally) exit bars.
+    SUBBARS_ENABLED: bool = True
+    SUBBARS_REFINE_ENTRY_ONLY: bool = True    # True → refine entry bar only
+                                              # False → refine all bars (heavy)
+    SUBBARS_MAX_ASSETS: int = 0               # 0 = no cap (all symbols)
     # ══ [ADVANCED TRAILING — Physics-Adaptive Chandelier] ══
     TRAIL_ADVANCED_ENABLED: bool = True
     # Chandelier: SL = peak - k × ATR_current
@@ -405,6 +463,40 @@ class Config:
     PO_EXIT_MAX_WAIT_S: int = 12            # was 45 (still used for soft exits)
     PO_EXIT_URGENT_WAIT_S: int = 4          # for SL/TP/LiqProximity
     PO_EXIT_URGENT_CROSS_SPREAD: bool = True
+    # ══ [BACKTEST↔LIVE PARITY] ══
+    # When True, backtest behaves like live:
+    #   - Uses the same entry timeout as live (PO_MAX_WAIT_S seconds)
+    #   - Applies time-decay repricing (if ENTRY_TIME_DECAY enabled)
+    #   - Applies LevCap (caps leverage by MMR)
+    #   - Applies LiqGate (rejects signals with SL too close to Liq)
+    # Set to False to restore the legacy "generous" backtest.
+    SIMULATE_LIVE_FAITHFULLY: bool = True
+    # ══ [FIX 1 — TRAILING ACTIVATION AT R-MULTIPLE] ══
+    # Old design activated trailing after a fixed MFE (0.4%), which was
+    # often BELOW the SL distance. So SL moved above entry on tiny moves
+    # and killed 52% of trades with a "profitable SL" that capped gains.
+    # New design: trailing only activates after N × sl_dist_initial of MFE.
+    TRAIL_ACTIVATE_AT_R: float = 1.0    # activate at +1R of profit
+
+    # ══ [FIX 2 — REGIME FILTER] ══
+    # Skip signals when EMA200 slope (over lookback) is too steep
+    # relative to ATR. Mean-reversion hates trending markets.
+    REGIME_FILTER_ENABLED: bool = False
+    REGIME_EMA_LOOKBACK: int = 50
+    REGIME_SLOPE_ATR_MAX: float = 2.0   # |slope×bars|/ATR > this → skip
+
+    # ══ [FIX 3 — TIME-BASED KILL] ══
+    # If after N bars the trade hasn't reached TIME_KILL_MIN_R, close it.
+    TIME_KILL_ENABLED: bool = False
+    TIME_KILL_BARS: int = 10            # bars to wait (TF-scaled)
+    TIME_KILL_MIN_R: float = 0.5        # must reach +0.5R by then
+
+    # ══ [FIX 4 — PARTIAL TAKE-PROFIT] ══
+    # Close PARTIAL_TP_PCT of the position at +PARTIAL_TP_R, let the
+    # rest ride with trailing.
+    PARTIAL_TP_ENABLED: bool = True
+    PARTIAL_TP_R: float = 1.0           # take profit at +1R
+    PARTIAL_TP_PCT: float = 0.5         # close 50% at that level
 
 CFG = Config()
 
@@ -699,6 +791,175 @@ def _needs_ohlcv_refresh(cached_df, tf_sec: int) -> bool:
         return last_bar_open_ts < current_open_ts
     except Exception:
         return True
+
+# ════════════════════════════════════════════════════════════════
+# [SUB-BARS] — Finer timeframe selection + loader
+# ════════════════════════════════════════════════════════════════
+
+# Aim: 6–24 sub-bars per main bar (sweet spot for path resolution).
+_SUBBARS_TF_MAP = {
+    "1m":  None,   # main is already finest
+    "3m":  None,
+    "5m":  None,
+    "15m": "1m",   # 15 sub-bars
+    "30m": "5m",   # 6 sub-bars
+    "1h":  "5m",   # 12 sub-bars
+    "2h":  "15m",  # 8 sub-bars
+    "4h":  "15m",  # 16 sub-bars
+    "6h":  "30m",  # 12 sub-bars
+    "8h":  "30m",  # 16 sub-bars
+    "12h": "1h",   # 12 sub-bars
+    "1d":  "1h",   # 24 sub-bars
+}
+
+
+def _get_subbars_tf(main_tf: str) -> Optional[str]:
+    """Return sub-bar TF for the given main TF, or None if unavailable."""
+    return _SUBBARS_TF_MAP.get(str(main_tf).lower())
+
+
+def _sub_per_main(main_tf: str, sub_tf: str) -> int:
+    """Number of sub-bars per main bar."""
+    try:
+        import ccxt as _ccxt
+        _ex = _ccxt.binance()
+        main_s = int(_ex.parse_timeframe(main_tf))
+        sub_s  = int(_ex.parse_timeframe(sub_tf))
+        if sub_s <= 0: return 0
+        return max(1, main_s // sub_s)
+    except Exception:
+        # Fallback table
+        _m = {"15m":900,"30m":1800,"1h":3600,"2h":7200,"4h":14400,
+              "6h":21600,"8h":28800,"12h":43200,"1d":86400}
+        _s = {"1m":60,"5m":300,"15m":900,"30m":1800,"1h":3600}
+        m = _m.get(main_tf); s = _s.get(sub_tf)
+        if not m or not s: return 0
+        return max(1, m // s)
+
+
+def _load_cached_sub(symbol, exchange, sub_tf, days):
+    """Same as _load_cached but for sub-bars. Uses its own parquet."""
+    fp = os.path.join(CACHE_DIR,
+                      f"{symbol.replace('/','_')}_{sub_tf}_sub.parquet")
+    min_rows = 500
+    since_full = exchange.parse8601(
+        (datetime.now(timezone.utc) - timedelta(days=days)).isoformat() + "Z")
+
+    if os.path.exists(fp):
+        try:
+            df_old = pd.read_parquet(fp)
+            if df_old.index.tz is None:
+                df_old.index = pd.to_datetime(df_old.index, utc=True)
+            last_ts = df_old.index.max()
+            _sub_sec = 300
+            try:
+                _sub_sec = int(exchange.parse_timeframe(sub_tf))
+            except Exception:
+                pass
+            since = exchange.parse8601(
+                (last_ts + timedelta(seconds=_sub_sec)).isoformat() + "Z")
+            rows = []
+            while True:
+                chunk = exchange.fetch_ohlcv(symbol, sub_tf, since=since,
+                                              limit=1000)
+                if not chunk: break
+                rows.extend(chunk); since = chunk[-1][0] + 1; time.sleep(0.06)
+            if rows:
+                df_new = pd.DataFrame(rows,
+                    columns=['ts','Open','High','Low','Close','Volume'])
+                df_new['ts'] = pd.to_datetime(df_new['ts'], unit='ms', utc=True)
+                df_new = df_new.set_index('ts').drop_duplicates().astype(float)
+                df = pd.concat([df_old, df_new])
+                df = df[~df.index.duplicated(keep='last')].sort_index()
+            else:
+                df = df_old
+            if len(df) >= min_rows:
+                df.to_parquet(fp); return df
+        except Exception:
+            pass
+
+    rows = []
+    try:
+        since = since_full
+        while True:
+            chunk = exchange.fetch_ohlcv(symbol, sub_tf, since=since,
+                                          limit=1000)
+            if not chunk: break
+            rows.extend(chunk); since = chunk[-1][0] + 1; time.sleep(0.06)
+    except Exception as e:
+        log.warning(f"[SubBars] {symbol} {sub_tf} full fetch: {e}")
+    if len(rows) < min_rows: return None
+    df = pd.DataFrame(rows, columns=['ts','Open','High','Low','Close','Volume'])
+    df['ts'] = pd.to_datetime(df['ts'], unit='ms', utc=True)
+    df = df.set_index('ts').drop_duplicates().astype(float)
+    try:
+        df.to_parquet(fp)
+    except Exception:
+        pass
+    return df
+
+
+def fetch_all_with_subbars(symbols, exchange, main_tf, days, workers=5):
+    """Fetch main + sub in one pass. Returns (main_dict, sub_dict)."""
+    main = fetch_all(symbols, exchange, main_tf, days, workers=workers)
+    sub_tf = _get_subbars_tf(main_tf)
+    if not sub_tf or not getattr(CFG, 'SUBBARS_ENABLED', True):
+        return main, {}
+
+    sub = {}
+    n_limit = int(getattr(CFG, 'SUBBARS_MAX_ASSETS', 0) or 0)
+    targets = list(main.keys())[:n_limit] if n_limit > 0 else list(main.keys())
+
+    def _one_sub(sym):
+        try:
+            df = _load_cached_sub(sym, exchange, sub_tf, days)
+            return sym, df
+        except Exception as e:
+            log.warning(f"[SubBars] {sym} load failed: {e}")
+            return sym, None
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = {ex.submit(_one_sub, s): s for s in targets}
+        for f in as_completed(futs):
+            sym, df = f.result()
+            if df is not None and len(df) > 0:
+                sub[sym] = df
+                log.info(f"  ✓ {sym:14s}: {len(df):,} شمعة {sub_tf}")
+    return main, sub
+
+def _align_subbars(main_index, sub_df, sub_per_main, tf_sec):
+    """
+    Align sub-bars to main-bar grid.
+
+    Returns (sub_highs, sub_lows) with shape (n_main, sub_per_main).
+    Missing sub-bars are filled with the main bar's high/low.
+    """
+    n = len(main_index)
+    sub_highs = np.full((n, sub_per_main), np.nan, dtype=np.float64)
+    sub_lows  = np.full((n, sub_per_main), np.nan, dtype=np.float64)
+    if sub_df is None or len(sub_df) == 0 or sub_per_main <= 0:
+        return sub_highs, sub_lows
+
+    try:
+        sub_ts_ns = sub_df.index.asi8
+        sub_high_vals = sub_df['High'].values.astype(np.float64)
+        sub_low_vals  = sub_df['Low'].values.astype(np.float64)
+        main_ns = main_index.asi8
+        tf_ns = int(tf_sec * 1_000_000_000)
+
+        for i in range(n):
+            start_ns = main_ns[i]
+            end_ns = start_ns + tf_ns
+            lo = int(np.searchsorted(sub_ts_ns, start_ns, side='left'))
+            hi = int(np.searchsorted(sub_ts_ns, end_ns, side='left'))
+            if hi <= lo:
+                continue
+            take = min(hi - lo, sub_per_main)
+            sub_highs[i, :take] = sub_high_vals[lo:lo+take]
+            sub_lows[i, :take]  = sub_low_vals[lo:lo+take]
+    except Exception as e:
+        log.warning(f"[SubBars] align failed: {e}")
+    return sub_highs, sub_lows
 
 # ════════════════════════════════════════════════════════════════
 # § 2  جلب البيانات مع كاش (متوازٍ)
@@ -1445,11 +1706,16 @@ class AssetData:
     dynamic_k: int  
     
     # حقول النظرية الموحدة الإضافية:
-    gauge_force: np.ndarray     # معيار اللاتناظرية لحقل المقياس F
-    friction: np.ndarray        # الاحتكاك الإنتروبي Γ(S)
-    delta_gap: np.ndarray       # فجوة التوازن الإحصائي Δ(n)
-    geodesic_accel: np.ndarray  # التسارع الجيوديسي النهائي d/dτ(λ_dot)
-    score_q95_train: float      # [ADAPTIVE] Q95 of score on training portion
+    gauge_force: np.ndarray
+    friction: np.ndarray
+    delta_gap: np.ndarray
+    geodesic_accel: np.ndarray
+    score_q95_train: float
+    # ══ [SUB-BARS] ══
+    sub_highs: Optional[np.ndarray] = None    # shape (n_bars, sub_per_main)
+    sub_lows:  Optional[np.ndarray] = None
+    sub_per_main: int = 0
+    sub_tf: str = ""
 
 @dataclass
 class Signal:
@@ -1457,9 +1723,12 @@ class Signal:
     action: str; sl: float; tp1: float; tp2: float; tp3: float
     atr: float; lam: float; close_idx: int; feat_idx: int
     adv_usd: float; tri_val: float
-    dynamic_risk: float  # ← جديد: المخاطرة الديناميكية (التعديل ①)
-    T_info_val: float    # ← جديد: درجة الحرارة عند الإشارة
-    dyn_sl_factor: float = 0.1  # ← جديد: الوقف الديناميكي
+    dynamic_risk: float
+    T_info_val: float
+    dyn_sl_factor: float = 0.1
+    # ══ [SMART ENTRY] ══
+    entry_ref_price: float = 0.0   # close price at signal time (dip ref)
+    entry_base_dip: float = 0.0    # |ref_price − price| in price units
 
 @dataclass
 class Trade:
@@ -1481,10 +1750,13 @@ class OpenPosition:
     slip_paid: float; opt_entry: bool; tri_entry: float
     mfe_frac: float = 0.0
     peak_price: float = 0.0
-    trail_dist_frac: float = 0.003       # legacy — unused with advanced trail
-    trail_activate_frac: float = 0.004   # legacy — unused with advanced trail
-    sl_dist_initial: float = 0.0         # [ADV-TRAIL] |entry - initial_SL|
-    trail_peak_R: float = 0.0            # [ADV-TRAIL] highest R reached
+    trail_dist_frac: float = 0.003
+    trail_activate_frac: float = 0.004
+    sl_dist_initial: float = 0.0
+    trail_peak_R: float = 0.0
+    entry_sub_idx: int = 0
+    partial_taken: bool = False      # [FIX 4]
+    partial_pnl: float = 0.0         # [FIX 4] accumulated partial profit
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1542,7 +1814,7 @@ def compute_entropy_friction(H: np.ndarray, dyn_k: int) -> np.ndarray:
 # § 12  معالجة أصل واحد (Pipeline) + تسارع EMA (التعديل ⑤)
 # ════════════════════════════════════════════════════════════════
 
-def process_asset(symbol, df, km_ext=None, current_capital=None):
+def process_asset(symbol, df, km_ext=None, current_capital=None, sub_df=None):
     closes = df['Close'].values.astype(np.float64)
     highs  = df['High'].values.astype(np.float64)
     lows   = df['Low'].values.astype(np.float64)
@@ -1626,28 +1898,45 @@ def process_asset(symbol, df, km_ext=None, current_capital=None):
     V_q20 = np.percentile(vv,20) if len(vv)>0 else np.percentile(V_tr,20)
     V_q20a = np.full(n, V_q20)
 
-    # ══ [ADAPTIVE FIX #1] Robust z-scores for dH and dF ══
-    # Fit center/scale on TRAINING portion only (causality preserved),
-    # then apply to entire series. This makes thresholds fire ~16% of
-    # bars (real signal) instead of ~50% (noise).
+    # ══ [THRESHOLD MODE] Absolute vs z-score for h and score terms ══
+    # We always compute the z-scores (cheap) so they remain available
+    # if USE_ABSOLUTE_THRESHOLDS is flipped later. The HMM state and
+    # score terms use whichever mode is active.
     _dH_mu, _dH_sd = _robust_center_scale(dH[:max(train_end, 1)])
     _dF_mu, _dF_sd = _robust_center_scale(dF[:max(train_end, 1)])
     dH_z = (dH - _dH_mu) / max(_dH_sd, 1e-12)
     dF_z = (dF - _dF_mu) / max(_dF_sd, 1e-12)
 
-    # HMM state from z-scored dH
-    h = np.ones(n, dtype=np.int32)
-    h[dH_z >  CFG.DH_HMM_UPPER_Z] = 0
-    h[dH_z <  CFG.DH_HMM_LOWER_Z] = 2
+    _use_abs = bool(getattr(CFG, 'USE_ABSOLUTE_THRESHOLDS', True))
 
-    # Score uses z-thresholds
-    sc = np.zeros(n)
-    sc += np.abs(geodesic_accel) * 10.0
-    sc += CFG.W_CURV    * (C > CFG.CURV_THRESHOLD).astype(float)
-    sc += CFG.W_VOL     * (V < V_q20a).astype(float)
-    sc += CFG.W_ENTROPY * ((dH_z < CFG.DH_ENTROPY_Z) & (d2H < 0)).astype(float)
-    sc += CFG.W_HMM     * ((h == 2) | ((h == 0) & (dH_z < -CFG.DH_ENTROPY_Z))).astype(float)
-    sc += CFG.W_FREE_E  * (dF_z < CFG.DF_FREE_E_Z).astype(float)
+    if _use_abs:
+        # ── HMM state from ABSOLUTE dH ──
+        h = np.ones(n, dtype=np.int32)
+        h[dH >  CFG.DH_HMM_UPPER] = 0
+        h[dH <  CFG.DH_HMM_LOWER] = 2
+
+        # ── Score uses ABSOLUTE thresholds ──
+        sc = np.zeros(n)
+        sc += np.abs(geodesic_accel) * 10.0
+        sc += CFG.W_CURV    * (C > CFG.CURV_THRESHOLD).astype(float)
+        sc += CFG.W_VOL     * (V < V_q20a).astype(float)
+        sc += CFG.W_ENTROPY * ((dH < CFG.DH_ENTROPY_THRESHOLD) & (d2H < 0)).astype(float)
+        sc += CFG.W_HMM     * ((h == 2) | ((h == 0) & (dH < -CFG.DH_ENTROPY_THRESHOLD))).astype(float)
+        sc += CFG.W_FREE_E  * (dF < CFG.DF_FREE_E_THRESHOLD).astype(float)
+    else:
+        # ── HMM state from Z-SCORED dH ──
+        h = np.ones(n, dtype=np.int32)
+        h[dH_z >  CFG.DH_HMM_UPPER_Z] = 0
+        h[dH_z <  CFG.DH_HMM_LOWER_Z] = 2
+
+        # ── Score uses Z-SCORE thresholds ──
+        sc = np.zeros(n)
+        sc += np.abs(geodesic_accel) * 10.0
+        sc += CFG.W_CURV    * (C > CFG.CURV_THRESHOLD).astype(float)
+        sc += CFG.W_VOL     * (V < V_q20a).astype(float)
+        sc += CFG.W_ENTROPY * ((dH_z < CFG.DH_ENTROPY_Z) & (d2H < 0)).astype(float)
+        sc += CFG.W_HMM     * ((h == 2) | ((h == 0) & (dH_z < -CFG.DH_ENTROPY_Z))).astype(float)
+        sc += CFG.W_FREE_E  * (dF_z < CFG.DF_FREE_E_Z).astype(float)
     # ══════════════════════════════════════════════════════════
     # ══════════════════════════════════════════════════════════
 
@@ -1672,6 +1961,20 @@ def process_asset(symbol, df, km_ext=None, current_capital=None):
     ME  = KE+PE
     tri = compute_tri(dH, d2H, dF, dKE, ed['lya'])
 
+    # ══ [SUB-BARS] Align finer bars to the main grid ══
+    _sub_h, _sub_l = None, None
+    _sub_pm = 0
+    _sub_tf_name = ""
+    if (getattr(CFG, 'SUBBARS_ENABLED', True)
+            and sub_df is not None and len(sub_df) > 0):
+        _sub_tf_name = _get_subbars_tf(CFG.timeframe) or ""
+        if _sub_tf_name:
+            _sub_pm = _sub_per_main(CFG.timeframe, _sub_tf_name)
+            if _sub_pm >= 2:
+                _sub_h, _sub_l = _align_subbars(
+                    ts, sub_df, _sub_pm, int(CFG.TF_SECONDS)
+                )
+
     return AssetData(
         symbol=symbol, closes=closes, highs=highs, lows=lows,
         volumes=vols, timestamps=ts, X=X, sym_q=sym_q,
@@ -1685,7 +1988,11 @@ def process_asset(symbol, df, km_ext=None, current_capital=None):
         dynamic_k=dyn_k,
         gauge_force=gauge_force, friction=friction,
         delta_gap=delta_gap, geodesic_accel=geodesic_accel,
-        score_q95_train=_score_q95_train
+        score_q95_train=_score_q95_train,
+        sub_highs=_sub_h,
+        sub_lows=_sub_l,
+        sub_per_main=_sub_pm,
+        sub_tf=_sub_tf_name,
     )
 
 
@@ -1730,17 +2037,28 @@ def compute_geodesic_stop(entry_price, ad, fi, cfg):
     """
     الطور الخامس: حساب الوقف بنصف قطر فيشر (Decoherence Edge).
     المسافة تتسع طردياً مع حجم عدم اليقين (V) وتتقلص مع الاحتكاك ولزوجة دفتر الأوامر.
+
+    [SL-WIDEN] The raw physics estimate yields 1.0–1.5% on most assets,
+    which is below typical hourly noise. SL_WIDEN_MULT scales the entire
+    distance so trades get breathing room. The clip bounds scale too,
+    so widening isn't silently capped at 5%.
     """
     # ad.V يمثل محدد مصفوفة التغاير (مقياس تشتت المعلومات)
     uncertainty = np.clip(ad.V[fi] / (np.mean(ad.V) + 1e-9), 0.5, 3.0)
     friction = float(ad.friction[fi]) + 1e-6
-    
+
     # كلما قل الاحتكاك، زادت احتمالية الاختراق، فنضع وقفاً يتناسب عكسياً مع لزوجة السوق
     sl_pct = (0.012 * uncertainty) / (1.0 + friction * 5.0)
+
+    # ══ [SL-WIDEN] Scale before clipping ══
+    _widen = float(getattr(cfg, 'SL_WIDEN_MULT', 1.0))
+    sl_pct *= _widen
     sl_dist = entry_price * sl_pct
-    
-    # تقييد المسافة بين 0.5% و 5% من سعر الدخول لحماية الجسيم الصغير من الذيول الطارئة
-    return float(np.clip(sl_dist, 0.005 * entry_price, 0.05 * entry_price))
+
+    # تقييد المسافة: الحد الأدنى ثابت (0.5%), الحد الأعلى يوسع مع _widen
+    _min_frac = 0.005
+    _max_frac = 0.05 * _widen
+    return float(np.clip(sl_dist, _min_frac * entry_price, _max_frac * entry_price))
 
 def compute_dynamic_leverage(capital, cfg):
     """
@@ -1930,6 +2248,111 @@ def _sr_filter_check(sig, ad, current_ci: int) -> Tuple[bool, str]:
         return True, "SR_error"  # fail open
 
 
+# ════════════════════════════════════════════════════════════════
+# [SMART ENTRY] — ATR base + regime + structure
+# ════════════════════════════════════════════════════════════════
+
+def _regime_entry_mult(regime: str) -> float:
+    """Entry dip multiplier by regime."""
+    if regime == "explosive":
+        return float(getattr(CFG, 'ENTRY_REGIME_EXPLOSIVE_MULT', 1.30))
+    if regime == "ranging":
+        return float(getattr(CFG, 'ENTRY_REGIME_RANGING_MULT', 0.60))
+    return float(getattr(CFG, 'ENTRY_REGIME_TRENDING_MULT', 1.00))
+
+
+def _find_nearest_swing(ad, ci: int, lookback: int, kind: str):
+    """
+    Most recent swing low (kind='low') or swing high (kind='high')
+    within [ci - lookback, ci - 1]. Returns price or None.
+    """
+    try:
+        end = ci - 1
+        start = max(1, ci - lookback)
+        if end - start < 3 or ad is None:
+            return None
+        if kind == "low":
+            arr = ad.lows
+            for j in range(end - 1, start, -1):
+                if arr[j] < arr[j-1] and arr[j] < arr[j+1]:
+                    return float(arr[j])
+        else:
+            arr = ad.highs
+            for j in range(end - 1, start, -1):
+                if arr[j] > arr[j-1] and arr[j] > arr[j+1]:
+                    return float(arr[j])
+    except Exception:
+        return None
+    return None
+
+
+def _compute_entry_dip(ad, fi: int, ci: int, action: str,
+                       close_price: float) -> float:
+    """
+    Four-layer entry dip (price units, positive).
+
+      Layer 1: base_dip = ENTRY_ATR_MULT × ATR_current
+      Layer 2: × regime_multiplier (ranging / trending / explosive)
+      Layer 3: structure anchor — snap to nearest swing within a
+               reasonable band; otherwise keep ATR dip.
+      Layer 4: applied later at repricing time (time decay) — NOT here.
+
+    All layers guarded by ENTRY_* flags. Returns 0.0 on any failure,
+    which the caller interprets as "use a tiny fallback dip".
+    """
+    try:
+        if ad is None or ci < 0 or ci >= len(ad.closes):
+            return 0.0
+        atr_now = float(ad.atr14[ci]) if ci < len(ad.atr14) else 0.0
+        if atr_now <= 0 or not np.isfinite(atr_now):
+            return 0.0
+
+        # ── Layer 1: ATR base ──
+        dip = float(getattr(CFG, 'ENTRY_ATR_MULT', 0.40)) * atr_now
+
+        # ── Layer 2: regime ──
+        if getattr(CFG, 'ENTRY_REGIME_SCALE', True) and fi >= 0:
+            lookback = int(getattr(CFG, 'ENTRY_REGIME_LOOKBACK', 100))
+            regime = _classify_regime_local(ad, fi, lookback)
+            dip *= _regime_entry_mult(regime)
+
+        # ── Layer 3: structure anchor ──
+        if getattr(CFG, 'ENTRY_STRUCTURE_ANCHOR', True):
+            adv_now = float(ad.adv_usd[ci]) if ci < len(ad.adv_usd) else 0.0
+            if adv_now >= float(getattr(CFG, 'ENTRY_STRUCTURE_MIN_ADV_USD',
+                                         1e8)):
+                lookback = int(getattr(CFG, 'ENTRY_REGIME_LOOKBACK', 100))
+                lo_mult = float(getattr(CFG,
+                    'ENTRY_STRUCTURE_RANGE_MULT_LO', 0.30))
+                hi_mult = float(getattr(CFG,
+                    'ENTRY_STRUCTURE_RANGE_MULT_HI', 2.00))
+                lo_b, hi_b = dip * lo_mult, dip * hi_mult
+
+                if action == "BUY":
+                    lvl = _find_nearest_swing(ad, ci, lookback, "low")
+                    if lvl is not None and lvl < close_price:
+                        dist = close_price - lvl
+                        if lo_b <= dist <= hi_b:
+                            buf = atr_now * float(getattr(CFG,
+                                'ENTRY_STRUCTURE_BUFFER_MULT', 0.10))
+                            dip = max(dist - buf, lo_b)
+                else:
+                    lvl = _find_nearest_swing(ad, ci, lookback, "high")
+                    if lvl is not None and lvl > close_price:
+                        dist = lvl - close_price
+                        if lo_b <= dist <= hi_b:
+                            buf = atr_now * float(getattr(CFG,
+                                'ENTRY_STRUCTURE_BUFFER_MULT', 0.10))
+                            dip = max(dist - buf, lo_b)
+
+        # ── Clamp ──
+        min_d = float(getattr(CFG, 'ENTRY_MIN_DIP_MULT', 0.15)) * atr_now
+        max_d = float(getattr(CFG, 'ENTRY_MAX_DIP_MULT', 1.00)) * atr_now
+        dip = float(np.clip(dip, min_d, max_d))
+        return float(dip)
+    except Exception:
+        return 0.0
+
 def build_signals(assets, mode="backtest"):
     """
     محرك استشعار الإشارات الكمي:
@@ -1979,8 +2402,24 @@ def build_signals(assets, mode="backtest"):
             if micro_momentum == 0: continue
             action = "BUY" if micro_momentum > 0 else "SELL"
 
+            # ══ [FIX 2] Regime filter — reject trending markets ══
+            if getattr(CFG, 'REGIME_FILTER_ENABLED', False):
+                _lb = int(getattr(CFG, 'REGIME_EMA_LOOKBACK', 50))
+                if ci - _lb >= 0 and ci < len(ad.ema200):
+                    _slope = (ad.ema200[ci] - ad.ema200[ci - _lb]) / max(_lb, 1)
+                    _atr_now = float(ad.atr14[ci]) if ci < len(ad.atr14) else 0.0
+                    if _atr_now > 0:
+                        _slope_norm = abs(_slope) * _lb / _atr_now
+                        _slope_sign = 1.0 if _slope > 0 else -1.0
+                        _thr = float(getattr(CFG, 'REGIME_SLOPE_ATR_MAX', 2.0))
+                        if _slope_norm > _thr:
+                            # Trending — reject regardless of direction.
+                            # Mean-reversion should not fight a strong trend.
+                            continue
+
             # ══ [ADAPTIVE FIX #4] dynamic per-asset MIN_SCORE ══
             _min_score = float(CFG.MIN_SCORE)
+
             if getattr(CFG, 'DYNAMIC_MIN_SCORE_ENABLED', False):
                 _min_score = float(getattr(ad, 'score_q95_train',
                                             CFG.MIN_SCORE))
@@ -1990,10 +2429,23 @@ def build_signals(assets, mode="backtest"):
             # (computed after SL/TP is known — moved below in this version)
             # See the deferred check after SL/TP computation.
 
-            # [التعديل ②]: Phase-Matched Entry (تجنب السكين الساقطة)
-            # نضع أمر الـ Limit عند مستوى امتصاص الاحتكاك الميكروي (10% من معامل الاحتكاك الفعلي)
-            friction_drag = fric_val * p * 0.1
-            tunnel_entry_p = p - friction_drag if action == "BUY" else p + friction_drag
+            # ══ [MEAN-REVERSION DIP — restores the OLD behavior] ══
+            # The dip the market must travel to exhaust its momentum.
+            # = friction_cost × 10 = what the market pays in entropy to
+            # reverse direction. Empirically:
+            #   OLD (friction dip ≈ 2%): fill 18%, 100% TP hit → edge +98
+            #   NEW (ATR dip ≈ 0.34%):   fill 46%,  10% TP hit → edge −1
+            # The friction dip is the primary signal; ATR is a floor
+            # only for very-quiet markets to avoid a near-zero dip.
+            _friction_dip = fric_val * p * 0.1
+            _atr_dip = _compute_entry_dip(ad, fi, ci, action, p)
+            # Floor: never use a dip smaller than 0.5×ATR
+            _entry_dip = max(_friction_dip, 0.5 * _atr_dip)
+            if _entry_dip <= 0.0:
+                _entry_dip = p * 0.001
+
+            tunnel_entry_p = (p - _entry_dip) if action == "BUY" \
+                             else (p + _entry_dip)
             
             # حساب الوقف والهدف بناءً على سعر النفق (Limit Entry)
             sl_dist = compute_geodesic_stop(tunnel_entry_p, ad, fi, CFG)
@@ -2022,14 +2474,16 @@ def build_signals(assets, mode="backtest"):
             dynamic_risk = compute_geodesic_kelly(ad, fi, CFG)
 
             sigs.append(Signal(
-                timestamp=ad.timestamps[ci], symbol=sym, 
-                price=tunnel_entry_p, # 🚀 الدخول معلق عند السعر الموزون طورياً
+                timestamp=ad.timestamps[ci], symbol=sym,
+                price=tunnel_entry_p,
                 score=float(ad.score[fi]), action=action,
                 sl=sl, tp1=tp1, tp2=0.0, tp3=0.0,
                 atr=float(ad.atr14[ci]), lam=0.0, close_idx=ci, feat_idx=fi,
                 adv_usd=float(ad.adv_usd[ci]), tri_val=float(ad.tri[fi]),
                 dynamic_risk=dynamic_risk, T_info_val=T_info,
-                dyn_sl_factor=sl_dist / tunnel_entry_p
+                dyn_sl_factor=sl_dist / tunnel_entry_p,
+                entry_ref_price=float(p),
+                entry_base_dip=float(_entry_dip),
             ))
             
     sigs.sort(key=lambda s: (s.timestamp, -s.score))
@@ -2148,15 +2602,26 @@ def _backtest_entry_target(sig, ad) -> float:
 # § 14.5  Precompute Realistic Entry Fills (Backtest Only)
 # ════════════════════════════════════════════════════════════════
 
-def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps):
+def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps,
+                           time_decay_enabled=False,
+                           time_decay_bars=(5, 10, 15),
+                           time_decay_mults=(0.7, 0.5, 0.3),
+                           use_time_decay_price=False):
     """
-    For each signal, find the bar index where the limit entry would ACTUALLY fill.
+    For each signal, find (fill_ci, fill_price) where the limit order
+    would ACTUALLY fill.
+
     A fill requires the market to PENETRATE the limit price by `pen_bps`.
 
     Deadline = min(sig.close_idx + max_wait_bars, next_signal_ci_for_same_symbol)
-    so we never fill after the next signal has already superseded this one.
 
-    Returns dict: signal_index → fill_ci | None
+    When `time_decay_enabled`:
+        The effective limit moves toward the market as time passes.
+        At bars (5, 10, 15) the dip is multiplied by (0.7, 0.5, 0.3).
+        Fill price = effective (decayed) target when use_time_decay_price=True,
+        else the original target.
+
+    Returns dict: signal_index → (fill_ci, fill_price) | None
     """
     by_symbol = defaultdict(list)
     for i, s in enumerate(signals):
@@ -2174,34 +2639,70 @@ def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps):
         n_bars = len(ad.closes)
 
         for j, (sig_i, sig) in enumerate(sig_list):
-            # Deadline
-            deadline = min(sig.close_idx + max_wait_bars, n_bars - 1)
+            # ══ [WAIT-SEMANTICS FIX] ══
+            # max_wait_bars = NUMBER of bars to check, starting from the
+            # bar immediately after the signal bar. Previous code treated
+            # it as an exclusive end index → with max_wait_bars=1 the
+            # window was empty (0 bars) → 0 fills.
+            #
+            # Also capped by: next signal on the same symbol (never fill
+            # after the signal is superseded), and end of data.
+            first_bar = sig.close_idx + 1
+            last_bar_exclusive = first_bar + max(1, int(max_wait_bars))
             if j + 1 < len(sig_list):
                 next_sig = sig_list[j + 1][1]
-                deadline = min(deadline, next_sig.close_idx)
-
-            start = sig.close_idx + 1
-            if start >= deadline:
+                last_bar_exclusive = min(last_bar_exclusive,
+                                          next_sig.close_idx)
+            last_bar_exclusive = min(last_bar_exclusive, n_bars)
+            if first_bar >= last_bar_exclusive:
                 result[sig_i] = None
                 continue
 
-            target = _backtest_entry_target(sig, ad)
+            target0 = _backtest_entry_target(sig, ad)
+            # Time-decay reference
+            ref_px = float(getattr(sig, 'entry_ref_price', 0.0) or 0.0)
+            base_dip = float(getattr(sig, 'entry_base_dip', 0.0) or 0.0)
+
             fill_ci = None
+            fill_px = None
 
-            if sig.action == "BUY":
-                need_low = target * (1.0 - pen_frac)
-                window = ad.lows[start:deadline]
-                idx = np.where(window <= need_low)[0]
-                if len(idx) > 0:
-                    fill_ci = start + int(idx[0])
-            else:  # SELL
-                need_high = target * (1.0 + pen_frac)
-                window = ad.highs[start:deadline]
-                idx = np.where(window >= need_high)[0]
-                if len(idx) > 0:
-                    fill_ci = start + int(idx[0])
+            for bar in range(first_bar, last_bar_exclusive):
+                # ── Effective target for this bar ──
+                if (time_decay_enabled and ref_px > 0 and base_dip > 0):
+                    bars_elapsed = bar - sig.close_idx
+                    if bars_elapsed > int(time_decay_bars[2]):
+                        mult = float(time_decay_mults[2])
+                    elif bars_elapsed > int(time_decay_bars[1]):
+                        mult = float(time_decay_mults[1])
+                    elif bars_elapsed > int(time_decay_bars[0]):
+                        mult = float(time_decay_mults[0])
+                    else:
+                        mult = 1.0
+                    eff_dip = base_dip * mult
+                    if sig.action == "BUY":
+                        eff_target = ref_px - eff_dip
+                    else:
+                        eff_target = ref_px + eff_dip
+                else:
+                    eff_target = target0
 
-            result[sig_i] = fill_ci
+                # ── Check for fill ──
+                if sig.action == "BUY":
+                    need_low = eff_target * (1.0 - pen_frac)
+                    if ad.lows[bar] <= need_low:
+                        fill_ci = bar
+                        fill_px = eff_target if use_time_decay_price \
+                                  else target0
+                        break
+                else:  # SELL
+                    need_high = eff_target * (1.0 + pen_frac)
+                    if ad.highs[bar] >= need_high:
+                        fill_ci = bar
+                        fill_px = eff_target if use_time_decay_price \
+                                  else target0
+                        break
+
+            result[sig_i] = (fill_ci, fill_px) if fill_ci is not None else None
 
     return result
 
@@ -2262,62 +2763,183 @@ def compute_trail_params(ad, entry_fi: int) -> Tuple[float, float]:
     except Exception:
         return float(CFG.TRAIL_DISTANCE), float(CFG.TRAIL_ACTIVATE_MFE)
 
-def _advance(pos, ad, to_ci):
+def _advance(pos, ad, to_ci, partial_cb=None):
     """
     Walk bars from current_ci+1 to to_ci.
-    - SL / TP require penetration by FILL_PENETRATION_BPS.
-    - Time-based exits (Apex, Topo-Div, MaxHold) use close price.
+
+    SUB-BAR MODE (when ad.sub_highs is available):
+        The entry bar is iterated from `pos.entry_sub_idx + 1` through
+        the last sub-bar. Subsequent bars are iterated fully. This
+        resolves the intrabar path ambiguity:
+            - If SL touches before TP → real exit
+            - If TP touches first         → real exit
+            - Both within one sub-bar     → pessimistic (SL first)
+
+    MAIN-BAR MODE (fallback):
+        Legacy: skip entry bar entirely. SL is checked before TP
+        (pessimistic).
     """
     sig = pos.signal
     trail_sl = pos.trail_sl
     start = pos.current_ci + 1
     end = min(to_ci, len(ad.closes) - 1)
 
-    # Nothing to advance (e.g., entry_ci is in the future relative to to_ci)
     if start > end:
         return 0., "", -1
 
     pen_frac = CFG.FILL_PENETRATION_BPS * 1e-4 if CFG.FILL_APPLY_TO_EXITS else 0.0
+    _use_sub = (ad.sub_highs is not None
+                and ad.sub_lows is not None
+                and ad.sub_per_main >= 2)
+
+    def _check_sl_tp(high, low, close_px, fi):
+        """Return ('SL'|'TP'|None, price). SL before TP when both hit."""
+        if sig.action == "BUY":
+            sl_trig = trail_sl * (1.0 - pen_frac)
+            tp_trig = sig.tp1 * (1.0 + pen_frac)
+            sl_hit = low <= sl_trig
+            tp_hit = high >= tp_trig
+        else:
+            sl_trig = trail_sl * (1.0 + pen_frac)
+            tp_trig = sig.tp1 * (1.0 - pen_frac)
+            sl_hit = high >= sl_trig
+            tp_hit = low <= tp_trig
+        if sl_hit and tp_hit:
+            return "SL", trail_sl      # pessimistic
+        if sl_hit:
+            return "SL", trail_sl
+        if tp_hit:
+            return "TP", sig.tp1
+        return None, 0.0
 
     for cidx in range(start, end+1):
         p = ad.closes[cidx]
-        high = ad.highs[cidx]
-        low  = ad.lows[cidx]
         fi = cidx - ad.feat_start
 
-        # ── Update MFE (max favorable excursion) ──
-        if sig.action == "BUY":
-            mfe_cand = (high - pos.entry_px) / pos.entry_px
+        # ── Determine sub-bar iteration range for this bar ──
+        if _use_sub and cidx == pos.entry_ci:
+            j_start = int(pos.entry_sub_idx) + 1
+            j_end = ad.sub_per_main
+        elif _use_sub:
+            j_start, j_end = 0, ad.sub_per_main
         else:
-            mfe_cand = (pos.entry_px - low) / pos.entry_px
-        if mfe_cand > pos.mfe_frac:
-            pos.mfe_frac = mfe_cand
+            j_start, j_end = 0, 0  # main-bar mode
 
-        # ── Trailing Stop (legacy — proven formula) ──
-        # Restored from the original design that produced the best results.
-        # Trailing Stop (protection layer, runs parallel to Apex)
-        _td = pos.trail_dist_frac if pos.trail_dist_frac > 0 else CFG.TRAIL_DISTANCE
-        _ta = pos.trail_activate_frac if pos.trail_activate_frac > 0 else CFG.TRAIL_ACTIVATE_MFE
+        # ── Process this bar ──
+        if _use_sub:
+            # Sub-bar iteration
+            for j in range(j_start, j_end):
+                s_high = ad.sub_highs[cidx, j]
+                s_low = ad.sub_lows[cidx, j]
+                if not np.isfinite(s_high) or not np.isfinite(s_low):
+                    continue
 
-        if CFG.TRAIL_ENABLED and pos.mfe_frac >= _ta:
+                # MFE update from sub-bar extremes
+                if sig.action == "BUY":
+                    mfe_cand = (s_high - pos.entry_px) / pos.entry_px
+                else:
+                    mfe_cand = (pos.entry_px - s_low) / pos.entry_px
+                if mfe_cand > pos.mfe_frac:
+                    pos.mfe_frac = mfe_cand
+
+                # Legacy trailing (uses sub-bar high/low as peak candidate)
+                _td = pos.trail_dist_frac if pos.trail_dist_frac > 0 else CFG.TRAIL_DISTANCE
+                _ta = pos.trail_activate_frac if pos.trail_activate_frac > 0 else CFG.TRAIL_ACTIVATE_MFE
+                # ══ [FIX 1] Activation tied to R-multiple, not fixed MFE ══
+                _sl_frac_init = (pos.sl_dist_initial / pos.entry_px
+                                 if pos.entry_px > 0 and pos.sl_dist_initial > 0
+                                 else 0.01)
+                _act_at_r = float(getattr(CFG, 'TRAIL_ACTIVATE_AT_R', 1.0))
+                _ta_eff = _sl_frac_init * _act_at_r
+                if CFG.TRAIL_ENABLED and pos.mfe_frac >= _ta_eff:
+                    if sig.action == "BUY":
+                        peak = pos.peak_price if pos.peak_price > 0 else pos.entry_px
+                        if s_high > peak:
+                            peak = s_high; pos.peak_price = peak
+                        new_sl = peak * (1.0 - _td)
+                        if new_sl > trail_sl * (1.0 + CFG.TRAIL_MIN_STEP):
+                            trail_sl = new_sl
+                    else:
+                        peak = pos.peak_price if pos.peak_price > 0 else pos.entry_px
+                        if s_low < peak or peak == 0:
+                            peak = s_low; pos.peak_price = peak
+                        new_sl = peak * (1.0 + _td)
+                        if new_sl < trail_sl * (1.0 - CFG.TRAIL_MIN_STEP):
+                            trail_sl = new_sl
+
+                # ══ [FIX 4] Partial TP trigger ══
+                if (getattr(CFG, 'PARTIAL_TP_ENABLED', False)
+                        and not getattr(pos, 'partial_taken', False)
+                        and partial_cb is not None
+                        and pos.sl_dist_initial > 0):
+                    _ptr = float(getattr(CFG, 'PARTIAL_TP_R', 1.0))
+                    if sig.action == "BUY":
+                        _trig = pos.entry_px + pos.sl_dist_initial * _ptr
+                        if s_high >= _trig:
+                            pos.partial_taken = True
+                            partial_cb(pos, _trig, cidx)
+                    else:
+                        _trig = pos.entry_px - pos.sl_dist_initial * _ptr
+                        if s_low <= _trig:
+                            pos.partial_taken = True
+                            partial_cb(pos, _trig, cidx)
+
+                # SL / TP check on sub-bar
+                res, px = _check_sl_tp(s_high, s_low, p, fi)
+                if res == "SL":
+                    pos.trail_sl = trail_sl; pos.current_ci = cidx
+                    return px, "Emergency SL", cidx
+                if res == "TP":
+                    pos.trail_sl = trail_sl; pos.current_ci = cidx
+                    return px, "Hard TP", cidx
+
+        else:
+            # Main-bar fallback — skip entry bar entirely
+            if cidx == pos.entry_ci:
+                continue
+            high = ad.highs[cidx]
+            low  = ad.lows[cidx]
+
             if sig.action == "BUY":
-                peak = pos.peak_price if pos.peak_price > 0 else pos.entry_px
-                if high > peak:
-                    peak = high
-                    pos.peak_price = peak
-                new_sl = peak * (1.0 - _td)
-                if new_sl > trail_sl * (1.0 + CFG.TRAIL_MIN_STEP):
-                    trail_sl = new_sl
-            else:  # SELL
-                peak = pos.peak_price if pos.peak_price > 0 else pos.entry_px
-                if low < peak or peak == 0:
-                    peak = low
-                    pos.peak_price = peak
-                new_sl = peak * (1.0 + _td)
-                if new_sl < trail_sl * (1.0 - CFG.TRAIL_MIN_STEP):
-                    trail_sl = new_sl
+                mfe_cand = (high - pos.entry_px) / pos.entry_px
+            else:
+                mfe_cand = (pos.entry_px - low) / pos.entry_px
+            if mfe_cand > pos.mfe_frac:
+                pos.mfe_frac = mfe_cand
 
-        # 1. Apex (close-based, no penetration)
+            _td = pos.trail_dist_frac if pos.trail_dist_frac > 0 else CFG.TRAIL_DISTANCE
+            _ta = pos.trail_activate_frac if pos.trail_activate_frac > 0 else CFG.TRAIL_ACTIVATE_MFE
+            # ══ [FIX 1] Activation tied to R-multiple, not fixed MFE ══
+            _sl_frac_init = (pos.sl_dist_initial / pos.entry_px
+                             if pos.entry_px > 0 and pos.sl_dist_initial > 0
+                             else 0.01)
+            _act_at_r = float(getattr(CFG, 'TRAIL_ACTIVATE_AT_R', 1.0))
+            _ta_eff = _sl_frac_init * _act_at_r
+            if CFG.TRAIL_ENABLED and pos.mfe_frac >= _ta_eff:
+                if sig.action == "BUY":
+                    peak = pos.peak_price if pos.peak_price > 0 else pos.entry_px
+                    if high > peak:
+                        peak = high; pos.peak_price = peak
+                    new_sl = peak * (1.0 - _td)
+                    if new_sl > trail_sl * (1.0 + CFG.TRAIL_MIN_STEP):
+                        trail_sl = new_sl
+                else:
+                    peak = pos.peak_price if pos.peak_price > 0 else pos.entry_px
+                    if low < peak or peak == 0:
+                        peak = low; pos.peak_price = peak
+                    new_sl = peak * (1.0 + _td)
+                    if new_sl < trail_sl * (1.0 - CFG.TRAIL_MIN_STEP):
+                        trail_sl = new_sl
+
+            res, px = _check_sl_tp(high, low, p, fi)
+            if res == "SL":
+                pos.trail_sl = trail_sl; pos.current_ci = cidx
+                return px, "Emergency SL", cidx
+            if res == "TP":
+                pos.trail_sl = trail_sl; pos.current_ci = cidx
+                return px, "Hard TP", cidx
+
+        # ── Physics-based exits (close-only, per main bar) ──
         is_apex, apex_rsn = check_thermodynamic_apex(
             sig.action, pos.entry_px, p, ad, fi
         )
@@ -2325,11 +2947,10 @@ def _advance(pos, ad, to_ci):
             pos.trail_sl = trail_sl; pos.current_ci = cidx
             return p, apex_rsn, cidx
 
-        # 2. Topo-Div (close-based)
         if 0 < fi < len(ad.V) and cidx > 0:
-            V_curr  = ad.V[fi]
-            V_prev  = ad.V[fi - 1] if fi > 0 else V_curr
-            div_t   = (V_curr - V_prev) / (V_prev + 1e-12)
+            V_curr = ad.V[fi]
+            V_prev = ad.V[fi - 1] if fi > 0 else V_curr
+            div_t = (V_curr - V_prev) / (V_prev + 1e-12)
             dH_curr = ad.dH[fi] if fi < len(ad.dH) else 0.
             if div_t > CFG.TOPO_DIV_THRESHOLD and dH_curr > 0:
                 pos.trail_sl = trail_sl; pos.current_ci = cidx
@@ -2341,27 +2962,22 @@ def _advance(pos, ad, to_ci):
             pos.trail_sl = trail_sl; pos.current_ci = cidx
             return p, "MaxHold", cidx
 
-        # 4. SL / TP with PENETRATION
-        if sig.action == "BUY":
-            # SL (stop order): trigger when low pierces SL
-            sl_trigger = trail_sl * (1.0 - pen_frac)
-            if low <= sl_trigger:
-                pos.trail_sl = trail_sl; pos.current_ci = cidx
-                return trail_sl, "Emergency SL", cidx
-            # TP (limit order): fill when high pierces TP
-            tp_trigger = sig.tp1 * (1.0 + pen_frac)
-            if high >= tp_trigger:
-                pos.trail_sl = trail_sl; pos.current_ci = cidx
-                return sig.tp1, "Hard TP", cidx
-        else:  # SELL
-            sl_trigger = trail_sl * (1.0 + pen_frac)
-            if high >= sl_trigger:
-                pos.trail_sl = trail_sl; pos.current_ci = cidx
-                return trail_sl, "Emergency SL", cidx
-            tp_trigger = sig.tp1 * (1.0 - pen_frac)
-            if low <= tp_trigger:
-                pos.trail_sl = trail_sl; pos.current_ci = cidx
-                return sig.tp1, "Hard TP", cidx
+        # ══ [FIX 3] Time-based kill — if flat after N bars, cut it ══
+        if getattr(CFG, 'TIME_KILL_ENABLED', False):
+            _tk_bars = effective_bars(int(getattr(CFG, 'TIME_KILL_BARS', 10)))
+            if (cidx - pos.entry_ci) >= _tk_bars:
+                # Compute current R-multiple
+                if pos.sl_dist_initial > 0:
+                    if sig.action == "BUY":
+                        _pnl_frac = (p - pos.entry_px) / pos.entry_px
+                    else:
+                        _pnl_frac = (pos.entry_px - p) / pos.entry_px
+                    _sl_frac0 = pos.sl_dist_initial / pos.entry_px
+                    _r_now = _pnl_frac / _sl_frac0 if _sl_frac0 > 0 else 0.0
+                    _min_r = float(getattr(CFG, 'TIME_KILL_MIN_R', 0.5))
+                    if _r_now < _min_r:
+                        pos.trail_sl = trail_sl; pos.current_ci = cidx
+                        return p, f"TimeKill({_r_now:.2f}R)", cidx
 
     pos.trail_sl = trail_sl
     pos.current_ci = max(end, pos.current_ci)
@@ -2467,18 +3083,51 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
     # ══ [RE-ENTRY COOLDOWN] Track last exit bar per symbol ══
     last_exit_ci: Dict[str, int] = {}
     # ══ [BACKTEST REALISM] Precompute which entries actually fill ══
+    # When SIMULATE_LIVE_FAITHFULLY, use the LIVE entry timeout
+    # (PO_MAX_WAIT_S seconds converted to bars) instead of the
+    # generous backtest window (25 bars).
+    _tf_sec = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
+    _sim_live = bool(getattr(CFG, 'SIMULATE_LIVE_FAITHFULLY', False))
+
+    if _sim_live:
+        _live_wait_cap_s = float(getattr(CFG, 'PO_MAX_WAIT_S', 0) or 0)
+        if _live_wait_cap_s > 0:
+            _bars_from_seconds = max(1, int(np.ceil(_live_wait_cap_s / _tf_sec)))
+        else:
+            _bars_from_seconds = effective_bars(CFG.FILL_ENTRY_MAX_WAIT_BARS)
+        _effective_wait_bars = min(
+            effective_bars(CFG.FILL_ENTRY_MAX_WAIT_BARS),
+            _bars_from_seconds,
+        )
+        _wait_label = (f"live={_live_wait_cap_s:.0f}s "
+                       f"→ {_effective_wait_bars} bars")
+    else:
+        _effective_wait_bars = effective_bars(CFG.FILL_ENTRY_MAX_WAIT_BARS)
+        _wait_label = (f"{CFG.FILL_ENTRY_MAX_WAIT_BARS} bars × "
+                       f"scale {CFG.TF_SCALE:.2f} = {_effective_wait_bars}")
+
+    # Time-decay: only applied if live-mode is on
+    _td_enabled = _sim_live and bool(getattr(CFG, 'ENTRY_TIME_DECAY', False))
+
     fill_map = precompute_entry_fills(
         assets, signals,
-        max_wait_bars=effective_bars(CFG.FILL_ENTRY_MAX_WAIT_BARS),   # ══ [TF-FIX]
+        max_wait_bars=_effective_wait_bars,
         pen_bps=CFG.FILL_PENETRATION_BPS,
+        time_decay_enabled=_td_enabled,
+        time_decay_bars=(CFG.ENTRY_TIME_DECAY_BARS_1,
+                         CFG.ENTRY_TIME_DECAY_BARS_2,
+                         CFG.ENTRY_TIME_DECAY_BARS_3),
+        time_decay_mults=(CFG.ENTRY_TIME_DECAY_MULT_1,
+                          CFG.ENTRY_TIME_DECAY_MULT_2,
+                          CFG.ENTRY_TIME_DECAY_MULT_3),
+        use_time_decay_price=_td_enabled,
     )
     n_total_sigs = len(signals)
     n_would_fill = sum(1 for v in fill_map.values() if v is not None)
     log.info(f"  [Backtest Realism] Entry fills: "
              f"{n_would_fill:,}/{n_total_sigs:,} "
              f"({100*n_would_fill/max(n_total_sigs,1):.1f}%) "
-             f"[pen={CFG.FILL_PENETRATION_BPS}bps, "
-             f"wait={CFG.FILL_ENTRY_MAX_WAIT_BARS}bars]")
+             f"[pen={CFG.FILL_PENETRATION_BPS}bps, wait={_wait_label}]")
 
     def _close(pos, ad, exit_px, exit_rsn, exit_ci):
         nonlocal capital, peak_cap
@@ -2508,7 +3157,8 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         funding_payments = max(0, hold_bars) // CFG.FUNDING_INTERVAL_BARS
         funding_cost = pos.pos_size * pos.entry_px * CFG.FUNDING_RATE_COST * funding_payments
 
-        net  = gross - fee - funding_cost
+        # Include any accumulated partial-TP profit in the final trade PnL
+        net  = gross - fee - funding_cost + float(getattr(pos, 'partial_pnl', 0.0))
         cap0 = pos.entry_cap
         capital = max(capital+net, 0.)
         peak_cap= max(peak_cap, capital)
@@ -2530,6 +3180,30 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
             T_info_at_entry=sig.T_info_val,
             mfe_frac=pos.mfe_frac
         ))
+    # ══ [FIX 4] Partial TP callback ══
+    def _partial_tp(pos, px, ci):
+        """Record a partial take-profit and reduce the position size."""
+        nonlocal capital, peak_cap
+        sig = pos.signal
+        _pct = float(getattr(CFG, 'PARTIAL_TP_PCT', 0.5))
+        _close_qty = pos.pos_size * _pct
+        if _close_qty <= 0:
+            return
+        adv_here = ad_here = pos.entry_cap  # placeholder — see below
+        # Compute gross PnL for the partial close
+        if sig.action == "BUY":
+            _gross = (px - pos.entry_px) * _close_qty
+        else:
+            _gross = (pos.entry_px - px) * _close_qty
+        _fee = _close_qty * (pos.entry_px + px) * CFG.MAKER_FEE
+        _net = _gross - _fee
+        capital += _net
+        peak_cap = max(peak_cap, capital)
+        equity.append(capital)
+        pos.partial_pnl = pos.partial_pnl + _net
+        pos.pos_size -= _close_qty
+        log.debug(f"[PartialTP] {sig.symbol} closed {_pct*100:.0f}% "
+                  f"@ {px:.6f}  net=${_net:+.4f}  remaining={pos.pos_size:.6f}")
 
     for sig_i, sig in enumerate(signals):
         # حاجز أمان مطلق: يستحيل بدء تداول جديد إذا اقترب الجسيم من عتبة الفناء (5.1$)
@@ -2541,7 +3215,7 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         for sym, pos in open_pos.items():
             ad   = assets[sym]
             toci = _ts_to_ci(ad, sig.timestamp)
-            ep, er, ec = _advance(pos, ad, toci)
+            ep, er, ec = _advance(pos, ad, toci, partial_cb=_partial_tp)
             if ep > 0:
                 _close(pos, ad, ep, er, ec)
                 to_close.append(sym)
@@ -2578,17 +3252,39 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
 
         ad = assets[sym]
 
-        # ══ [BACKTEST REALISM] Look up actual fill bar ══
-        fill_ci = fill_map.get(sig_i)
-        if fill_ci is None:
+        # ══ [BACKTEST REALISM] Look up actual fill bar and price ══
+        fill_info = fill_map.get(sig_i)
+        if fill_info is None:
             # Order never penetrated — skip this signal entirely
             continue
+        fill_ci, fill_px = fill_info
 
         # 🚀 التوافق السببي: الدخول يتم عند الشمعة التي اخترق فيها السوق السعر
         opt_ci = fill_ci
-        # ══ [NO-FIXED-PRICE] Use the same target logic as Live ══
-        opt_px = _backtest_entry_target(sig, ad)
+        # ══ [TIME-DECAY PRICE] Use the actual fill price (may be decayed) ══
+        opt_px = float(fill_px)
         opt_entry = False
+
+        # ══ [SUB-BARS] Find the sub-bar within the entry bar where
+        # the limit was first touched. This is used by _advance to
+        # start SL/TP checks AFTER the fill (not before).
+        opt_sub_idx = 0
+        if (ad.sub_highs is not None and ad.sub_lows is not None
+                and ad.sub_per_main >= 2
+                and 0 <= opt_ci < ad.sub_highs.shape[0]):
+            _pen_frac_sb = CFG.FILL_PENETRATION_BPS * 1e-4
+            if sig.action == "BUY":
+                _need_low = opt_px * (1.0 - _pen_frac_sb)
+                _row = ad.sub_lows[opt_ci]
+                _idx = np.where(_row <= _need_low)[0]
+                if len(_idx) > 0:
+                    opt_sub_idx = int(_idx[0])
+            else:
+                _need_high = opt_px * (1.0 + _pen_frac_sb)
+                _row = ad.sub_highs[opt_ci]
+                _idx = np.where(_row >= _need_high)[0]
+                if len(_idx) > 0:
+                    opt_sub_idx = int(_idx[0])
 
         # ══ [SL-CLIP-PARITY] Match Live's max_sl_frac = 0.015 ══
         # Live clips SL at 1.5% of entry (and scales TP to preserve R/R)
@@ -2596,7 +3292,8 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         # clip so the two engines see identical levels.
         sl_distance = abs(sig.price - sig.sl)
         tp_distance = abs(sig.tp1 - sig.price)
-        _max_sl_frac = 0.15
+        # Cap scales with widening so the loosened SL isn't re-clipped.
+        _max_sl_frac = 0.015 * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
         if sl_distance > opt_px * _max_sl_frac:
             _rr = tp_distance / max(sl_distance, 1e-12)
             sl_distance = opt_px * _max_sl_frac
@@ -2642,6 +3339,34 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
 
         # Leverage cap
         dynamic_leverage = compute_dynamic_leverage(capital, CFG)
+
+        # ══ [LIVE PARITY] Apply LevCap + LiqGate like live does ══
+        # Live uses real MMR from the exchange. Backtest uses the
+        # LIQ_FALLBACK_MMR (2%) as a proxy — same as live's fallback.
+        if _sim_live and getattr(CFG, 'LIQ_ENABLED', True):
+            _mmr = float(CFG.LIQ_FALLBACK_MMR)
+            _sl_frac_max = 0.015 * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
+            _lev_by_liq = compute_max_leverage_by_liq(
+                sl_frac_max=_sl_frac_max,
+                mmr=_mmr,
+                safety_mult=float(CFG.LIQ_SAFETY_MULT),
+            )
+            if dynamic_leverage > _lev_by_liq:
+                dynamic_leverage = max(int(CFG.LEVERAGE_MIN), _lev_by_liq)
+            if dynamic_leverage < int(CFG.LEVERAGE_MIN):
+                log.debug(f"[LevCap] {sym} leverage below min — skip")
+                continue
+            # LiqGate: reject if SL too close to Liq
+            _liq_px = compute_liquidation_price(
+                opt_px, sig.action, dynamic_leverage, _mmr
+            )
+            _liq_gap = abs(opt_px - _liq_px)
+            _sl_gap = abs(opt_px - sl_h)
+            if (_liq_gap <= 1e-12 or
+                    _sl_gap * float(CFG.LIQ_SAFETY_MULT) > _liq_gap):
+                log.debug(f"[LiqGate] {sym} REJECT at backtest entry")
+                continue
+
         max_notional = capital * dynamic_leverage
         qty = min(qty, max_notional / opt_px)
 
@@ -2693,6 +3418,7 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
             trail_activate_frac=trail_a,
             sl_dist_initial=float(abs(eff_px - sl_h)),
             trail_peak_R=0.0,
+            entry_sub_idx=opt_sub_idx,
         )
 
     for sym, pos in list(open_pos.items()):
@@ -3015,7 +3741,12 @@ def _process_asset_worker(args):
     Top-level worker for ProcessPoolExecutor.
     Returns: (sym, AssetData | None, err | None, source ∈ {'cache','computed'})
     """
-    sym, df, cap, timeframe, cfg_dict = args
+    # [SUB-BARS] args now carries an optional sub_df (may be None)
+    if len(args) == 6:
+        sym, df, cap, timeframe, cfg_dict, sub_df = args
+    else:
+        sym, df, cap, timeframe, cfg_dict = args
+        sub_df = None
 
     # Restore CFG in child (needed for spawn/forkserver; harmless on fork)
     failed = 0
@@ -3035,7 +3766,7 @@ def _process_asset_worker(args):
 
     # 2. Compute fresh
     try:
-        ad = process_asset(sym, df, current_capital=cap)
+        ad = process_asset(sym, df, current_capital=cap, sub_df=sub_df)
     except Exception as e:
         import traceback
         return (sym, None, f"{type(e).__name__}: {e}\n{traceback.format_exc()}", 'error')
@@ -3558,8 +4289,16 @@ def run_backtest(cfg):
     syms = scan_top_assets(exchange, cfg.n_assets)
 
     log.info("§2  جلب البيانات (متوازٍ)...")
-    raw = fetch_all(syms, exchange, cfg.timeframe, cfg.history_days, workers=5)
+    # ══ [SUB-BARS] Fetch main + sub together ══
+    raw, raw_sub = fetch_all_with_subbars(
+        syms, exchange, cfg.timeframe, cfg.history_days, workers=5
+    )
     if not raw: log.error("لا بيانات."); return
+    if raw_sub:
+        _sub_tf_used = _get_subbars_tf(cfg.timeframe) or "?"
+        log.info(f"  [SubBars] loaded for {len(raw_sub)} symbols at {_sub_tf_used}")
+    else:
+        log.info("  [SubBars] disabled or unavailable — using main-bar logic")
 
     log.info("§3  معالجة فضاء الحالة (K ديناميكي)...")
     assets: Dict[str, AssetData] = {}
@@ -3577,7 +4316,8 @@ def run_backtest(cfg):
                  f"(cache={'on' if cfg.ASSET_CACHE_ENABLED else 'off'})")
 
         tasks = [
-            (sym, df, cfg.INITIAL_CAPITAL, cfg.timeframe, cfg_dict)
+            (sym, df, cfg.INITIAL_CAPITAL, cfg.timeframe, cfg_dict,
+             raw_sub.get(sym) if raw_sub else None)
             for sym, df in raw.items()
         ]
 
@@ -3668,6 +4408,13 @@ def run_backtest(cfg):
         for sym, df in raw.items():
             ad = _load_asset_cache(sym, cfg.timeframe, df, cfg)
             source = 'cache'
+
+            if ad is None:
+                _sb = raw_sub.get(sym) if raw_sub else None
+                ad = process_asset(sym, df,
+                                    current_capital=cfg.INITIAL_CAPITAL,
+                                    sub_df=_sb)
+                source = 'computed'
 
             if ad is None:
                 ad = process_asset(sym, df, current_capital=cfg.INITIAL_CAPITAL)
@@ -6114,7 +6861,8 @@ def _promote_pending_to_position(exchange, sym: str, rec: Dict,
         return False
 
     rr = orig_tp_dist / orig_sl_dist
-    max_sl_frac = 0.15
+    # Cap scales with widening so the loosened SL isn't re-clipped.
+    max_sl_frac = 0.015 * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
     if orig_sl_dist > entry_price * max_sl_frac:
         orig_sl_dist = entry_price * max_sl_frac
         orig_tp_dist = orig_sl_dist * rr
@@ -6251,6 +6999,81 @@ def monitor_pending_orders(exchange, open_pos_live: Dict,
             _PENDING_ORDERS.pop(sym, None)
             continue
 
+        # ══ [TIME-DECAY REPRICE] Progressively bring the order closer ══
+        # Applied when: no fills yet, order still open.
+        # Stage 0 → 1 → 2 → 3 (each reduces the dip by a fixed factor).
+        # Stage 4 = cancel (handled by the timeout block below).
+        if (getattr(CFG, 'ENTRY_TIME_DECAY', True)
+                and float(rec.get('filled') or 0.0) <= 0.0):
+            _tf_sec = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
+            _elapsed_bars = (now - float(rec.get('placed_at') or now)) \
+                            / max(_tf_sec, 1)
+            _stage = int(rec.get('decay_stage') or 0)
+
+            _target_stage = 0
+            if _elapsed_bars > CFG.ENTRY_TIME_DECAY_BARS_3:
+                _target_stage = 3
+            elif _elapsed_bars > CFG.ENTRY_TIME_DECAY_BARS_2:
+                _target_stage = 2
+            elif _elapsed_bars > CFG.ENTRY_TIME_DECAY_BARS_1:
+                _target_stage = 1
+
+            if _target_stage > _stage:
+                _ref_px = float(rec.get('entry_ref_price') or 0.0)
+                _base_dip = float(rec.get('entry_base_dip') or 0.0)
+                _side = rec.get('side', 'buy')
+                _qty = float(rec.get('qty') or 0.0)
+
+                if (_ref_px > 0 and _base_dip > 0 and _qty > 0):
+                    _mult_map = {
+                        1: float(CFG.ENTRY_TIME_DECAY_MULT_1),
+                        2: float(CFG.ENTRY_TIME_DECAY_MULT_2),
+                        3: float(CFG.ENTRY_TIME_DECAY_MULT_3),
+                    }
+                    _mult = _mult_map.get(_target_stage, 1.0)
+                    _new_dip = _base_dip * _mult
+                    if _side == 'buy':
+                        _new_target = _ref_px - _new_dip
+                    else:
+                        _new_target = _ref_px + _new_dip
+
+                    # Cancel current order (with sweep)
+                    _oid = rec.get('order_id')
+                    if _oid:
+                        try:
+                            exchange.cancel_order(_oid, sym)
+                        except Exception as _e:
+                            log.debug(f"[TimeDecay] {sym} cancel failed: {_e}")
+                        time.sleep(0.15)
+                        _sweep_pending_once(exchange, sym)
+                        _rec_chk = _PENDING_ORDERS.get(sym)
+                        if _rec_chk is None:
+                            continue
+                        if float(_rec_chk.get('filled') or 0.0) > 0.0:
+                            # Fill arrived during cancel — let promotion handle it
+                            continue
+
+                    # Place new order at reduced dip
+                    try:
+                        _o = exchange.create_order(
+                            sym, 'limit', _side, _qty, _new_target,
+                            params={'timeInForce': 'GTX'}
+                        )
+                        rec['order_id'] = str(_o['id'])
+                        rec['price'] = float(_new_target)
+                        rec['decay_stage'] = int(_target_stage)
+                        log.info(
+                            f"[TimeDecay] {sym} stage={_target_stage} "
+                            f"dip {_base_dip:.6f}→{_new_dip:.6f} "
+                            f"({_mult*100:.0f}%) target={_new_target:.6f}"
+                        )
+                    except Exception as _e:
+                        log.debug(f"[TimeDecay] {sym} reprice failed: {_e}")
+                        # If reprice fails, keep old order — safer than nothing
+                        rec['decay_stage'] = int(_target_stage)
+                    # Fall through (don't continue) — timeout check below
+                    # may still fire if we've passed stage 4.
+
         # ── Timeout → cancel + drop ──
         timeout_s = float(rec.get('timeout_s') or CFG.PO_MAX_WAIT_S)
         elapsed = now - float(rec.get('placed_at') or now)
@@ -6364,6 +7187,12 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
         'mmr_at_placement': float(
             _get_mmr_for_symbol(exchange, sym)
         ),
+        # ══ [TIME-DECAY] Reference state for repricing ══
+        'entry_ref_price': float(getattr(sig, 'entry_ref_price', 0.0)
+                                  or sig.price),
+        'entry_base_dip': float(getattr(sig, 'entry_base_dip', 0.0)
+                                 or abs(target - sig.price)),
+        'decay_stage': 0,
         'ad_ref': ad,
     }
     _PENDING_ORDERS[sym] = rec
@@ -6925,19 +7754,46 @@ def run_live(cfg, exchange):
                 if not ex:
                     entry_ts = pos.get('entry_ts', 0)
                     if entry_ts > 0:
-                        # ══ [TF-FIX] use TF_SECONDS instead of if-else on 1m/1h ══
                         tf_sec = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
                         bars_held = (time.time() - entry_ts) / tf_sec
                         if bars_held > effective_bars(cfg.MAX_HOLD_BARS):
                             ex = True
                             rsn = f"MaxHold({int(bars_held)}bars)"
 
-                # ── Trailing SL (legacy — proven formula, restored) ──
+                # ── [FIX 3] Time-based kill ──
+                if (not ex
+                        and getattr(CFG, 'TIME_KILL_ENABLED', False)
+                        and entry_ts > 0):
+                    _tk_bars = effective_bars(int(getattr(CFG, 'TIME_KILL_BARS', 10)))
+                    _bars_now = (time.time() - entry_ts) / (
+                        CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600)
+                    if _bars_now >= _tk_bars:
+                        _entry_px = float(pos['entry'])
+                        _sl_d0 = float(pos.get('sl_dist_initial', 0) or 0)
+                        if _sl_d0 > 0 and _entry_px > 0:
+                            if pos['action'] == "BUY":
+                                _pnl_f = (price - _entry_px) / _entry_px
+                            else:
+                                _pnl_f = (_entry_px - price) / _entry_px
+                            _sl_f0 = _sl_d0 / _entry_px
+                            _r_now = _pnl_f / _sl_f0 if _sl_f0 > 0 else 0.0
+                            _min_r = float(getattr(CFG, 'TIME_KILL_MIN_R', 0.5))
+                            if _r_now < _min_r:
+                                ex = True
+                                rsn = f"TimeKill({_r_now:.2f}R)"
+
+                # ── Trailing SL (dynamic σ-scaled) ──
                 if not ex:
                     entry_px = float(pos['entry'])
-                    _sl_before = float(pos['sl'])
+                    _sl_before = float(pos['sl'])   # ← [FIX] was missing
                     _td = float(pos.get('trail_dist_frac', CFG.TRAIL_DISTANCE))
-                    _ta = float(pos.get('trail_activate_frac', CFG.TRAIL_ACTIVATE_MFE))
+                    # ══ [FIX 1] Activation at R-multiple of initial SL ══
+                    _sl_dist_init = float(pos.get('sl_dist_initial', 0) or 0)
+                    _sl_frac_init = (_sl_dist_init / entry_px
+                                     if entry_px > 0 and _sl_dist_init > 0
+                                     else 0.01)
+                    _act_at_r = float(getattr(CFG, 'TRAIL_ACTIVATE_AT_R', 1.0))
+                    _ta = _sl_frac_init * _act_at_r
 
                     # Update peak from live price and compute MFE
                     if pos['action'] == "BUY":
@@ -6970,6 +7826,49 @@ def run_live(cfg, exchange):
                             _sync_protective_orders(exchange, sym, pos)
                         except Exception as _e:
                             log.debug(f"[Prot] {sym} sync error: {_e}")
+
+                # ── [FIX 4] Partial TP ──
+                if (not ex
+                        and getattr(CFG, 'PARTIAL_TP_ENABLED', False)
+                        and not pos.get('_partial_taken', False)):
+                    _entry_px_p = float(pos['entry'])
+                    _sl_d0_p = float(pos.get('sl_dist_initial', 0) or 0)
+                    if _sl_d0_p > 0 and _entry_px_p > 0:
+                        _ptr = float(getattr(CFG, 'PARTIAL_TP_R', 1.0))
+                        _pct = float(getattr(CFG, 'PARTIAL_TP_PCT', 0.5))
+                        if pos['action'] == "BUY":
+                            _trig_p = _entry_px_p + _sl_d0_p * _ptr
+                            _hit_p = price >= _trig_p
+                        else:
+                            _trig_p = _entry_px_p - _sl_d0_p * _ptr
+                            _hit_p = price <= _trig_p
+                        if _hit_p:
+                            _qty_close = float(pos['qty']) * _pct
+                            try:
+                                _s_p = 'sell' if pos['action'] == 'BUY' else 'buy'
+                                _res_p = execute_post_only(
+                                    exchange, sym, _s_p, _qty_close,
+                                    max_wait_s=int(getattr(CFG, 'PO_EXIT_URGENT_WAIT_S', 4)),
+                                    fallback_market=True,
+                                    cross_spread=True,
+                                    reduce_only=True,
+                                )
+                                if (_res_p.get('filled_qty') or 0) > 0:
+                                    pos['qty'] = float(pos['qty']) - float(_res_p['filled_qty'])
+                                    pos['_partial_taken'] = True
+                                    pos['_partial_pnl'] = float(pos.get('_partial_pnl', 0.0))
+                                    log.info(f"[PartialTP] {sym} closed "
+                                             f"{_pct*100:.0f}% @ "
+                                             f"{_res_p['avg_price']:.6f} "
+                                             f"remaining={pos['qty']:.6f}")
+                                    # Persist state
+                                    try:
+                                        with open(state_file, 'w') as _f:
+                                            json.dump(open_pos_live, _f, indent=2)
+                                    except Exception:
+                                        pass
+                            except Exception as _e:
+                                log.warning(f"[PartialTP] {sym} failed: {_e}")
 
                 # ── SL / TP ──
                 if not ex:
@@ -7266,7 +8165,11 @@ def run_live(cfg, exchange):
                     _mmr_sig = None
                     if getattr(CFG, 'LIQ_ENABLED', True):
                         _mmr_sig = _get_mmr_for_symbol(exchange, sym)
-                        _sl_frac_max = 0.015
+                        # Keep this in sync with SL_WIDEN_MULT so LevCap
+                        # accounts for the wider actual SL.
+                        _sl_frac_max = 0.015 * float(
+                            getattr(CFG, 'SL_WIDEN_MULT', 1.0)
+                        )
                         _lev_by_liq = compute_max_leverage_by_liq(
                             sl_frac_max=_sl_frac_max,
                             mmr=_mmr_sig,
@@ -7523,7 +8426,11 @@ def run_live(cfg, exchange):
                             continue
 
                         rr_ratio = orig_tp_dist / orig_sl_dist
-                        max_sl_frac = 0.015
+                        # [SL-CLIP-CONSISTENCY] Scale with SL_WIDEN_MULT
+                        # so the widened SL isn't re-clipped back to 1.5%.
+                        max_sl_frac = 0.015 * float(
+                            getattr(CFG, 'SL_WIDEN_MULT', 1.0)
+                        )
                         if orig_sl_dist > entry_price * max_sl_frac:
                             orig_sl_dist = entry_price * max_sl_frac
                             orig_tp_dist = orig_sl_dist * rr_ratio

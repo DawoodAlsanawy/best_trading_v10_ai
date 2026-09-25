@@ -1,0 +1,179 @@
+==============================================================================
+  DIAGNOSTIC — Old vs New Entry Logic on REAL cached data
+==============================================================================
+  Symbols: ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT']
+  TFs    : ['1h', '15m']
+  Days   : 90
+  Cache  : market_data_cache
+==============================================================================
+
+✔ Found 10 cached files in market_data_cache/
+
+##############################################################################
+# TIMEFRAME = 1h
+##############################################################################
+
+[1] Loading cached data...
+  ✓ BTC/USDT    : 17,566 bars
+  ✓ ETH/USDT    : 17,566 bars
+  ✓ SOL/USDT    : 17,566 bars
+  ✓ BNB/USDT    : 17,566 bars
+  ✓ XRP/USDT    : 17,566 bars
+
+[2] Processing assets (measuring KMeans rejection)...
+  ✓ BTC/USDT      K=11  H_ratio=0.489  bars=17,566
+  ✓ ETH/USDT      K=11  H_ratio=0.407  bars=17,566
+  ✓ SOL/USDT      K=11  H_ratio=0.326  bars=17,566
+  ✓ BNB/USDT      K=11  H_ratio=0.434  bars=17,566
+  ✓ XRP/USDT      K=11  H_ratio=0.332  bars=17,566
+  → Accepted: 5  Rejected: 0
+
+[3] Building signals with BOTH logics...
+  OLD logic:  3,053 signals  (0.2s)
+  NEW logic:  5,508 signals  (1.0s)
+
+[4] Dip size (% of market close at signal):
+  OLD: n= 3,053  mean=  2.0235  median=  1.9692  p10=  1.6210  p90=  2.6023
+  NEW: n= 5,508  mean=  0.3366  median=  0.2873  p10=  0.1242  p90=  0.5864
+
+[5] Dip / ATR ratio (how many ATRs is the dip?):
+  OLD: n= 3,053  mean=  3.1153  median=  2.7744  p10=  1.4501  p90=  4.9763
+  NEW: n= 5,508  mean=  0.3909  median=  0.4000  p10=  0.2400  p90=  0.5200
+
+[6] Predicted fill rate (pen_bps=1.0, wait=25 bars):
+  OLD:  18.80%  (   574 /  3,053)
+  NEW:  45.70%  ( 2,517 /  5,508)
+
+[7] Intrabar outcomes (only FILLED signals, 1 bar ahead):
+  OLD: SL hit:   1.9%   TP hit: 100.0%  (n=574)
+  NEW: SL hit:  11.3%   TP hit:  10.3%  (n=2517)
+
+[8] Intrabar outcomes over 24 bars ahead:
+  OLD: SL hit:  80.1%   TP hit: 100.0%
+  NEW: SL hit:  77.6%   TP hit:  60.2%
+
+[9] Time-decay effect on NEW dip (if applied in Live):
+  base dip (Stage 0): 0.3366%
+  after Stage 1:      0.2356%
+  after Stage 2:      0.1683%
+  after Stage 3:      0.1010%
+  → At Stage 3, the dip is essentially zero (enters at market)
+
+[10] Score distribution:
+  OLD: n= 3,053  mean=  6.0711  median=  6.1511  p10=  5.5901  p90=  6.3891
+  NEW: n= 5,508  mean=  5.7064  median=  5.5891  p10=  5.1212  p90=  6.3339
+
+[11] Per-symbol signal counts:
+  symbol           OLD     NEW    delta
+  BNB/USDT         758    1296     +538
+  BTC/USDT         711    1217     +506
+  ETH/USDT         566    1058     +492
+  SOL/USDT         297     674     +377
+  XRP/USDT         721    1263     +542
+
+[12] Hypothetical: NEW signals but with OLD-style dip:
+  (Simulates: keep current score/min_score logic,
+   but restore friction_drag = fric_val * p * 0.1)
+  Predicted fill rate: 11.0%  (604 / 5,508)
+  vs NEW dip fill rate: 45.7%
+  vs OLD dip fill rate: 18.8%
+  SIM dip %: n= 5,508  mean=  2.0106  median=  1.9692  p10=  1.6160  p90=  2.4737
+  SIM dip/ATR: n= 5,508  mean=  3.0286  median=  2.6908  p10=  1.4492  p90=  4.8869
+
+##############################################################################
+# TIMEFRAME = 15m
+##############################################################################
+
+[1] Loading cached data...
+  ✓ BTC/USDT    : 39,976 bars
+  ✓ ETH/USDT    : 39,976 bars
+  ✓ SOL/USDT    : 39,976 bars
+  ✓ BNB/USDT    : 39,976 bars
+  ✓ XRP/USDT    : 39,976 bars
+
+[2] Processing assets (measuring KMeans rejection)...
+  ✓ BTC/USDT      K=11  H_ratio=0.558  bars=39,976
+  ✓ ETH/USDT      K=11  H_ratio=0.473  bars=39,976
+  ✓ SOL/USDT      K=11  H_ratio=0.338  bars=39,976
+  ✓ BNB/USDT      K=11  H_ratio=0.444  bars=39,976
+  ✓ XRP/USDT      K=11  H_ratio=0.332  bars=39,976
+  → Accepted: 5  Rejected: 0
+
+[3] Building signals with BOTH logics...
+  OLD logic:  6,520 signals  (0.5s)
+  NEW logic: 10,865 signals  (2.1s)
+
+[4] Dip size (% of market close at signal):
+  OLD: n= 6,520  mean=  2.0849  median=  2.0457  p10=  1.6512  p90=  2.8183
+  NEW: n=10,865  mean=  0.1522  median=  0.1300  p10=  0.0571  p90=  0.2722
+
+[5] Dip / ATR ratio (how many ATRs is the dip?):
+  OLD: n= 6,520  mean=  7.6602  median=  6.6108  p10=  3.5034  p90= 12.9134
+  NEW: n=10,865  mean=  0.3943  median=  0.4000  p10=  0.2400  p90=  0.5200
+
+[6] Predicted fill rate (pen_bps=1.0, wait=100 bars):
+  OLD:   4.82%  (   314 /  6,520)
+  NEW:  47.56%  ( 5,167 / 10,865)
+
+[7] Intrabar outcomes (only FILLED signals, 1 bar ahead):
+  OLD: SL hit:   0.3%   TP hit: 100.0%  (n=314)
+  NEW: SL hit:   2.1%   TP hit:   1.2%  (n=5167)
+
+[8] Intrabar outcomes over 24 bars ahead:
+  OLD: SL hit:  48.4%   TP hit: 100.0%
+  NEW: SL hit:  52.4%   TP hit:  26.5%
+
+[9] Time-decay effect on NEW dip (if applied in Live):
+  base dip (Stage 0): 0.1522%
+  after Stage 1:      0.1066%
+  after Stage 2:      0.0761%
+  after Stage 3:      0.0457%
+  → At Stage 3, the dip is essentially zero (enters at market)
+
+[10] Score distribution:
+  OLD: n= 6,520  mean=  6.0940  median=  6.2019  p10=  5.5975  p90=  6.3896
+  NEW: n=10,865  mean=  5.7692  median=  5.7467  p10=  5.1549  p90=  6.3596
+
+[11] Per-symbol signal counts:
+  symbol           OLD     NEW    delta
+  BNB/USDT        1514    2381     +867
+  BTC/USDT        1592    2479     +887
+  ETH/USDT         927    1624     +697
+  SOL/USDT        1092    1961     +869
+  XRP/USDT        1395    2420    +1025
+
+[12] Hypothetical: NEW signals but with OLD-style dip:
+  (Simulates: keep current score/min_score logic,
+   but restore friction_drag = fric_val * p * 0.1)
+  Predicted fill rate: 2.8%  (306 / 10,865)
+  vs NEW dip fill rate: 47.6%
+  vs OLD dip fill rate: 4.8%
+  SIM dip %: n=10,865  mean=  2.0562  median=  2.0109  p10=  1.6349  p90=  2.6023
+  SIM dip/ATR: n=10,865  mean=  6.9909  median=  6.1026  p10=  3.2933  p90= 11.4659
+
+==============================================================================
+  SUMMARY
+==============================================================================
+
+  Interpretation guide:
+
+  • §4 Dip size — OLD should be 1.5–2%, NEW should be 0.3–0.6%.
+    If NEW is < 0.5%, the bot is entering near market, NOT on a dip.
+
+  • §5 Dip/ATR — OLD should be ~1.5–2 ATR, NEW should be ~0.3–0.5 ATR.
+    Below 0.5 ATR = entry is inside normal noise → SL is hit by noise.
+
+  • §6 Fill rate — if NEW > OLD by a lot, this is the "chasing"
+    behaviour; the bot is paying the market price instead of waiting.
+
+  • §7/§8 SL hit rate — if NEW has higher SL hit rate, NEW entries
+    are premature. Key metric: (SL_hit − TP_hit) should be negative.
+
+  • §9 Time decay — at Stage 3 the dip is ~30% of base. Combined with
+    NEW base of 0.4%, that is 0.12% → basically market order.
+
+  • §12 SIM — putting OLD dip on NEW signals shows whether the dip
+    formula is the root cause, independent of score/min_score changes.
+    If SIM fill rate ≈ OLD fill rate, the formula is the driver.
+
+==============================================================================
