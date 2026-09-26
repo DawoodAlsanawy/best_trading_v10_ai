@@ -7955,6 +7955,79 @@ def run_live(cfg, exchange):
                         _LIQ_EMERGENCY_STATS['triggers'] += 1
 
                 if not ex:
+
+                    # ══ [FIX-no_fill] تحقق من وجود المركز على البورصة قبل الخروج ══
+                    # السبب: عند فتح المركز، البوت يضع STOP_MARKET و
+                    # TAKE_PROFIT_MARKET بـ closePosition=True. عندما يُنفَّذ
+                    # أحدهما، تُغلق البورصة المركز تلقائياً. البوت يرى السعر
+                    # قد لمس SL/TP، يحاول الإغلاق بـ reduceOnly=True، لكن
+                    # المركز صفر → البورصة ترفض → no_fill متكرر لدقائق.
+                    # الحل: قبل الإغلاق، اسأل البورصة عن وجود المركز.
+                    try:
+                        _exch_pos_qty = 0.0
+                        _positions = exchange.fetch_positions([sym])
+                        for _p in _positions:
+                            _amt = float(_p['info'].get('positionAmt', 0) or 0)
+                            if abs(_amt) > 0:
+                                _exch_pos_qty = abs(_amt)
+                                break
+
+                        if _exch_pos_qty <= 0:
+                            # ── المركز غير موجود على البورصة ──
+                            # أُغلق بواسطة الأمر الواقي (أو يدوياً).
+                            # احذفه محلياً دون إرسال أي أمر خروج.
+                            _close_px = 0.0
+                            if 'SL' in rsn or 'Emergency' in rsn:
+                                _close_px = float(pos.get('sl') or 0)
+                            elif 'TP' in rsn or 'Hard' in rsn:
+                                _close_px = float(pos.get('tp1') or 0)
+                            if _close_px <= 0:
+                                try:
+                                    _tk2 = exchange.fetch_ticker(sym)
+                                    _close_px = float(_tk2.get('last') or 0)
+                                except Exception:
+                                    _close_px = float(pos.get('entry') or 0)
+
+                            log.info(
+                                f"[Exit-Cleanup] {sym} position already closed "
+                                f"on exchange (protective order) — removing "
+                                f"local. reason={rsn} px≈{_close_px:.6f}"
+                            )
+                            del open_pos_live[sym]
+                            last_exit_time[sym] = time.time()
+
+                            # نظّف أي أوامر واقية متبقية (دفاعي)
+                            try:
+                                _cancel_all_protective_orders(exchange, sym)
+                            except Exception:
+                                pass
+
+                            # احفظ الحالة فوراً
+                            try:
+                                with open(state_file, 'w') as _f:
+                                    json.dump(open_pos_live, _f, indent=2)
+                            except Exception:
+                                pass
+                            continue
+
+                        # ── المركز موجود على البورصة ──
+                        # زامن الكمية إذا اختلفت (مثلاً partial fill سابق)
+                        _local_qty = float(pos.get('qty') or 0)
+                        if (_local_qty > 0
+                                and abs(_exch_pos_qty - _local_qty) / _local_qty > 0.02):
+                            log.info(
+                                f"[Exit-Cleanup] {sym} qty sync: "
+                                f"local={_local_qty:.6f} → "
+                                f"exch={_exch_pos_qty:.6f}"
+                            )
+                            pos['qty'] = _exch_pos_qty
+
+                    except Exception as _e:
+                        # fail-safe: إذا فشل الفحص، نكمل بمحاولة الإغلاق
+                        log.debug(
+                            f"[Exit-Cleanup] {sym} position check failed: {_e}"
+                        )
+
                     continue
 
                 # ── Execute exit ──
