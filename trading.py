@@ -2879,6 +2879,12 @@ def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps,
             base_dip = float(getattr(sig, 'entry_base_dip', 0.0) or 0.0)
 
             # ── Stage 1 ──
+            # [PARITY-FIX] Fill criterion now matches live exactly:
+            #   Live places the order at `base × (1 ∓ pen)` and the exchange
+            #   fills it when the market reaches that price.
+            #   Backtest previously required an EXTRA penetration
+            #   (need_low = target × (1 - pen)) → ~half the fills of live.
+            #   Now: fill when market simply touches the target.
             stage1_fill = None
             for bar in range(first_bar, stage1_last):
                 if (time_decay_enabled and ref_px > 0 and base_dip > 0):
@@ -2898,15 +2904,17 @@ def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps,
                     eff_target = target0
 
                 if sig.action == "BUY":
-                    need_low = eff_target * (1.0 - pen_frac)
-                    if ad.lows[bar] <= need_low:
+                    # Live semantics: order sits AT eff_target; fills when
+                    # market price reaches it (low ≤ eff_target).
+                    if ad.lows[bar] <= eff_target:
                         fill_px = eff_target if use_time_decay_price \
                                   else target0
                         stage1_fill = (bar, fill_px)
                         break
                 else:
-                    need_high = eff_target * (1.0 + pen_frac)
-                    if ad.highs[bar] >= need_high:
+                    # Live semantics: order sits AT eff_target; fills when
+                    # market price reaches it (high ≥ eff_target).
+                    if ad.highs[bar] >= eff_target:
                         fill_px = eff_target if use_time_decay_price \
                                   else target0
                         stage1_fill = (bar, fill_px)
@@ -7608,10 +7616,24 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
         target = float(sig.price)
     else:
         try:
+            # [PARITY-FIX] Use the SAME reference as backtest:
+            # close of the signal bar, not live bid/ask.
+            if ad is not None and hasattr(ad, 'closes'):
+                _ci = int(getattr(sig, 'close_idx', -1))
+                if 0 <= _ci < len(ad.closes):
+                    _close_ref = float(ad.closes[_ci])
+                else:
+                    _close_ref = None
+            else:
+                _close_ref = None
+
             ob = exchange.fetch_order_book(sym, limit=5)
             last_bid = float(ob['bids'][0][0])
             last_ask = float(ob['asks'][0][0])
-            _base = last_bid if side == 'buy' else last_ask
+            if _close_ref is not None and _close_ref > 0:
+                _base = _close_ref
+            else:
+                _base = last_bid if side == 'buy' else last_ask
 
             # ══ [ADAPTIVE FIX #3] tick-based penetration ══
             _tick = _get_tick_size(exchange, sym)
