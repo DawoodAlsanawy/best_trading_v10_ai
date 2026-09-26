@@ -275,7 +275,19 @@ class Config:
     LIVE_ASSET_CACHE_ENABLED: bool = True
     LIVE_ASSET_CACHE_MAX: int = 40           # max entries (safety)
     # ══ [FIXED PRICE ENTRY — no chasing] ══
-    PO_FIXED_PRICE: bool = True              # use sig.price, hold it fixed
+    PO_FIXED_PRICE: bool = False              # use sig.price, hold it fixed
+    # ══ [UNIFIED ENTRY LOGIC] ══
+    # منطق موحّد بمرحلتين:
+    #   Stage 1: أمر Limit عند tunnel_entry_p، انتظر UNIFIED_WAIT_BARS_1H.
+    #   Stage 2: إن لم يمتلئ، وُجد زخم مؤيد + إشارة حيّة → ادخل بسعر
+    #            السوق، وأعد بناء SL/TP من S_new = p - friction_drag.
+    # عند UNIFIED_ENTRY_ENABLED=False، يعمل البوت كما كان (PO_FIXED_PRICE).
+    UNIFIED_ENTRY_ENABLED: bool = True
+    UNIFIED_WAIT_BARS_1H: int = 8            # نافذة Stage 1 (بوحدات 1h)
+    UNIFIED_MAX_AGE_BARS_1H: int = 12        # أقصى عمر للإشارة (Stage 2)
+    UNIFIED_MOMENTUM_KAPPA: float = 0.50     # عتبة الزخم المؤيد (× σ_bar)
+    UNIFIED_REQUIRE_FRESH_SIGNAL: bool = True
+    UNIFIED_FRESH_SCORE_FRAC: float = 0.85   # حداثة الإشارة (نسبة)
     # ══ [ATOMIC FILL ACCOUNTING] ══
     PO_MAX_ATTEMPTS: int = 3              # reduced from 5 (rate-limit safety)
     PO_MAX_DRIFT_BPS: float = 5.0
@@ -2060,6 +2072,155 @@ def compute_geodesic_stop(entry_price, ad, fi, cfg):
     _max_frac = 0.05 * _widen
     return float(np.clip(sl_dist, _min_frac * entry_price, _max_frac * entry_price))
 
+
+# ════════════════════════════════════════════════════════════════
+# § 12.85  UNIFIED ENTRY — Geometry Rebuild at Market Price
+# ════════════════════════════════════════════════════════════════
+#
+# عند الدخول بسعر السوق (Stage 2)، لا نستخدم SL/TP القديمة لأنها
+# محسوبة من tunnel_entry_p. نُعيد بناءها من نقطة التوازن الجديدة
+# S_new = p_current ∓ friction_drag_current، ثم نحسب sl_dist_new
+# بنفس دالة compute_geodesic_stop المستخدمة في build_signals.
+#
+# النتيجة: R:R = 2.0 دائماً، والهندسة طازجة بنيوياً.
+# ════════════════════════════════════════════════════════════════
+
+def _recompute_entry_geometry_at_market(sig, ad, entry_ci, entry_fi, cfg):
+    """
+    يعيد بناء SL/TP من سعر السوق الحالي بنفس فيزياء build_signals.
+
+    Returns
+    -------
+    dict | None
+        {'entry_px', 'S_new', 'sl_dist_new', 'sl', 'tp1'}
+        أو None عند الفشل.
+    """
+    try:
+        if entry_ci < 0 or entry_ci >= len(ad.closes):
+            return None
+        if entry_fi < 0 or entry_fi >= len(ad.friction):
+            return None
+
+        p_current = float(ad.closes[entry_ci])
+        if p_current <= 0:
+            return None
+
+        # friction_drag_current (نفس معادلة build_signals)
+        fric_current = float(ad.friction[entry_fi])
+        if not np.isfinite(fric_current) or fric_current < 0:
+            fric_current = 0.0
+
+        friction_drag = fric_current * p_current * 0.1
+
+        if sig.action == "BUY":
+            S_new = p_current - friction_drag
+        else:
+            S_new = p_current + friction_drag
+
+        # نفس دالة build_signals
+        sl_dist_new = compute_geodesic_stop(S_new, ad, entry_fi, cfg)
+        if sl_dist_new <= 0 or not np.isfinite(sl_dist_new):
+            return None
+
+        if sig.action == "BUY":
+            sl_new = S_new - sl_dist_new
+            tp_new = S_new + (sl_dist_new * 2.0)
+        else:
+            sl_new = S_new + sl_dist_new
+            tp_new = S_new - (sl_dist_new * 2.0)
+
+        return {
+            'entry_px': p_current,
+            'S_new': S_new,
+            'sl_dist_new': float(sl_dist_new),
+            'sl': float(sl_new),
+            'tp1': float(tp_new),
+        }
+    except Exception:
+        return None
+
+
+# ════════════════════════════════════════════════════════════════
+# § 12.86  UNIFIED ENTRY — Stage 2 Conditions
+# ════════════════════════════════════════════════════════════════
+
+def _check_unified_stage2(sig, ad, current_ci, current_fi, cfg):
+    """
+    فحص شروط Stage 2 (الدخول بسعر السوق بعد فشل Stage 1).
+
+    الشروط:
+      1. العمر ≤ UNIFIED_MAX_AGE_BARS_1H (بالوحدات الفعلية).
+      2. الزخم المؤيد: p_current تحرك في اتجاه الإشارة
+         بأكثر من UNIFIED_MOMENTUM_KAPPA × σ_bar.
+      3. الإشارة حيّة: score[current_fi] ≥ UNIFIED_FRESH_SCORE_FRAC
+         × score[signal_fi].
+
+    Returns
+    -------
+    (ok, reason, p_current)
+    """
+    if not getattr(cfg, 'UNIFIED_ENTRY_ENABLED', True):
+        return False, "unified_disabled", 0.0
+
+    try:
+        age_bars = current_ci - int(sig.close_idx)
+        if age_bars <= 0:
+            return False, "not_yet", 0.0
+
+        max_age = effective_bars(
+            int(getattr(cfg, 'UNIFIED_MAX_AGE_BARS_1H', 12))
+        )
+        if age_bars > max_age:
+            return False, f"too_old({age_bars}>{max_age})", 0.0
+
+        p_current = float(ad.closes[current_ci])
+        p_signal = float(ad.closes[int(sig.close_idx)])
+        if p_signal <= 0 or p_current <= 0:
+            return False, "invalid_prices", 0.0
+
+        # ── σ_bar الحالي ──
+        try:
+            sigma_bar = float(ad.E_therm[current_fi]) \
+                if 0 <= current_fi < len(ad.E_therm) else 0.01
+            if not np.isfinite(sigma_bar) or sigma_bar <= 1e-6:
+                sigma_bar = 0.01
+        except Exception:
+            sigma_bar = 0.01
+
+        # ── شرط الزخم ──
+        kappa = float(getattr(cfg, 'UNIFIED_MOMENTUM_KAPPA', 0.5))
+        threshold = kappa * sigma_bar * p_signal
+
+        if sig.action == "BUY":
+            momentum_ok = (p_current - p_signal) > threshold
+            move = p_current - p_signal
+        else:
+            momentum_ok = (p_signal - p_current) > threshold
+            move = p_signal - p_current
+
+        if not momentum_ok:
+            return False, (f"no_momentum(move={move:.6f}<"
+                           f"thr={threshold:.6f})"), 0.0
+
+        # ── شرط حداثة الإشارة ──
+        if getattr(cfg, 'UNIFIED_REQUIRE_FRESH_SIGNAL', True):
+            try:
+                score_now = float(ad.score[current_fi]) \
+                    if 0 <= current_fi < len(ad.score) else 0.0
+                score_orig = float(sig.score)
+                fresh_frac = float(getattr(cfg,
+                    'UNIFIED_FRESH_SCORE_FRAC', 0.85))
+                if score_orig > 0 and \
+                        score_now < score_orig * fresh_frac:
+                    return False, (f"stale_score({score_now:.2f}<"
+                                   f"{score_orig*fresh_frac:.2f})"), 0.0
+            except Exception:
+                pass
+
+        return True, "OK", p_current
+    except Exception as e:
+        return False, f"error:{e}", 0.0
+
 def compute_dynamic_leverage(capital, cfg):
     """
     ③ الرافعة الديناميكية تتناقص مع نمو رأس المال:
@@ -2608,20 +2769,18 @@ def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps,
                            time_decay_mults=(0.7, 0.5, 0.3),
                            use_time_decay_price=False):
     """
-    For each signal, find (fill_ci, fill_price) where the limit order
-    would ACTUALLY fill.
+    [UNIFIED] لكل إشارة:
+      - Stage 1: حاول ملء Limit عند sig.price خلال UNIFIED_WAIT_BARS_1H.
+      - Stage 2: إن فشل Stage 1، افحص شروط Stage 2 على كل شمعة تالية
+                 حتى UNIFIED_MAX_AGE_BARS_1H. إن تحققت، ادخل بسعر السوق
+                 وأعد بناء SL/TP.
 
-    A fill requires the market to PENETRATE the limit price by `pen_bps`.
-
-    Deadline = min(sig.close_idx + max_wait_bars, next_signal_ci_for_same_symbol)
-
-    When `time_decay_enabled`:
-        The effective limit moves toward the market as time passes.
-        At bars (5, 10, 15) the dip is multiplied by (0.7, 0.5, 0.3).
-        Fill price = effective (decayed) target when use_time_decay_price=True,
-        else the original target.
-
-    Returns dict: signal_index → (fill_ci, fill_price) | None
+    Returns
+    -------
+    dict {sig_i: tuple | None}
+        ('S1', fill_ci, fill_px)                         — Stage 1
+        ('S2', ci, px, sl_new, tp_new, sl_dist_new)      — Stage 2
+        None                                              — skip
     """
     by_symbol = defaultdict(list)
     for i, s in enumerate(signals):
@@ -2629,6 +2788,14 @@ def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps,
 
     pen_frac = pen_bps * 1e-4
     result = {}
+
+    _unified = bool(getattr(CFG, 'UNIFIED_ENTRY_ENABLED', True))
+    _stage1_bars = effective_bars(
+        int(getattr(CFG, 'UNIFIED_WAIT_BARS_1H', 8))
+    )
+    _max_age_bars = effective_bars(
+        int(getattr(CFG, 'UNIFIED_MAX_AGE_BARS_1H', 12))
+    )
 
     for sym, sig_list in by_symbol.items():
         if sym not in assets:
@@ -2639,35 +2806,28 @@ def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps,
         n_bars = len(ad.closes)
 
         for j, (sig_i, sig) in enumerate(sig_list):
-            # ══ [WAIT-SEMANTICS FIX] ══
-            # max_wait_bars = NUMBER of bars to check, starting from the
-            # bar immediately after the signal bar. Previous code treated
-            # it as an exclusive end index → with max_wait_bars=1 the
-            # window was empty (0 bars) → 0 fills.
-            #
-            # Also capped by: next signal on the same symbol (never fill
-            # after the signal is superseded), and end of data.
+            # Deadline = min(signal + max_wait, next signal)
             first_bar = sig.close_idx + 1
-            last_bar_exclusive = first_bar + max(1, int(max_wait_bars))
+            stage1_last = first_bar + max(1, _stage1_bars)
+            stage2_last = first_bar + max(1, _max_age_bars)
             if j + 1 < len(sig_list):
                 next_sig = sig_list[j + 1][1]
-                last_bar_exclusive = min(last_bar_exclusive,
-                                          next_sig.close_idx)
-            last_bar_exclusive = min(last_bar_exclusive, n_bars)
-            if first_bar >= last_bar_exclusive:
+                stage1_last = min(stage1_last, next_sig.close_idx)
+                stage2_last = min(stage2_last, next_sig.close_idx)
+            stage1_last = min(stage1_last, n_bars)
+            stage2_last = min(stage2_last, n_bars)
+
+            if first_bar >= stage1_last and first_bar >= stage2_last:
                 result[sig_i] = None
                 continue
 
             target0 = _backtest_entry_target(sig, ad)
-            # Time-decay reference
             ref_px = float(getattr(sig, 'entry_ref_price', 0.0) or 0.0)
             base_dip = float(getattr(sig, 'entry_base_dip', 0.0) or 0.0)
 
-            fill_ci = None
-            fill_px = None
-
-            for bar in range(first_bar, last_bar_exclusive):
-                # ── Effective target for this bar ──
+            # ── Stage 1 ──
+            stage1_fill = None
+            for bar in range(first_bar, stage1_last):
                 if (time_decay_enabled and ref_px > 0 and base_dip > 0):
                     bars_elapsed = bar - sig.close_idx
                     if bars_elapsed > int(time_decay_bars[2]):
@@ -2679,30 +2839,57 @@ def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps,
                     else:
                         mult = 1.0
                     eff_dip = base_dip * mult
-                    if sig.action == "BUY":
-                        eff_target = ref_px - eff_dip
-                    else:
-                        eff_target = ref_px + eff_dip
+                    eff_target = (ref_px - eff_dip) if sig.action == "BUY" \
+                                 else (ref_px + eff_dip)
                 else:
                     eff_target = target0
 
-                # ── Check for fill ──
                 if sig.action == "BUY":
                     need_low = eff_target * (1.0 - pen_frac)
                     if ad.lows[bar] <= need_low:
-                        fill_ci = bar
                         fill_px = eff_target if use_time_decay_price \
                                   else target0
+                        stage1_fill = (bar, fill_px)
                         break
-                else:  # SELL
+                else:
                     need_high = eff_target * (1.0 + pen_frac)
                     if ad.highs[bar] >= need_high:
-                        fill_ci = bar
                         fill_px = eff_target if use_time_decay_price \
                                   else target0
+                        stage1_fill = (bar, fill_px)
                         break
 
-            result[sig_i] = (fill_ci, fill_px) if fill_ci is not None else None
+            if stage1_fill is not None:
+                result[sig_i] = ('S1', stage1_fill[0], stage1_fill[1])
+                continue
+
+            # ── Stage 2 ──
+            if not _unified:
+                result[sig_i] = None
+                continue
+
+            stage2_entry = None
+            for bar in range(max(first_bar, stage1_last), stage2_last):
+                current_fi = bar - ad.feat_start
+                if current_fi < 0 or current_fi >= len(ad.score):
+                    continue
+                ok, reason, p_cur = _check_unified_stage2(
+                    sig, ad, bar, current_fi, CFG
+                )
+                if not ok:
+                    continue
+                geom = _recompute_entry_geometry_at_market(
+                    sig, ad, bar, current_fi, CFG
+                )
+                if geom is None:
+                    continue
+                stage2_entry = (
+                    'S2', bar, geom['entry_px'],
+                    geom['sl'], geom['tp1'], geom['sl_dist_new']
+                )
+                break
+
+            result[sig_i] = stage2_entry
 
     return result
 
@@ -3252,18 +3439,42 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
 
         ad = assets[sym]
 
-        # ══ [BACKTEST REALISM] Look up actual fill bar and price ══
+        # ══ [UNIFIED ENTRY] Look up Stage 1 or Stage 2 ══
         fill_info = fill_map.get(sig_i)
         if fill_info is None:
-            # Order never penetrated — skip this signal entirely
             continue
-        fill_ci, fill_px = fill_info
 
-        # 🚀 التوافق السببي: الدخول يتم عند الشمعة التي اخترق فيها السوق السعر
-        opt_ci = fill_ci
-        # ══ [TIME-DECAY PRICE] Use the actual fill price (may be decayed) ══
-        opt_px = float(fill_px)
+        _is_stage2 = False
+        _stage2_sl = _stage2_tp = _stage2_sl_dist = None
+
+        if len(fill_info) >= 2 and isinstance(fill_info[0], str):
+            if fill_info[0] == 'S1':
+                _, opt_ci, opt_px = fill_info
+            elif fill_info[0] == 'S2':
+                _, opt_ci, opt_px, _stage2_sl, _stage2_tp, _stage2_sl_dist \
+                    = fill_info
+                _is_stage2 = True
+            else:
+                continue
+        else:
+            # توافق مع الصيغة القديمة
+            opt_ci, opt_px = fill_info
+
+        opt_ci = int(opt_ci)
+        opt_px = float(opt_px)
         opt_entry = False
+
+        # ══ [STAGE 2] أعد كتابة SL/TP على الإشارة قبل أي حساب ══
+        if _is_stage2:
+            _old_sl = sig.sl
+            _old_tp = sig.tp1
+            sig.sl = float(_stage2_sl)
+            sig.tp1 = float(_stage2_tp)
+            log.debug(
+                f"[Unified-S2] {sym} entry@{opt_px:.6f} "
+                f"old_sl={_old_sl:.6f}→new_sl={sig.sl:.6f} "
+                f"old_tp={_old_tp:.6f}→new_tp={sig.tp1:.6f}"
+            )
 
         # ══ [SUB-BARS] Find the sub-bar within the entry bar where
         # the limit was first touched. This is used by _advance to
@@ -7074,10 +7285,223 @@ def monitor_pending_orders(exchange, open_pos_live: Dict,
                     # Fall through (don't continue) — timeout check below
                     # may still fire if we've passed stage 4.
 
-        # ── Timeout → cancel + drop ──
+        # ── Timeout → Stage 2 (إن مُفعَّل) أو cancel + drop ──
         timeout_s = float(rec.get('timeout_s') or CFG.PO_MAX_WAIT_S)
         elapsed = now - float(rec.get('placed_at') or now)
+
         if elapsed > timeout_s:
+            # ══ [UNIFIED STAGE 2] ══
+            _did_stage2 = False
+            if getattr(CFG, 'UNIFIED_ENTRY_ENABLED', True):
+                try:
+                    _ad = rec.get('ad_ref')
+                    _filled = float(rec.get('filled') or 0.0)
+                    if _ad is not None and _filled <= 0.0:
+                        _current_ci = len(_ad.closes) - 2  # آخر شمعة مغلقة
+                        _current_fi = _current_ci - _ad.feat_start
+                        if 0 <= _current_fi < len(_ad.score):
+                            _sig = rec.get('signal_ref')
+                            if _sig is None:
+                                # إعادة بناء الإشارة من القاموس
+                                from types import SimpleNamespace as _SNS
+                                _sig = _SNS(
+                                    symbol=sym,
+                                    action=rec.get('action'),
+                                    price=float(rec.get('price') or 0),
+                                    sl=float(rec.get('price') or 0)
+                                       - float(rec.get('orig_sl_dist') or 0)
+                                       if rec.get('action') == 'BUY'
+                                       else float(rec.get('price') or 0)
+                                       + float(rec.get('orig_sl_dist') or 0),
+                                    tp1=float(rec.get('price') or 0)
+                                        + float(rec.get('orig_tp_dist') or 0)
+                                        if rec.get('action') == 'BUY'
+                                        else float(rec.get('price') or 0)
+                                        - float(rec.get('orig_tp_dist') or 0),
+                                    score=float(rec.get('score_ref') or 0),
+                                    close_idx=int(rec.get('close_idx') or 0),
+                                    feat_idx=int(rec.get('entry_fi') or 0),
+                                )
+
+                            _ok, _reason, _p_cur = _check_unified_stage2(
+                                _sig, _ad, _current_ci, _current_fi, CFG
+                            )
+                            if _ok:
+                                _geom = _recompute_entry_geometry_at_market(
+                                    _sig, _ad, _current_ci, _current_fi, CFG
+                                )
+                                if _geom is not None:
+                                    # 1) ألغِ الأمر المعلّق
+                                    _oid = rec.get('order_id')
+                                    if _oid:
+                                        try:
+                                            exchange.cancel_order(_oid, sym)
+                                        except Exception:
+                                            pass
+                                        time.sleep(0.15)
+                                        _sweep_pending_once(exchange, sym)
+                                        # تحقق من عدم وجود fill جزئي
+                                        _rec_chk = _PENDING_ORDERS.get(sym)
+                                        if _rec_chk and \
+                                           float(_rec_chk.get('filled') or 0.0) > 0.0:
+                                            # fill جزئي وصل أثناء الإلغاء،
+                                            # اترك _promote_pending_to_position
+                                            # يتولى الأمر
+                                            _did_stage2 = True
+                                            continue
+
+                                    # 2) نفّذ market order
+                                    _qty_m = float(rec.get('qty') or 0)
+                                    _side_m = 'buy' if rec.get('action') == 'BUY' \
+                                              else 'sell'
+                                    try:
+                                        _mo = exchange.create_order(
+                                            sym, 'market', _side_m, _qty_m,
+                                            None,
+                                            params={'reduceOnly': False},
+                                        )
+                                        _fv = verify_fill(
+                                            exchange, _mo['id'], sym,
+                                            timeout_s=3.0
+                                        )
+                                        if not (_fv and _fv.get('filled')):
+                                            log.warning(
+                                                f"[Unified-S2] {sym} market "
+                                                f"order failed to fill"
+                                            )
+                                            _PENDING_ORDERS.pop(sym, None)
+                                            continue
+                                        _entry_px = float(_fv.get('avg_price')
+                                                          or _p_cur)
+                                        _actual_qty = float(_fv.get('qty')
+                                                            or _qty_m)
+                                    except Exception as _e:
+                                        log.error(
+                                            f"[Unified-S2] {sym} market "
+                                            f"order exception: {_e}"
+                                        )
+                                        _PENDING_ORDERS.pop(sym, None)
+                                        continue
+
+                                    # 3) احسب المخاطرة الفعلية
+                                    if rec.get('action') == 'BUY':
+                                        _actual_risk = _entry_px - _geom['sl']
+                                    else:
+                                        _actual_risk = _geom['sl'] - _entry_px
+                                    if _actual_risk <= 1e-12:
+                                        log.warning(
+                                            f"[Unified-S2] {sym} invalid "
+                                            f"actual_risk after fill"
+                                        )
+                                        # أغلق فوراً
+                                        try:
+                                            _side_close = 'sell' \
+                                                if rec.get('action') == 'BUY' \
+                                                else 'buy'
+                                            exchange.create_order(
+                                                sym, 'market', _side_close,
+                                                _actual_qty
+                                            )
+                                        except Exception:
+                                            pass
+                                        _PENDING_ORDERS.pop(sym, None)
+                                        continue
+
+                                    # 4) احسب الحجم مع مراعاة المخاطرة الفعلية
+                                    _risk_frac = float(rec.get('dyn_risk')
+                                                       or 0.01)
+                                    _cap_now = float(rec.get('capital_at_placement')
+                                                     or 0)
+                                    if _cap_now <= 0:
+                                        try:
+                                            _bal = exchange.fetch_balance()
+                                            _cap_now = float(
+                                                _bal['USDT']['free']
+                                            )
+                                        except Exception:
+                                            _cap_now = 0.0
+                                    if _cap_now > 0:
+                                        _equity_base = max(
+                                            _cap_now - CFG.CAPITAL_FLOOR, 0.0
+                                        )
+                                        _risk_amt = _equity_base * _risk_frac
+                                        _new_qty = min(
+                                            _risk_amt / _actual_risk,
+                                            _actual_qty
+                                        )
+                                        if _new_qty < _actual_qty * 0.95:
+                                            _excess = _actual_qty - _new_qty
+                                            try:
+                                                _side_close = 'sell' \
+                                                    if rec.get('action') == 'BUY' \
+                                                    else 'buy'
+                                                exchange.create_order(
+                                                    sym, 'market', _side_close,
+                                                    _excess
+                                                )
+                                                _actual_qty = _new_qty
+                                            except Exception:
+                                                pass
+
+                                    # 5) احفظ المركز الجديد
+                                    _trail_d, _trail_a = compute_trail_params(
+                                        _ad, _current_fi
+                                    )
+                                    open_pos_live[sym] = {
+                                        'action': rec.get('action'),
+                                        'entry': _entry_px,
+                                        'qty': _actual_qty,
+                                        'sl': float(_geom['sl']),
+                                        'tp1': float(_geom['tp1']),
+                                        'T_info': float(rec.get('T_info')
+                                                        or 0.0),
+                                        'dyn_risk': _risk_frac,
+                                        'entry_ts': time.time(),
+                                        'fill_ratio': 1.0,
+                                        'leverage': int(rec.get('leverage')
+                                                        or 1),
+                                        'trail_dist_frac': float(_trail_d),
+                                        'trail_activate_frac': float(_trail_a),
+                                        'sl_dist_initial': float(
+                                            abs(_entry_px - _geom['sl'])
+                                        ),
+                                        'stage': 'S2',
+                                    }
+
+                                    log.info(
+                                        f"✅ [Unified-S2] {sym} "
+                                        f"{rec.get('action')} @ {_entry_px:.6f} "
+                                        f"qty={_actual_qty:.6f} "
+                                        f"sl={_geom['sl']:.6f} "
+                                        f"tp={_geom['tp1']:.6f} "
+                                        f"reason={_reason}"
+                                    )
+
+                                    # 6) ضع أوامر واقية
+                                    try:
+                                        _place_protective_orders(
+                                            exchange, sym, open_pos_live[sym]
+                                        )
+                                        open_pos_live[sym]['_prot_last_sl'] \
+                                            = float(_geom['sl'])
+                                        open_pos_live[sym]['_prot_last_tp'] \
+                                            = float(_geom['tp1'])
+                                    except Exception as _e:
+                                        log.warning(
+                                            f"[Unified-S2] {sym} protective "
+                                            f"orders failed: {_e}"
+                                        )
+
+                                    _PENDING_ORDERS.pop(sym, None)
+                                    _did_stage2 = True
+                                    continue
+                except Exception as _e:
+                    log.debug(f"[Unified-S2] {sym} exception: {_e}")
+
+            if _did_stage2:
+                continue
+
+            # ── Cancel + drop (السلوك الأصلي) ──
             oid = rec.get('order_id')
             if oid:
                 try:
@@ -7085,13 +7509,12 @@ def monitor_pending_orders(exchange, open_pos_live: Dict,
                 except Exception:
                     pass
                 time.sleep(0.2)
-                # Final sweep
                 _sweep_pending_once(exchange, sym)
                 rec2 = _PENDING_ORDERS.get(sym)
                 if rec2 and str(rec2.get('status')) == 'closed':
                     _promote_pending_to_position(sym, rec2, open_pos_live)
             log.info(f"[Pending] {sym} {rec.get('action')} timeout "
-                     f"({elapsed:.0f}s > {timeout_s:.0f}s)")
+                     f"({elapsed:.0f}s > {timeout_s:.0f}s) — dropped")
             _PENDING_ORDERS.pop(sym, None)
             continue
 
@@ -7166,6 +7589,14 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
     except Exception:
         entry_fi = 0
 
+    # ══ [UNIFIED] اضبط المهلة على Stage 1 إن كان المنطق مفعّلاً ══
+    if getattr(CFG, 'UNIFIED_ENTRY_ENABLED', True):
+        _tf_sec_u = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
+        _stage1_bars_u = effective_bars(
+            int(getattr(CFG, 'UNIFIED_WAIT_BARS_1H', 8))
+        )
+        timeout_s = float(_stage1_bars_u * _tf_sec_u)
+
     rec = {
         'order_id': str(o['id']),
         'sym': sym,
@@ -7184,6 +7615,9 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
         'status': 'open',
         'filled': 0.0,
         'avg_price': 0.0,
+        'signal_ref': sig,           # [UNIFIED-S2] مرجع الإشارة الأصلية
+        'score_ref': float(sig.score),
+        'capital_at_placement': 0.0, # يُملأ لاحقاً إن أردت
         'mmr_at_placement': float(
             _get_mmr_for_symbol(exchange, sym)
         ),
