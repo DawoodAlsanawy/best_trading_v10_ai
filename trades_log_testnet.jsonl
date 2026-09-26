@@ -1,0 +1,1 @@
+{"_meta": true, "mode": "testnet", "timeframe": "4h", "started_at": "2026-09-26 15:07:40", "N": 24, "W": 20, "L": 10, "K_MAX": 12, "K_MIN": 4, "INITIAL_CAPITAL": 60.0, "LEVERAGE_BASE": 50.0, "PO_FIXED_PRICE": false}

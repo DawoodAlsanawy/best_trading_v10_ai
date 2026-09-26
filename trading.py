@@ -529,6 +529,31 @@ class Config:
     PARTIAL_TP_PCT: float = 0.5         # close 50% at that level
     TP_MULT: float = 5    # كان 2.0 → الآن 1.5 (R:R = 1.5)
     APEX_ENABLED: bool = False    # عطّله مؤقتاً حتى نضبط عتباته
+    # ══ [TRADE FILTER — Pre-entry rejection] ══
+    # فلتر متعدد الإشارات يعمل داخل build_signals قبل إضافة الإشارة.
+    # يقبل الإشارة إلا إذا اجتمع عليها عدد كافٍ من "أصوات الرفض".
+    #
+    # ملاحظة مهمة: FILTER_USE_ACTION_BIAS معطّل افتراضياً لأن
+    # التشخيص أظهر أنه انحياز نظام (85% احتمال) وليس حافة حقيقية.
+    # فعّله فقط إذا أثبتت اختبارات الاستقرار الزمني أنه حقيقي.
+    FILTER_ENABLED: bool = False        # المفتاح الرئيسي (معطّل افتراضياً)
+
+    # الأصوات الفردية (كل صوت = سبب مستقل للرفض)
+    FILTER_USE_ACTION_BIAS: bool = False   # ⚠️ انحياز نظام — معطّل
+    FILTER_USE_EMA_SLOPE: bool = True      # ✅ بنيوي — مفعّل
+    FILTER_USE_HIGH_ATR: bool = True       # ✅ عام — مفعّل
+    FILTER_USE_FRICTION_DRAG: bool = True  # ✅ هندسي — مفعّل
+
+    # العتبات
+    FILTER_ATR_FRAC_MAX: float = 0.024      # atr_frac فوق هذا = تقلب مرتفع
+    FILTER_FRICTION_DRAG_MAX: float = 2.5   # friction_drag/sl_dist فوق هذا = R:R ضعيف
+
+    # الحد الأدنى للأصوات المطلوبة للرفض
+    FILTER_MIN_VOTES: int = 2               # يحتاج صوتين على الأقل
+
+    # التسجيل والتحليل
+    FILTER_LOG_REJECTIONS: bool = False     # سجّل كل رفض في LOG
+
 CFG = Config()
 
 # ════════════════════════════════════════════════════════════════
@@ -2761,6 +2786,123 @@ def _compute_entry_dip(ad, fi: int, ci: int, action: str,
     except Exception:
         return 0.0
 
+# ════════════════════════════════════════════════════════════════
+# § TRADE FILTER — Pre-entry multi-signal rejection
+# ════════════════════════════════════════════════════════════════
+
+_FILTER_STATS: Dict = {
+    'total_signals': 0,
+    'kept': 0,
+    'rejected': 0,
+    'vote_counts': defaultdict(int),   # كم مرة رُفض بسبب كل مزيج
+    'vote_singles': defaultdict(int),  # عدد الأصوات لكل صوت منفرد
+}
+
+
+def _filter_reset_stats() -> None:
+    """Reset filter statistics (called at start of each run)."""
+    _FILTER_STATS['total_signals'] = 0
+    _FILTER_STATS['kept'] = 0
+    _FILTER_STATS['rejected'] = 0
+    _FILTER_STATS['vote_counts'].clear()
+    _FILTER_STATS['vote_singles'].clear()
+
+
+def _trade_filter_check(sig, ad, fi, ci) -> Tuple[bool, str]:
+    """
+    فحص فلتر الدخول. يعيد (reject, reason).
+
+    المنطق:
+      - يحسب "أصوات الرفض" من إشارات مستقلة.
+      - يرفض الإشارة إذا كان عدد الأصوات >= FILTER_MIN_VOTES.
+
+    الأصوات:
+      1. action_bias  : action == 'BUY' (معطّل افتراضياً)
+      2. ema_slope    : ميل EMA200 ضد الإشارة
+      3. high_atr     : atr_frac > FILTER_ATR_FRAC_MAX
+      4. friction     : friction_drag/sl_dist > FILTER_FRICTION_DRAG_MAX
+    """
+    if not getattr(CFG, 'FILTER_ENABLED', False):
+        return False, ""
+
+    try:
+        votes = []
+        action = getattr(sig, 'action', '?')
+        price = float(getattr(sig, 'price', 0.0))
+        sl = float(getattr(sig, 'sl', 0.0))
+        atr = float(getattr(sig, 'atr', 0.0))
+
+        if price <= 0:
+            return False, ""
+
+        # ── Vote 1: action_bias (BUY) — معطّل افتراضياً ──
+        if getattr(CFG, 'FILTER_USE_ACTION_BIAS', False):
+            if action == 'BUY':
+                votes.append('action_bias')
+
+        # ── Vote 2: EMA slope ضد الإشارة ──
+        if getattr(CFG, 'FILTER_USE_EMA_SLOPE', True):
+            try:
+                if (ad is not None
+                        and 0 <= ci < len(ad.ema200)
+                        and ci >= 50):
+                    ema_now = float(ad.ema200[ci])
+                    ema_prev = float(ad.ema200[ci - 50])
+                    slope = (ema_now - ema_prev) / 50.0
+                    if ((action == 'BUY' and slope < 0) or
+                            (action == 'SELL' and slope > 0)):
+                        votes.append('ema_slope')
+            except Exception:
+                pass
+
+        # ── Vote 3: تقلب مرتفع ──
+        if getattr(CFG, 'FILTER_USE_HIGH_ATR', True):
+            try:
+                atr_frac = atr / max(price, 1e-12)
+                _thr = float(getattr(CFG, 'FILTER_ATR_FRAC_MAX', 0.024))
+                if atr_frac > _thr:
+                    votes.append('high_atr')
+            except Exception:
+                pass
+
+        # ── Vote 4: friction_drag / sl_dist مرتفع ──
+        if getattr(CFG, 'FILTER_USE_FRICTION_DRAG', True):
+            try:
+                sl_dist = abs(price - sl)
+                if sl_dist > 1e-12:
+                    sigma_frac = float(ad.E_therm[fi]) \
+                        if (ad is not None
+                            and 0 <= fi < len(ad.E_therm)) else 0.01
+                    if not np.isfinite(sigma_frac) or sigma_frac <= 1e-6:
+                        sigma_frac = 0.01
+                    sigma_price = sigma_frac * price
+                    fd_kappa = float(getattr(CFG, 'FRICTION_DIP_KAPPA', 4.0))
+                    friction_drag = fd_kappa * sigma_price
+                    ratio = friction_drag / sl_dist
+                    _thr = float(getattr(CFG, 'FILTER_FRICTION_DRAG_MAX', 2.5))
+                    if ratio > _thr:
+                        votes.append('friction_drag')
+            except Exception:
+                pass
+
+        # ── القرار ──
+        _min_votes = int(getattr(CFG, 'FILTER_MIN_VOTES', 2))
+        if len(votes) >= _min_votes:
+            reason = '|'.join(votes)
+            # إحصاءات
+            _FILTER_STATS['vote_counts'][reason] += 1
+            for v in votes:
+                _FILTER_STATS['vote_singles'][v] += 1
+            if getattr(CFG, 'FILTER_LOG_REJECTIONS', False):
+                log.debug(f"[Filter] {sig.symbol} {action} rejected: {reason}")
+            return True, reason
+
+        return False, ""
+    except Exception as e:
+        # fail-open: خطأ في الفلتر لا يمنع الصفقة
+        log.debug(f"[Filter] exception (fail-open): {e}")
+        return False, "filter_error"
+
 def build_signals(assets, mode="backtest"):
     """
     محرك استشعار الإشارات الكمي:
@@ -2894,7 +3036,8 @@ def build_signals(assets, mode="backtest"):
 
             dynamic_risk = compute_geodesic_kelly(ad, fi, CFG)
 
-            sigs.append(Signal(
+            # ══ [TRADE FILTER] ══
+            _new_sig = Signal(
                 timestamp=ad.timestamps[ci], symbol=sym,
                 price=tunnel_entry_p,
                 score=float(ad.score[fi]), action=action,
@@ -2905,7 +3048,19 @@ def build_signals(assets, mode="backtest"):
                 dyn_sl_factor=sl_dist / tunnel_entry_p,
                 entry_ref_price=float(p),
                 entry_base_dip=float(_entry_dip),
-            ))
+            )
+
+            _FILTER_STATS['total_signals'] += 1
+
+            _rej, _rej_reason = _trade_filter_check(
+                _new_sig, ad, fi, ci
+            )
+            if _rej:
+                _FILTER_STATS['rejected'] += 1
+                continue
+
+            _FILTER_STATS['kept'] += 1
+            sigs.append(_new_sig)
             
     sigs.sort(key=lambda s: (s.timestamp, -s.score))
     return sigs
@@ -4034,6 +4189,38 @@ def print_report(m, mode):
     print(f"\n▶ توزيع أسباب الخروج")
     for r,c in sorted(m['exit_distribution'].items(), key=lambda x:-x[1]):
         print(f"   {r:25s}: {c:7,}  ({c/m['n_trades']*100:.1f}%)")
+
+    # ══ [FILTER REPORT] ══
+    if CFG.FILTER_ENABLED and _FILTER_STATS['total_signals'] > 0:
+        _tot = _FILTER_STATS['total_signals']
+        _rej = _FILTER_STATS['rejected']
+        _kept = _FILTER_STATS['kept']
+        print(f"\n▶ فلتر الدخول (TRADE FILTER)")
+        print(f"   إشارات مُنتَجة إجمالاً : {_tot:,}")
+        print(f"   مقبولة                 : {_kept:,} "
+              f"({_kept/max(_tot,1)*100:.1f}%)")
+        print(f"   مرفوضة                 : {_rej:,} "
+              f"({_rej/max(_tot,1)*100:.1f}%)")
+        print(f"   ── الأصوات المُفعَّلة ──")
+        print(f"   action_bias            : "
+              f"{'ON' if CFG.FILTER_USE_ACTION_BIAS else 'OFF'}")
+        print(f"   ema_slope              : "
+              f"{'ON' if CFG.FILTER_USE_EMA_SLOPE else 'OFF'}")
+        print(f"   high_atr               : "
+              f"{'ON' if CFG.FILTER_USE_HIGH_ATR else 'OFF'}")
+        print(f"   friction_drag          : "
+              f"{'ON' if CFG.FILTER_USE_FRICTION_DRAG else 'OFF'}")
+        print(f"   عدد الأصوات المطلوبة    : {CFG.FILTER_MIN_VOTES}")
+        print(f"   ── أعلى أسباب الرفض ──")
+        _top = sorted(_FILTER_STATS['vote_counts'].items(),
+                       key=lambda x: -x[1])[:5]
+        for reason, cnt in _top:
+            print(f"   {reason:35s}: {cnt:6,}")
+        print(f"   ── الأصوات الفردية ──")
+        for vote, cnt in sorted(_FILTER_STATS['vote_singles'].items(),
+                                 key=lambda x: -x[1]):
+            print(f"   {vote:35s}: {cnt:6,}")
+
     print(f"\n{sep}\n")
     
 
@@ -4942,6 +5129,8 @@ def run_backtest(cfg):
     log.info(f"  أزواج مرتبطة (ρ>{cfg.CORRELATION_THRESHOLD}): {n_pairs//2}")
 
     log.info("§5  بناء الإشارات (①②④⑤ مُفعَّلة)...")
+    # ══ [FILTER] إعادة تعيين العدّاد قبل البناء ══
+    _filter_reset_stats()
     sigs = build_signals(assets)
     sigs = deduplicate_signals(sigs)
 
@@ -8883,6 +9072,8 @@ def run_live(cfg, exchange):
 
             if len(open_pos_live) < effective_max:
                 # توليد الإشارة يمرر وضعية التداول اللحظية لكسر وهم الزمن
+                # [Filter] إعادة التعيين في كل دورة live (عدّاد دوري)
+                _filter_reset_stats()
                 sigs = deduplicate_signals(build_signals(assets, mode=cfg.mode))
 
                 # ══ [Rule Filter — Live] ══
@@ -9521,6 +9712,26 @@ def main():
     p.add_argument("--trade-log", type=str, default=None,
                    help="Path to trade log file (JSONL). "
                         "Default: trades_log_{mode}.jsonl")
+    # ══ [TRADE FILTER] ══
+    p.add_argument("--filter", action="store_true",
+                   help="Enable pre-entry trade filter (multi-signal)")
+    p.add_argument("--filter-action-bias", action="store_true",
+                   help="[CAUTION] Include action_buy as a rejection vote "
+                        "(regime-bias risk)")
+    p.add_argument("--filter-no-ema", action="store_true",
+                   help="Disable ema_slope vote")
+    p.add_argument("--filter-no-atr", action="store_true",
+                   help="Disable high_atr vote")
+    p.add_argument("--filter-no-friction", action="store_true",
+                   help="Disable friction_drag vote")
+    p.add_argument("--filter-min-votes", type=int, default=None,
+                   help="Minimum votes to reject (default 2)")
+    p.add_argument("--filter-atr-max", type=float, default=None,
+                   help="Max ATR fraction (default 0.024)")
+    p.add_argument("--filter-friction-max", type=float, default=None,
+                   help="Max friction_drag/sl_dist (default 2.5)")
+    p.add_argument("--filter-log", action="store_true",
+                   help="Log every rejection at DEBUG level")
     p.add_argument("--no-kill-switch", action="store_true",
                    help="Disable kill switch")
     args = p.parse_args()
@@ -9748,6 +9959,27 @@ def main():
         CFG.KILL_SWITCH_SECRET = args.kill_secret
     if args.no_kill_switch:
         CFG.KILL_SWITCH_ENABLED = False
+    # ══ [TRADE FILTER] ══
+    if args.filter:
+        CFG.FILTER_ENABLED = True
+        log.info("[Filter] Trade filter ENABLED")
+    if args.filter_action_bias:
+        CFG.FILTER_USE_ACTION_BIAS = True
+        log.warning("[Filter] action_bias vote ENABLED — regime-bias risk!")
+    if args.filter_no_ema:
+        CFG.FILTER_USE_EMA_SLOPE = False
+    if args.filter_no_atr:
+        CFG.FILTER_USE_HIGH_ATR = False
+    if args.filter_no_friction:
+        CFG.FILTER_USE_FRICTION_DRAG = False
+    if args.filter_min_votes is not None:
+        CFG.FILTER_MIN_VOTES = int(args.filter_min_votes)
+    if args.filter_atr_max is not None:
+        CFG.FILTER_ATR_FRAC_MAX = float(args.filter_atr_max)
+    if args.filter_friction_max is not None:
+        CFG.FILTER_FRICTION_DRAG_MAX = float(args.filter_friction_max)
+    if args.filter_log:
+        CFG.FILTER_LOG_REJECTIONS = True
 
     print("╔"+"═"*70+"╗")
     print(f"  [Level-1] Parallel: {CFG.PARALLEL_PROCESSING}  "
