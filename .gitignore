@@ -4,3 +4,4 @@ market_data_cache*
 *.png
 __pycache__/*
 data/*
+*.jsonl
