@@ -85,7 +85,7 @@ class Config:
     EMA_SPAN: int = 200; ATR_PERIOD: int = 14
 
     W_CURV: float=1.0; W_VOL: float=1.0; W_ENTROPY: float=2.0
-    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=4
+    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=3
 
     CURV_THRESHOLD: float=0.01; DH_ENTROPY_THRESHOLD: float=0.005
     DH_HMM_UPPER: float=0.01;  DH_HMM_LOWER: float=-0.01
@@ -219,6 +219,12 @@ class Config:
     PO_DRIFT_BPS: float = 0.5            # reprice if target drifts > this
 
     # ══ [TRAILING STOP] ══
+    # ══ [TRAILING STOP LOSS — Master Switch] ══
+    # True  → SL يتحرك مع السعر بعد الوصول إلى TRAIL_ACTIVATE_AT_R.
+    #         يُحدَّث أيضاً على البورصة عبر _sync_protective_orders.
+    # False → SL يبقى ثابتاً عند مستواه عند الدخول (لا Trailing).
+    #         مطبّق في الباكتيست واللايف بشكل متطابق.
+    # CLI: --no-trailing لتعطيله، --trailing لإجباره.
     TRAIL_ENABLED: bool = True
     TRAIL_ACTIVATE_MFE: float = 0.004    # activate after 0.4% MFE
     TRAIL_DISTANCE: float = 0.003        # trail 0.3% below peak
@@ -276,6 +282,18 @@ class Config:
     LIVE_ASSET_CACHE_MAX: int = 40           # max entries (safety)
     # ══ [FIXED PRICE ENTRY — no chasing] ══
     PO_FIXED_PRICE: bool = False              # use sig.price, hold it fixed
+    # ══ [TF-UNIFIED SCALING] ══
+    # كل المسافات بوحدة σ_price = E_therm[fi] × price.
+    # كل النوافذ بالساعات الحقيقية (تُحوَّل إلى شموع عند الإقلاع).
+    FRICTION_DIP_KAPPA: float = 4.0       # friction_drag = κ × σ_price
+    SL_REF_KAPPA: float = 2.0             # SL/σ = κ × uncertainty / (1 + fric×5)
+    SL_MIN_SIGMA: float = 1.0             # أدنى SL بوحدة σ
+    SL_MAX_SIGMA: float = 5.0             # أقصى SL بوحدة σ
+    N_HOURS: float = 24.0                 # نافذة الميزات (ساعات)
+    W_HOURS: float = 20.0                 # نافذة الإنتروبيا
+    L_HOURS: float = 10.0                 # نافذة الهندسة
+    ADV_HOURS: float = 24.0               # نافذة ADV
+    ADV_BARS: int = 24                    # يُضبط ديناميكياً في main()
     # ══ [UNIFIED ENTRY LOGIC] ══
     # منطق موحّد بمرحلتين:
     #   Stage 1: أمر Limit عند tunnel_entry_p، انتظر UNIFIED_WAIT_BARS_1H.
@@ -509,7 +527,8 @@ class Config:
     PARTIAL_TP_ENABLED: bool = True
     PARTIAL_TP_R: float = 1.0           # take profit at +1R
     PARTIAL_TP_PCT: float = 0.5         # close 50% at that level
-
+    TP_MULT: float = 1.5    # كان 2.0 → الآن 1.5 (R:R = 1.5)
+    APEX_ENABLED: bool = False    # عطّله مؤقتاً حتى نضبط عتباته
 CFG = Config()
 
 
@@ -1842,7 +1861,8 @@ def process_asset(symbol, df, km_ext=None, current_capital=None, sub_df=None):
     train_end = int(n*CFG.TRAIN_FRACTION)
 
     # ══ التعديل ③: K ديناميكي ════════════════════════════════
-    adv_raw = pd.Series(vols*closes).rolling(24, min_periods=1).mean().values
+    _adv_bars_eff = int(getattr(CFG, 'ADV_BARS', 24))
+    adv_raw = pd.Series(vols*closes).rolling(_adv_bars_eff, min_periods=1).mean().values
     cap_now = current_capital if current_capital else CFG.INITIAL_CAPITAL
     dyn_k   = compute_dynamic_k(cap_now, adv_raw[:train_end+feat_start],
                                  n_train_features=train_end)
@@ -1882,11 +1902,14 @@ def process_asset(symbol, df, km_ext=None, current_capital=None, sub_df=None):
     F  = E_therm - H
     dF = np.diff(F, prepend=F[0])
 
-    # ══ التعديل ①: درجة الحرارة المعلوماتية ══════════════════
+    # ══ التعديل ①: درجة الحرارة المعلوماتية (TF-UNIFIED) ══
+    # T_abs يجب أن يكون ثابتاً عبر الأُطر. بما أن E_therm ∝ √(TF_SECONDS)،
+    # نضرب في √TF_SCALE لجعله مستقلاً عن الإطار.
     T_info_raw = np.abs(dF / (np.abs(dH) + 1e-9))
-    T_abs = E_therm * 400.0   # تضاعف التأثير
+    _tf_scale_t = max(float(getattr(CFG, 'TF_SCALE', 1.0)), 1e-6)
+    T_abs = E_therm * 400.0 * np.sqrt(_tf_scale_t)
     T_info = T_info_raw + T_abs
-    T_info = np.clip(T_info, 0.5, 20.0) 
+    T_info = np.clip(T_info, 0.5, 20.0)
     # ══════════════════════════════════════════════════════════
 
     # ══ حساب المكونات المادية والهندسة الناشئة ═══════════════
@@ -1965,7 +1988,7 @@ def process_asset(symbol, df, km_ext=None, current_capital=None, sub_df=None):
           np.maximum(np.abs(highs[1:]-closes[:-1]), np.abs(lows[1:]-closes[:-1])))
     tr  = np.concatenate([[tr[0]],tr])
     atr = pd.Series(tr).rolling(CFG.ATR_PERIOD, min_periods=1).mean().values
-    adv = pd.Series(vols*closes).rolling(24, min_periods=1).mean().values
+    adv = pd.Series(vols*closes).rolling(_adv_bars_eff, min_periods=1).mean().values
 
     ed  = compute_energy_dynamics(closes, lr_full, X, feat_start)
     KE  = ed['KE']; dKE = ed['dKE']
@@ -2048,29 +2071,37 @@ def compute_geodesic_kelly(ad, fi, cfg):
 def compute_geodesic_stop(entry_price, ad, fi, cfg):
     """
     الطور الخامس: حساب الوقف بنصف قطر فيشر (Decoherence Edge).
-    المسافة تتسع طردياً مع حجم عدم اليقين (V) وتتقلص مع الاحتكاك ولزوجة دفتر الأوامر.
 
-    [SL-WIDEN] The raw physics estimate yields 1.0–1.5% on most assets,
-    which is below typical hourly noise. SL_WIDEN_MULT scales the entire
-    distance so trades get breathing room. The clip bounds scale too,
-    so widening isn't silently capped at 5%.
+    [TF-UNIFIED] sl_dist يُحسب بوحدة σ_price = E_therm[fi] × entry_price.
+    هذا يضمن أن sl_dist/σ ثابت عبر الأُطر.
+
+    على 1h مع uncertainty=1, friction≈0.18:
+        sl_sigma = 2.0 × 1 / (1 + 0.18×5) = 1.05σ
+    وهو مطابق لسلوك الإصدار السابق على 1h.
     """
-    # ad.V يمثل محدد مصفوفة التغاير (مقياس تشتت المعلومات)
+    # مقياس عدم اليقين
     uncertainty = np.clip(ad.V[fi] / (np.mean(ad.V) + 1e-9), 0.5, 3.0)
     friction = float(ad.friction[fi]) + 1e-6
 
-    # كلما قل الاحتكاك، زادت احتمالية الاختراق، فنضع وقفاً يتناسب عكسياً مع لزوجة السوق
-    sl_pct = (0.012 * uncertainty) / (1.0 + friction * 5.0)
+    # σ_price في هذه الشمعة
+    try:
+        sigma_frac = float(ad.E_therm[fi]) if 0 <= fi < len(ad.E_therm) else 0.01
+        if not np.isfinite(sigma_frac) or sigma_frac <= 1e-6:
+            sigma_frac = 0.01
+    except Exception:
+        sigma_frac = 0.01
+    sigma_price = sigma_frac * entry_price
 
-    # ══ [SL-WIDEN] Scale before clipping ══
-    _widen = float(getattr(cfg, 'SL_WIDEN_MULT', 1.0))
-    sl_pct *= _widen
-    sl_dist = entry_price * sl_pct
+    # SL بوحدة σ (عدد الانحرافات المعيارية)
+    _sl_kappa = float(getattr(cfg, 'SL_REF_KAPPA', 2.0))
+    sl_sigma = (_sl_kappa * uncertainty) / (1.0 + friction * 5.0)
 
-    # تقييد المسافة: الحد الأدنى ثابت (0.5%), الحد الأعلى يوسع مع _widen
-    _min_frac = 0.005
-    _max_frac = 0.05 * _widen
-    return float(np.clip(sl_dist, _min_frac * entry_price, _max_frac * entry_price))
+    # clip بوحدة σ
+    _min_s = float(getattr(cfg, 'SL_MIN_SIGMA', 1.0))
+    _max_s = float(getattr(cfg, 'SL_MAX_SIGMA', 5.0))
+    sl_sigma = float(np.clip(sl_sigma, _min_s, _max_s))
+
+    return float(sl_sigma * sigma_price)
 
 
 # ════════════════════════════════════════════════════════════════
@@ -2110,7 +2141,16 @@ def _recompute_entry_geometry_at_market(sig, ad, entry_ci, entry_fi, cfg):
         if not np.isfinite(fric_current) or fric_current < 0:
             fric_current = 0.0
 
-        friction_drag = fric_current * p_current * 0.1
+        # ══ [TF-UNIFIED] friction_drag بوحدة σ_price (مطابق لـ build_signals) ══
+        try:
+            _sigma_frac_g = float(ad.E_therm[entry_fi]) if 0 <= entry_fi < len(ad.E_therm) else 0.01
+            if not np.isfinite(_sigma_frac_g) or _sigma_frac_g <= 1e-6:
+                _sigma_frac_g = 0.01
+        except Exception:
+            _sigma_frac_g = 0.01
+        _sigma_price_g = _sigma_frac_g * p_current
+        _fd_kappa_g = float(getattr(cfg, 'FRICTION_DIP_KAPPA', 4.0))
+        friction_drag = _fd_kappa_g * _sigma_price_g
 
         if sig.action == "BUY":
             S_new = p_current - friction_drag
@@ -2598,7 +2638,19 @@ def build_signals(assets, mode="backtest"):
             #   NEW (ATR dip ≈ 0.34%):   fill 46%,  10% TP hit → edge −1
             # The friction dip is the primary signal; ATR is a floor
             # only for very-quiet markets to avoid a near-zero dip.
-            _friction_dip = fric_val * p * 0.1
+            # ══ [TF-UNIFIED] friction_drag بوحدة σ_price ══
+            # على 1h مع σ≈0.44% و κ=4.0: dip = 1.76% (مطابق للسلوك السابق)
+            # على 4h مع σ≈0.91% و κ=4.0: dip = 3.64%
+            # على 5m مع σ≈0.09% و κ=4.0: dip = 0.36%
+            try:
+                _sigma_frac_bs = float(ad.E_therm[fi]) if fi < len(ad.E_therm) else 0.01
+                if not np.isfinite(_sigma_frac_bs) or _sigma_frac_bs <= 1e-6:
+                    _sigma_frac_bs = 0.01
+            except Exception:
+                _sigma_frac_bs = 0.01
+            _sigma_price_bs = _sigma_frac_bs * p
+            _fd_kappa = float(getattr(CFG, 'FRICTION_DIP_KAPPA', 4.0))
+            _friction_dip = _fd_kappa * _sigma_price_bs
             _atr_dip = _compute_entry_dip(ad, fi, ci, action, p)
             # Floor: never use a dip smaller than 0.5×ATR
             _entry_dip = max(_friction_dip, 0.5 * _atr_dip)
@@ -2611,7 +2663,8 @@ def build_signals(assets, mode="backtest"):
             # حساب الوقف والهدف بناءً على سعر النفق (Limit Entry)
             sl_dist = compute_geodesic_stop(tunnel_entry_p, ad, fi, CFG)
             sl = tunnel_entry_p - sl_dist if action == "BUY" else tunnel_entry_p + sl_dist
-            tp1 = tunnel_entry_p + (sl_dist * 2.0) if action == "BUY" else tunnel_entry_p - (sl_dist * 2.0)
+            _tp_mult = float(getattr(CFG, 'TP_MULT', 1.5))
+            tp1 = tunnel_entry_p + (sl_dist * _tp_mult) if action == "BUY" else tunnel_entry_p - (sl_dist * _tp_mult)
             
 
             # حظر الصفقات الهشة التي تكون تكلفتها أكبر من ربحها
@@ -3127,9 +3180,11 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                 return px, "Hard TP", cidx
 
         # ── Physics-based exits (close-only, per main bar) ──
-        is_apex, apex_rsn = check_thermodynamic_apex(
-            sig.action, pos.entry_px, p, ad, fi
-        )
+        is_apex, apex_rsn = False, ""
+        if getattr(CFG, 'APEX_ENABLED', True):
+            is_apex, apex_rsn = check_thermodynamic_apex(
+                sig.action, pos.entry_px, p, ad, fi
+            )
         if is_apex:
             pos.trail_sl = trail_sl; pos.current_ci = cidx
             return p, apex_rsn, cidx
@@ -3497,26 +3552,39 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
                 if len(_idx) > 0:
                     opt_sub_idx = int(_idx[0])
 
-        # ══ [SL-CLIP-PARITY] Match Live's max_sl_frac = 0.015 ══
-        # Live clips SL at 1.5% of entry (and scales TP to preserve R/R)
-        # in _promote_pending_to_position. Backtest must apply the same
-        # clip so the two engines see identical levels.
-        sl_distance = abs(sig.price - sig.sl)
-        tp_distance = abs(sig.tp1 - sig.price)
-        # Cap scales with widening so the loosened SL isn't re-clipped.
+        # ══ [SL/TP SETUP — works for both fixed and no-fix] ══
+        # Design distances from the original signal (preserves R:R intent).
+        _design_sl_dist = abs(sig.price - sig.sl)
+        _design_tp_dist = abs(sig.tp1 - sig.price)
+        if _design_sl_dist <= 1e-12:
+            continue
+
+        # Clip SL to max_sl_frac × opt_px (entry-based cap)
         _max_sl_frac = 0.015 * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
-        if sl_distance > opt_px * _max_sl_frac:
-            _rr = tp_distance / max(sl_distance, 1e-12)
-            sl_distance = opt_px * _max_sl_frac
-            tp_distance = sl_distance * _rr
-            # Update sig.sl / sig.tp1 in place so _advance uses clipped
-            # levels for the SL/TP trigger checks and exit prices.
-            if sig.action == "BUY":
-                sig.sl  = sig.price - sl_distance
-                sig.tp1 = sig.price + tp_distance
-            else:
-                sig.sl  = sig.price + sl_distance
-                sig.tp1 = sig.price - tp_distance
+        if _design_sl_dist > opt_px * _max_sl_frac:
+            _rr = _design_tp_dist / max(_design_sl_dist, 1e-12)
+            _design_sl_dist = opt_px * _max_sl_frac
+            _design_tp_dist = _design_sl_dist * _rr
+
+        # ══ [CRITICAL FIX] Rebuild sig.sl / sig.tp1 from opt_px ══
+        # This is what the LIVE code already does in
+        # _promote_pending_to_position. Without this, when
+        # PO_FIXED_PRICE=False and entry ≠ sig.price, TP ends up
+        # BELOW entry (for BUY) → "Hard TP" exits are actually losses.
+        if sig.action == "BUY":
+            sig.sl  = opt_px - _design_sl_dist
+            sig.tp1 = opt_px + _design_tp_dist
+        else:
+            sig.sl  = opt_px + _design_sl_dist
+            sig.tp1 = opt_px - _design_tp_dist
+
+        sl_distance = _design_sl_dist
+        tp_distance = _design_tp_dist
+
+        if sig.action == "BUY":
+            sl_h = opt_px - sl_distance
+        else:
+            sl_h = opt_px + sl_distance
 
         if sig.action == "BUY":
             sl_h = opt_px - sl_distance
@@ -8166,9 +8234,11 @@ def run_live(cfg, exchange):
                 # ── Physics-based exits (require ad) ──
                 if ad is not None:
                     # Apex
-                    is_apex, apex_rsn = check_thermodynamic_apex(
-                        pos['action'], pos['entry'], price, ad, fi
-                    )
+                    is_apex, apex_rsn = False, ""
+                    if getattr(CFG, 'APEX_ENABLED', True):
+                        is_apex, apex_rsn = check_thermodynamic_apex(
+                            sig.action, pos.entry_px, p, ad, fi
+                        )
                     if is_apex:
                         ex = True; rsn = apex_rsn
 
@@ -8217,9 +8287,12 @@ def run_live(cfg, exchange):
                                 rsn = f"TimeKill({_r_now:.2f}R)"
 
                 # ── Trailing SL (dynamic σ-scaled) ──
-                if not ex:
+                # [GATE] يُشغّل Trailing فقط إذا كان TRAIL_ENABLED=True.
+                # إذا كان False، لا يتحرك SL أبداً بعد الدخول (يبقى كما
+                # وُضع عند الدخول). هذا مطابق لسلوك الباكتيست.
+                if not ex and getattr(CFG, 'TRAIL_ENABLED', True):
                     entry_px = float(pos['entry'])
-                    _sl_before = float(pos['sl'])   # ← [FIX] was missing
+                    _sl_before = float(pos['sl'])
                     _td = float(pos.get('trail_dist_frac', CFG.TRAIL_DISTANCE))
                     # ══ [FIX 1] Activation at R-multiple of initial SL ══
                     _sl_dist_init = float(pos.get('sl_dist_initial', 0) or 0)
@@ -9149,6 +9222,10 @@ def main():
                    help="Absolute notional cap in USD (default 100000)")
     p.add_argument("--no-dynamic-trail", action="store_true",
                    help="Use fixed TRAIL_DISTANCE instead of σ-scaled trailing")
+    p.add_argument("--no-trailing", action="store_true",
+                   help="Disable Trailing Stop Loss entirely (SL stays fixed)")
+    p.add_argument("--trailing", action="store_true",
+                   help="Force-enable Trailing Stop Loss (overrides config)")
     p.add_argument("--trail-kappa", type=float, default=None,
                    help="Trail multiplier on σ (default 1.5)")
     p.add_argument("--reentry-cooldown", type=int, default=None,
@@ -9270,6 +9347,36 @@ def main():
              f"TF_SECONDS={CFG.TF_SECONDS} "
              f"TF_HOURS={CFG.TF_HOURS:.3f}")
 
+    # ══ [TF-UNIFIED WINDOWS] اشتقاق N/W/L/ADV_BARS من الساعات ══
+    # النوافذ المُعايَرة على 1h: N=24, W=20, L=10 شمعة = 24h, 20h, 10h.
+    # على الأُطر الأصغر، نزيد عدد الشموع للحفاظ على نفس المدة الحقيقية.
+    # على الأُطر الأكبر، نبقي العدد كما هو (لأن 24 شمعة على 4h = 96 ساعة
+    # وهو كافٍ إحصائياً).
+    _tf_h = max(float(CFG.TF_HOURS), 1e-6)
+    _tf_scale_u = 1.0 / _tf_h   # 1h → 1.0, 4h → 0.25, 5m → 12.0
+
+    # N/W/L: زد العدد فقط إذا كانت النافذة الحالية أقصر من المطلوب.
+    _n_min = int(np.ceil(float(getattr(CFG, 'N_HOURS', 24.0)) / _tf_h))
+    _w_min = int(np.ceil(float(getattr(CFG, 'W_HOURS', 20.0)) / _tf_h))
+    _l_min = int(np.ceil(float(getattr(CFG, 'L_HOURS', 10.0)) / _tf_h))
+
+    if CFG.N < _n_min:
+        log.info(f"[TF-Unified] N: {CFG.N} → {_n_min} "
+                 f"(لتغطية {CFG.N_HOURS:.1f}h على {CFG.timeframe})")
+        CFG.N = _n_min
+    if CFG.W < _w_min:
+        log.info(f"[TF-Unified] W: {CFG.W} → {_w_min}")
+        CFG.W = _w_min
+    if CFG.L < _l_min:
+        log.info(f"[TF-Unified] L: {CFG.L} → {_l_min}")
+        CFG.L = _l_min
+
+    # ADV_BARS: اضبطه على 24 ساعة بالضبط
+    _adv_h = float(getattr(CFG, 'ADV_HOURS', 24.0))
+    CFG.ADV_BARS = max(1, int(round(_adv_h / _tf_h)))
+    log.info(f"[TF-Unified] N={CFG.N} W={CFG.W} L={CFG.L} "
+             f"ADV_BARS={CFG.ADV_BARS} (σ≈{CFG.TF_SCALE:.2f}× 1h)")
+
     # ══ [SMART DATA AUTO-CONFIG] ══
     # Applies to BOTH backtest and live/testnet. Backtest prioritizes
     # statistical power (max history); live/testnet prioritize lightness.
@@ -9337,6 +9444,12 @@ def main():
         CFG.MAX_ABS_NOTIONAL = float(args.max_notional)
     if args.no_dynamic_trail:
         CFG.TRAIL_DYNAMIC = False
+    if args.no_trailing:
+        CFG.TRAIL_ENABLED = False
+        log.info("[Trail] Trailing Stop Loss DISABLED — SL is fixed")
+    elif args.trailing:
+        CFG.TRAIL_ENABLED = True
+        log.info("[Trail] Trailing Stop Loss FORCED ON")
     if args.trail_kappa is not None:
         CFG.TRAIL_KAPPA = float(args.trail_kappa)
     if args.reentry_cooldown is not None:
