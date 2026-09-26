@@ -8886,29 +8886,17 @@ def run_live(cfg, exchange):
                             log.warning(f"[Entry] {sym} setup failed — skip")
                             continue
 
-                        # ══ [SL-CLIP-LIVE] قصّ SL ليطابق الباكتيست ══
-                        # الباكتيست يقصّ SL إلى max_sl_frac قبل LiqGate.
-                        # اللايف يجب أن يفعل نفس الشيء، وإلا فإن كل الدخولات
-                        # ستُرفض لأن SL الأصلي أوسع من الهامش المتاح.
-                        _max_sl_frac_live = 0.015 * float(
-                            getattr(CFG, 'SL_WIDEN_MULT', 1.0)
-                        )
-                        _sl_dist_now = abs(float(sig.price) - float(sig.sl))
-                        if _sl_dist_now > float(sig.price) * _max_sl_frac_live:
-                            _tp_dist_now = abs(float(sig.tp1) - float(sig.price))
-                            _rr_now = (_tp_dist_now / max(_sl_dist_now, 1e-12))
-                            _new_sl_dist = float(sig.price) * _max_sl_frac_live
-                            _new_tp_dist = _new_sl_dist * _rr_now
-                            if sig.action == "BUY":
-                                sig.sl = float(sig.price) - _new_sl_dist
-                                sig.tp1 = float(sig.price) + _new_tp_dist
-                            else:
-                                sig.sl = float(sig.price) + _new_sl_dist
-                                sig.tp1 = float(sig.price) - _new_tp_dist
-                            log.info(
-                                f"[SL-Clip-Live] {sym} SL clipped "
-                                f"{_sl_dist_now:.6f} → {_new_sl_dist:.6f} "
-                                f"({_max_sl_frac_live*100:.1f}% cap)"
+                        # ══════════════════════════════════════════════════
+                        # STEP 3 — LIQUIDATION GATE (uses confirmed leverage)
+                        # ══════════════════════════════════════════════════
+                        if getattr(CFG, 'LIQ_ENABLED', True) and _mmr_sig is not None:
+                            _confirmed_lev = int(
+                                _SYMBOL_META.get(sym, {}).get('leverage',
+                                                                dynamic_leverage)
+                            )
+                            _liq_px = compute_liquidation_price(
+                                float(sig.price), sig.action,
+                                _confirmed_lev, _mmr_sig,
                             )
                             _liq_gap = abs(float(sig.price) - _liq_px)
                             _sl_gap = abs(float(sig.price) - float(sig.sl))
