@@ -531,6 +531,213 @@ class Config:
     APEX_ENABLED: bool = False    # عطّله مؤقتاً حتى نضبط عتباته
 CFG = Config()
 
+# ════════════════════════════════════════════════════════════════
+# § TRADE LOGGER — Universal (backtest / testnet / live)
+# ════════════════════════════════════════════════════════════════
+# يسجّل كل صفقة في ملف JSONL موحّد للتحليل الخارجي.
+# يعمل في الأوضاع الثلاثة بنفس الصيغة → قابل للمقارنة.
+
+_TRADE_LOG_PATH = None
+
+
+def _trade_log_init(mode: str, explicit_path: Optional[str] = None):
+    """Initialize trade log file for the current run."""
+    global _TRADE_LOG_PATH
+    if explicit_path:
+        _TRADE_LOG_PATH = explicit_path
+    else:
+        _TRADE_LOG_PATH = f"trades_log_{mode}.jsonl"
+    try:
+        with open(_TRADE_LOG_PATH, 'w', encoding='utf-8') as f:
+            f.write(json.dumps({
+                '_meta': True,
+                'mode': mode,
+                'timeframe': CFG.timeframe,
+                'started_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'N': CFG.N, 'W': CFG.W, 'L': CFG.L,
+                'K_MAX': CFG.K_MAX, 'K_MIN': CFG.K_MIN,
+                'INITIAL_CAPITAL': CFG.INITIAL_CAPITAL,
+                'LEVERAGE_BASE': CFG.LEVERAGE_BASE,
+                'PO_FIXED_PRICE': CFG.PO_FIXED_PRICE,
+            }, default=str) + "\n")
+        log.info(f"[TradeLog] Logging trades to {_TRADE_LOG_PATH}")
+    except Exception as e:
+        log.warning(f"[TradeLog] init failed: {e}")
+        _TRADE_LOG_PATH = None
+
+
+def _trade_log_write(record: Dict) -> None:
+    """Append one trade record (non-blocking, fail-safe)."""
+    if _TRADE_LOG_PATH is None:
+        return
+    try:
+        with open(_TRADE_LOG_PATH, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(record, default=str) + "\n")
+    except Exception as e:
+        log.debug(f"[TradeLog] write failed: {e}")
+
+
+def _extract_entry_features_for_log(sig, ad=None) -> Dict:
+    """Extract features at entry time (no look-ahead)."""
+    out = {}
+    try:
+        out['score'] = float(getattr(sig, 'score', 0.0))
+        out['action'] = str(getattr(sig, 'action', '?'))
+        out['signal_price'] = float(getattr(sig, 'price', 0.0))
+        out['signal_sl'] = float(getattr(sig, 'sl', 0.0))
+        out['signal_tp1'] = float(getattr(sig, 'tp1', 0.0))
+        out['atr'] = float(getattr(sig, 'atr', 0.0))
+        out['tri_val'] = float(getattr(sig, 'tri_val', 0.0))
+        out['dynamic_risk'] = float(getattr(sig, 'dynamic_risk', 0.0))
+        out['T_info_val'] = float(getattr(sig, 'T_info_val', 0.0))
+        out['dyn_sl_factor'] = float(getattr(sig, 'dyn_sl_factor', 0.0))
+        out['adv_usd'] = float(getattr(sig, 'adv_usd', 0.0))
+        out['feat_idx'] = int(getattr(sig, 'feat_idx', -1))
+        out['close_idx'] = int(getattr(sig, 'close_idx', -1))
+
+        # Geometry
+        p = out['signal_price']
+        sl = out['signal_sl']
+        tp = out['signal_tp1']
+        if p > 0:
+            out['sl_dist_frac'] = abs(p - sl) / p
+            out['rr_design'] = abs(tp - p) / max(abs(p - sl), 1e-12)
+
+        # Asset features at feat_idx
+        if ad is not None:
+            fi = out['feat_idx']
+            if 0 <= fi < len(ad.E_therm):
+                out['E_therm'] = float(ad.E_therm[fi])
+                out['friction'] = float(ad.friction[fi])
+                out['gauge_force'] = float(ad.gauge_force[fi])
+                out['delta_gap'] = float(ad.delta_gap[fi])
+                out['geodesic_accel'] = float(ad.geodesic_accel[fi])
+                out['H'] = float(ad.H[fi])
+                out['dH'] = float(ad.dH[fi])
+                out['dF'] = float(ad.dF[fi])
+                out['T_info'] = float(ad.T_info[fi])
+                out['V'] = float(ad.V[fi])
+                out['C'] = float(ad.C[fi])
+                _dyn_k = max(int(getattr(ad, 'dynamic_k', 2)), 2)
+                Hmax = np.log2(_dyn_k) + 1e-12
+                out['H_over_Hmax'] = out['H'] / Hmax
+
+                # Sigma-normalized geometry
+                sigma_frac = out['E_therm'] if out['E_therm'] > 1e-6 else 0.01
+                sigma_price = sigma_frac * p
+                fd_kappa = float(getattr(CFG, 'FRICTION_DIP_KAPPA', 4.0))
+                fd = fd_kappa * sigma_price
+                sl_dist = abs(p - sl)
+                out['friction_drag_over_sl'] = fd / max(sl_dist, 1e-12)
+                out['sl_sigma'] = sl_dist / max(sigma_price, 1e-12)
+
+                # EMA slope against
+                ci = out['close_idx']
+                if 0 <= ci < len(ad.ema200) and ci >= 50:
+                    ema_now = float(ad.ema200[ci])
+                    ema_prev = float(ad.ema200[ci - 50])
+                    slope = (ema_now - ema_prev) / 50.0
+                    out['ema_slope'] = float(slope)
+                    out['ema_slope_against'] = 1.0 if (
+                        (out['action'] == 'BUY' and slope < 0) or
+                        (out['action'] == 'SELL' and slope > 0)
+                    ) else 0.0
+                    out['dist_from_ema_norm'] = float(
+                        (p - ema_now) / max(sigma_price, 1e-12)
+                    )
+    except Exception as e:
+        out['_extract_err'] = str(e)[:80]
+    return out
+
+
+def _trade_log_from_backtest(pos, ad, exit_px, exit_rsn, exit_ci,
+                              capital_before, capital_after):
+    """Called from simulate_portfolio._close()."""
+    try:
+        sig = pos.signal
+        net = float(capital_after - capital_before)
+        lr = float(np.log(capital_after / capital_before)) \
+            if capital_before > 0 else 0.0
+        rec = {
+            'mode': 'backtest',
+            'symbol': str(sig.symbol),
+            'entry_time': str(sig.timestamp),
+            'entry_price': float(pos.entry_px),
+            'exit_price': float(exit_px),
+            'exit_reason': str(exit_rsn),
+            'pos_size': float(pos.pos_size),
+            'net_pnl': net,
+            'log_return': lr,
+            'capital_before': float(capital_before),
+            'capital_after': float(capital_after),
+            'is_win': bool(net > 0),
+            'mfe_frac': float(getattr(pos, 'mfe_frac', 0.0)),
+            'entry_ci': int(pos.entry_ci),
+            'exit_ci': int(exit_ci),
+            'hold_bars': int(exit_ci - pos.entry_ci),
+            'sl_dist_initial': float(getattr(pos, 'sl_dist_initial', 0.0)),
+        }
+        rec.update(_extract_entry_features_for_log(sig, ad))
+        _trade_log_write(rec)
+    except Exception as e:
+        log.debug(f"[TradeLog] backtest log failed: {e}")
+
+
+def _trade_log_from_live(pos: Dict, exit_px: float, exit_rsn: str,
+                          ad=None, net_pnl=None):
+    """Called from run_live after successful exit."""
+    try:
+        rec = {
+            'mode': str(CFG.mode),
+            'symbol': str(pos.get('_sym') or pos.get('symbol') or '?'),
+            'entry_time': str(pos.get('entry_ts', 0)),
+            'entry_price': float(pos.get('entry', 0.0)),
+            'exit_price': float(exit_px),
+            'exit_reason': str(exit_rsn),
+            'pos_size': float(pos.get('qty', 0.0)),
+            'net_pnl': net_pnl,
+            'leverage': int(pos.get('leverage', 0)),
+            'dyn_risk': float(pos.get('dyn_risk', 0.0)),
+            'T_info_val': float(pos.get('T_info', 0.0)),
+            'sl_dist_initial': float(pos.get('sl_dist_initial', 0.0)),
+            'fill_ratio': float(pos.get('fill_ratio', 0.0)),
+            'action': str(pos.get('action', '?')),
+            'stage': str(pos.get('stage', 'S1')),
+            '_entry_fi': int(pos.get('_entry_fi', -1)),
+            '_entry_ci': int(pos.get('_entry_ci', -1)),
+        }
+        # Minimal feature extraction from ad if available
+        if ad is not None:
+            try:
+                _fi = rec['_entry_fi']
+                _ci = rec['_entry_ci']
+                if 0 <= _fi < len(ad.E_therm):
+                    rec['E_therm'] = float(ad.E_therm[_fi])
+                    rec['friction'] = float(ad.friction[_fi])
+                    rec['gauge_force'] = float(ad.gauge_force[_fi])
+                    rec['delta_gap'] = float(ad.delta_gap[_fi])
+                    rec['geodesic_accel'] = float(ad.geodesic_accel[_fi])
+                    rec['H'] = float(ad.H[_fi])
+                    rec['T_info'] = float(ad.T_info[_fi])
+                    rec['V'] = float(ad.V[_fi])
+                    _dyn_k = max(int(getattr(ad, 'dynamic_k', 2)), 2)
+                    Hmax = np.log2(_dyn_k) + 1e-12
+                    rec['H_over_Hmax'] = rec['H'] / Hmax
+                if 0 <= _ci < len(ad.ema200) and _ci >= 50:
+                    ema_now = float(ad.ema200[_ci])
+                    ema_prev = float(ad.ema200[_ci - 50])
+                    slope = (ema_now - ema_prev) / 50.0
+                    rec['ema_slope'] = float(slope)
+                    rec['ema_slope_against'] = 1.0 if (
+                        (rec['action'] == 'BUY' and slope < 0) or
+                        (rec['action'] == 'SELL' and slope > 0)
+                    ) else 0.0
+            except Exception:
+                pass
+        _trade_log_write(rec)
+    except Exception as e:
+        log.debug(f"[TradeLog] live log failed: {e}")
+
 
 def _resolve_data_params(cfg, mode: str, tf_hours: float,
                           user_history_days: Optional[int] = None
@@ -3430,6 +3637,16 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
             T_info_at_entry=sig.T_info_val,
             mfe_frac=pos.mfe_frac
         ))
+
+        # ══ [TradeLog] تسجيل الصفقة ══
+        try:
+            _trade_log_from_backtest(
+                pos, ad, exit_eff, exit_rsn, exit_ci,
+                pos.entry_cap, capital
+            )
+        except Exception as _tle:
+            log.debug(f"[TradeLog] backtest hook failed: {_tle}")
+
     # ══ [FIX 4] Partial TP callback ══
     def _partial_tp(pos, px, ci):
         """Record a partial take-profit and reduce the position size."""
@@ -8638,6 +8855,16 @@ def run_live(cfg, exchange):
                     except Exception as _e:
                         log.debug(f"[Prot] {sym} post-exit cleanup: {_e}")
 
+                    # ══ [TradeLog] سجّل الصفقة قبل الحذف ══
+                    try:
+                        _trade_log_from_live(
+                            pos, exec_price, exit_reason,
+                            ad=assets.get(sym),
+                            net_pnl=None,
+                        )
+                    except Exception as _tle:
+                        log.debug(f"[TradeLog] live hook failed: {_tle}")
+
                     del open_pos_live[sym]
                     last_exit_time[sym] = time.time()
                     log.info(f"⬛ [Exit] {sym} @ {exec_price:.6f} [{exit_reason}]")
@@ -9291,6 +9518,9 @@ def main():
     p.add_argument("--kill-secret", type=str,
                    default=os.environ.get("KILL_SWITCH_SECRET", ""),
                    help="HMAC secret for kill switch (or KILL_SWITCH_SECRET env)")
+    p.add_argument("--trade-log", type=str, default=None,
+                   help="Path to trade log file (JSONL). "
+                        "Default: trades_log_{mode}.jsonl")
     p.add_argument("--no-kill-switch", action="store_true",
                    help="Disable kill switch")
     args = p.parse_args()
@@ -9532,6 +9762,9 @@ def main():
     print(f"║  ④ Cosmological Λ:  {CFG.COSMOLOGICAL_CONSTANT}  (De Sitter drift)                  ║")
     print(f"║  ⑤ T_sync EMA-accel: فلتر التشابك عبر المقاييس                  ║")
     print("╚"+"═"*70+"╝\n")
+
+    # ══ [TradeLog] تهيئة تسجيل الصفقات ══
+    _trade_log_init(CFG.mode, args.trade_log)
 
     # 1. وضع الباك-تيست
     if CFG.mode == "backtest":
