@@ -529,6 +529,47 @@ class Config:
     PARTIAL_TP_PCT: float = 0.5         # close 50% at that level
     TP_MULT: float = 5    # كان 2.0 → الآن 1.5 (R:R = 1.5)
     APEX_ENABLED: bool = False    # عطّله مؤقتاً حتى نضبط عتباته
+
+    # ══ [SINGULARITY TIMING LAYER 1 — EMERGING] ══
+    # طبقة توقيت تكشف الرنين الكسري قبل الانفجار بدقائق وتُعجّل
+    # الأمر المعلّق دون تغيير أي منطق آخر. معطّلة افتراضياً.
+    SING_TIMING_ENABLED: bool = False       # المفتاح الرئيسي
+    # [DEPRECATED — تم استبدالها بالمراتب المئوية]
+    # SING_RESONANCE_THETA, SING_JERK_MIN, SING_JERK_LAMBDA,
+    # SING_JERK_PERSIST, SING_RHO_EMERGING, SING_RHO_ACTIVE
+    # احتُفظ بها للتوافق مع الإصدارات السابقة، لكنها غير مستخدمة.
+    SING_PENDING_WAIT_EMERGING: int = 2     # شموع الانتظار في EMERGING
+    SING_PENDING_WAIT_ACTIVE: int = 1       # شموع الانتظار في ACTIVE
+    # ══ [Percentile Thresholds] ══
+    SING_LOOKBACK_BARS: int = 200
+    SING_PCT_EMERGING: float = 0.70
+    SING_PCT_ACTIVE: float = 0.90
+    SING_PCT_AGAINST_DECAY: float = 0.50
+    # ══ [SINGULARITY TIMING LAYER 2 — ACTIVE MARKETABLE] ══
+    # عند حالة ACTIVE، يستبدل الأمر GTX بأمر Marketable Limit
+    # يقطع السبريد جزئياً ليمتلئ فوراً. معطّلة افتراضياً.
+    SING_ACTIVE_MARKETABLE: bool = True
+    SING_ACTIVE_PENETRATION_BPS: float = 3.0   # اختراق السبريد
+    SING_ACTIVE_MAX_SLIP_BPS: float = 15.0     # أقصى انزلاق عن سعر النفق
+    SING_ACTIVE_MIN_FILL_RATIO: float = 0.5    # أدنى نسبة امتلاء مقبولة
+    # ══ [SINGULARITY TIMING LAYER 3 — Funding Guard + Risk Boost] ══
+    # 3A: Funding Guard — تجنّب الدخول قبل موعد التمويل بـ N دقيقة.
+    # 3B: Resonance Risk Boost — رفع المخاطرة عند ACTIVE.
+    # كلاهما معطّل افتراضياً.
+    SING_FUNDING_GUARD_ENABLED: bool = False    # 3A
+    SING_FUNDING_GUARD_MINUTES: int = 30         # نافذة التجنّب
+    SING_FUNDING_HOURS_UTC: Tuple = (0, 8, 16)   # مواعيد Binance الثابتة
+    SING_RISK_BOOST_ENABLED: bool = False        # 3B
+    SING_RISK_BOOST_ACTIVE: float = 1.20         # مضاعف المخاطرة في ACTIVE
+    SING_RISK_BOOST_EMERGING: float = 1.00       # مضاعف في EMERGING (لا تغيير)
+    # ══ [SING-TIMING Layer 1 — Percentile Thresholds] ══
+    # بدلاً من عتبات مطلقة (التي لا تتكيف مع تقلب كل أصل)، نستخدم
+    # مراتب مئوية محسوبة من نافذة زمنية متدحرجة على geodesic_accel.
+    SING_LOOKBACK_BARS: int = 200         # نافذة حساب المراتب
+    SING_PCT_EMERGING: float = 0.70       # أعلى 30% → EMERGING
+    SING_PCT_ACTIVE: float = 0.90         # أعلى 10% → ACTIVE
+    SING_PCT_AGAINST_DECAY: float = 0.50  # إذا كان التسارع في الاتجاه المعاكس
+
     # ══ [TRADE FILTER — Pre-entry rejection] ══
     # فلتر متعدد الإشارات يعمل داخل build_signals قبل إضافة الإشارة.
     # يقبل الإشارة إلا إذا اجتمع عليها عدد كافٍ من "أصوات الرفض".
@@ -2300,6 +2341,171 @@ def compute_geodesic_kelly(ad, fi, cfg):
     return float(np.clip(f_star, cfg.MIN_RISK, cfg.MAX_RISK))
 
 
+# ════════════════════════════════════════════════════════════════
+# § SINGULARITY TIMING — Resonance State Detector (Layer 1)
+# ════════════════════════════════════════════════════════════════
+#
+# يكشف حالة الرنين الكسري عند الفهرس fi واتجاه محدد (BUY/SELL).
+# الحالات: DORMANT / EMERGING / ACTIVE / DECAYING / INVALID
+#
+# المنطق الرياضي:
+#   a(t) = geodesic_accel[fi]           — التسارع الآني
+#   j(t) = a(t) - a(t-1)                — الجيرك (تسارع التسارع)
+#   ρ    = (a·sign)/θ  +  λ·(j·sign)/θ_j  — مؤشر الرنين
+# حيث sign = +1 للـ BUY و -1 للـ SELL.
+#
+# التصنيف:
+#   ρ < 0                → DORMANT
+#   0 ≤ ρ < RHO_EMERGING → DORMANT (لكن Jerk لا يزال ضعيفاً)
+#   RHO_EMERGING ≤ ρ < RHO_ACTIVE → EMERGING (إن استمر الجيرك)
+#   ρ ≥ RHO_ACTIVE       → ACTIVE  (إن استمر الجيرك)
+#   a·sign < -θ أو a·sign ≥ 0.9θ → DECAYING (انفجر أو عكس)
+# ════════════════════════════════════════════════════════════════
+
+def _resonance_state_for_direction(ad, fi: int, action: str,
+                                     cfg=None) -> Tuple[str, float]:
+    """
+    يُعيد (state, rho) للاتجاه المطلوب باستخدام مراتب مئوية.
+
+    المنهجية الجديدة:
+      - يُحسب توزيع |geodesic_accel| على نافذة متدحرجة (SING_LOOKBACK_BARS).
+      - يُصنَّف التسارع الحالي حسب مرتبته ضمن هذا التوزيع.
+      - هذا يتكيف تلقائياً مع تقلب كل أصل دون عتبات مطلقة.
+
+    الحالات:
+      - DECAYING : التسارع قوي وضد الاتجاه (a1_s < -median)
+      - ACTIVE   : |a| في أعلى 10% وjerk مؤيد
+      - EMERGING : |a| في أعلى 30% وjerk مؤيد
+      - DORMANT  : باقي الحالات
+      - INVALID  : بيانات غير كافية
+    """
+    if cfg is None:
+        cfg = CFG
+
+    if not getattr(cfg, 'SING_TIMING_ENABLED', False):
+        return "DORMANT", 0.0
+
+    try:
+        if fi < 30:
+            return "INVALID", 0.0
+        if fi >= len(ad.geodesic_accel):
+            return "INVALID", 0.0
+
+        # ── نافذة التاريخ ──
+        _lookback = int(getattr(cfg, 'SING_LOOKBACK_BARS', 200))
+        _start = max(0, fi - _lookback)
+        _window = ad.geodesic_accel[_start:fi + 1]
+
+        if len(_window) < 30:
+            return "DORMANT", 0.0
+
+        _abs_window = np.abs(_window).astype(np.float64)
+        _a_med = float(np.median(_abs_window))
+        _a_p70 = float(np.percentile(_abs_window, 70))
+        _a_p90 = float(np.percentile(_abs_window, 90))
+
+        if _a_med < 1e-12:
+            return "DORMANT", 0.0
+
+        # ── القيم الحالية ──
+        a1 = float(ad.geodesic_accel[fi])
+        j1 = a1 - float(ad.geodesic_accel[fi - 1])
+        sign = 1.0 if action == "BUY" else -1.0
+        a1_s = a1 * sign
+        j1_s = j1 * sign
+        a1_abs = abs(a1)
+
+        # ── DECAYING: التسارع قوي وضد الاتجاه ──
+        # إذا كان التسارع > الوسيط وضد الاتجاه → انفجار معاكس
+        if a1_s < -_a_med:
+            return "DECAYING", float(-a1_abs / max(_a_p90, 1e-12))
+
+        # ── رتبة |a| الحالية في النافذة ──
+        pct_rank = float(np.mean(_abs_window <= a1_abs))
+
+        # ── التحقق من اتجاه الجيرك ──
+        # Jerk مؤيد = j1_s > 0 (التسارع يزيد في اتجاهنا)
+        j1_ok = (j1_s > 0.0)
+
+        # ── ACTIVE: أعلى 10% + jerk مؤيد ──
+        if pct_rank >= float(getattr(cfg, 'SING_PCT_ACTIVE', 0.90)) and j1_ok:
+            return "ACTIVE", pct_rank
+
+        # ── EMERGING: أعلى 30% + jerk مؤيد ──
+        if pct_rank >= float(getattr(cfg, 'SING_PCT_EMERGING', 0.70)) and j1_ok:
+            return "EMERGING", pct_rank
+
+        # ── DECAYING: التسارع في اتجاهنا لكنه ضعيف ومتراجع ──
+        # (اختياري: إذا كان jerk سلبياً بقوة، قد يعني انتهاء الانفجار)
+        if (a1_s > 0.0 and j1_s < -0.3 * _a_med):
+            return "DECAYING", pct_rank
+
+        return "DORMANT", pct_rank
+
+    except Exception as e:
+        log.debug(f"[Sing-Timing] state error: {e}")
+        return "INVALID", 0.0
+
+# ════════════════════════════════════════════════════════════════
+# § SINGULARITY LAYER 3 — Funding Guard Helper
+# ════════════════════════════════════════════════════════════════
+#
+# يحسب عدد الدقائق حتى موعد التمويل القادم على Binance USDT-M.
+# مواعيد التمويل الثابتة: 00:00، 08:00، 16:00 UTC.
+#
+# المنطق:
+#   current_hour → (hour // 8 + 1) * 8
+#   إذا تجاوز 24 → 0 (منتصف الليل غداً)
+#   الدقائق المتبقية = delta_hours × 60 − current_minute
+#
+# Returns
+# -------
+# int
+#   عدد الدقائق حتى التمويل القادم (قد يكون سالباً إذا مرّ الوقت).
+# ════════════════════════════════════════════════════════════════
+
+def _minutes_to_next_funding_utc(cfg=None) -> int:
+    """
+    يحسب الدقائق المتبقية حتى موعد التمويل القادم على Binance.
+
+    إذا كان NOW قبل 00:00، 08:00، أو 16:00 UTC:
+        يرجع عدد الدقائق الإيجابية.
+    إذا كان NOW عند موعد التمويل بالضبط:
+        يرجع 0.
+    """
+    if cfg is None:
+        cfg = CFG
+    try:
+        funding_hours = tuple(getattr(
+            cfg, 'SING_FUNDING_HOURS_UTC', (0, 8, 16)
+        ))
+        if not funding_hours:
+            funding_hours = (0, 8, 16)
+
+        now_utc = datetime.now(timezone.utc)
+        h = int(now_utc.hour)
+        m = int(now_utc.minute)
+
+        # ابحث عن أول ساعة تمويل ≥ h
+        next_h = None
+        for fh in sorted(funding_hours):
+            if fh > h:
+                next_h = fh
+                break
+            if fh == h and m == 0:
+                next_h = fh
+                break
+
+        if next_h is None:
+            # لا يوجد موعد اليوم → التالي غداً
+            next_h = min(funding_hours) + 24
+
+        delta_minutes = (next_h - h) * 60 - m
+        return int(delta_minutes)
+    except Exception as e:
+        log.debug(f"[Funding Guard] minutes calc failed: {e}")
+        return 9999  # fail-open (لا حجب)
+
 def compute_geodesic_stop(entry_price, ad, fi, cfg):
     """
     الطور الخامس: حساب الوقف بنصف قطر فيشر (Decoherence Edge).
@@ -3221,9 +3427,92 @@ def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps,
         n_bars = len(ad.closes)
 
         for j, (sig_i, sig) in enumerate(sig_list):
+            # ══ [SING-TIMING Layer 1] حالة الرنين لهذه الإشارة ══
+            _sing_state = "DORMANT"
+            _sing_rho = 0.0
+            if getattr(CFG, 'SING_TIMING_ENABLED', False):
+                try:
+                    _sing_state, _sing_rho = _resonance_state_for_direction(
+                        ad, int(sig.feat_idx), sig.action, CFG
+                    )
+                except Exception:
+                    _sing_state, _sing_rho = "DORMANT", 0.0
+
+            # DECAYING → رفض الإشارة كلياً (مطابق لـ Live)
+            if _sing_state == "DECAYING":
+                result[sig_i] = None
+                continue
+
+            # ══ [SING-TIMING Layer 3A] Funding Guard ══
+            if getattr(CFG, 'SING_FUNDING_GUARD_ENABLED', False):
+                try:
+                    _ts = sig.timestamp
+                    if _ts.tz is None:
+                        _ts = _ts.tz_localize('UTC')
+                    else:
+                        _ts = _ts.tz_convert('UTC')
+                    _minutes_now = int(_ts.hour) * 60 + int(_ts.minute)
+                    _funding_hours = tuple(getattr(
+                        CFG, 'SING_FUNDING_HOURS_UTC', (0, 8, 16)
+                    ))
+                    _window = int(getattr(
+                        CFG, 'SING_FUNDING_GUARD_MINUTES', 30
+                    ))
+                    _skip_funding = False
+                    for _fh in _funding_hours:
+                        _fm = int(_fh) * 60
+                        _delta = _fm - _minutes_now
+                        if _delta < 0:
+                            _delta += 24 * 60
+                        if 0 <= _delta <= _window:
+                            _skip_funding = True
+                            break
+                    if _skip_funding:
+                        result[sig_i] = None
+                        continue
+                except Exception:
+                    pass
+
+            # ══ [SING-TIMING Layer 2] ACTIVE → marketable فوري ══
+            if (_sing_state == "ACTIVE"
+                    and getattr(CFG, 'SING_ACTIVE_MARKETABLE', False)):
+                try:
+                    _geom = _recompute_entry_geometry_at_market(
+                        sig, ad, int(sig.close_idx), int(sig.feat_idx), CFG
+                    )
+                    if _geom is not None:
+                        _pen_bps = float(getattr(
+                            CFG, 'SING_ACTIVE_PENETRATION_BPS', 3.0
+                        ))
+                        _pen_frac = _pen_bps * 1e-4
+                        _entry_px = float(_geom['entry_px'])
+                        if sig.action == "BUY":
+                            _mk_px = _entry_px * (1.0 + _pen_frac)
+                        else:
+                            _mk_px = _entry_px * (1.0 - _pen_frac)
+                        result[sig_i] = (
+                            'S2', int(sig.close_idx), float(_mk_px),
+                            float(_geom['sl']), float(_geom['tp1']),
+                            float(_geom['sl_dist_new'])
+                        )
+                        continue
+                except Exception:
+                    pass
+
+            # ══ [SING-TIMING Layer 1] تعديل المهلة حسب الحالة ══
+            _eff_stage1_bars = _stage1_bars
+            if _sing_state == "EMERGING":
+                _eff_stage1_bars = effective_bars(int(getattr(
+                    CFG, 'SING_PENDING_WAIT_EMERGING', 2
+                )))
+            elif _sing_state == "ACTIVE":
+                _eff_stage1_bars = effective_bars(int(getattr(
+                    CFG, 'SING_PENDING_WAIT_ACTIVE', 1
+                )))
+
             # Deadline = min(signal + max_wait, next signal)
             first_bar = sig.close_idx + 1
-            stage1_last = first_bar + max(1, _stage1_bars)
+            stage1_last = first_bar + max(1, _eff_stage1_bars)
             stage2_last = first_bar + max(1, _max_age_bars)
             if j + 1 < len(sig_list):
                 next_sig = sig_list[j + 1][1]
@@ -3983,6 +4272,27 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         if risk_frac <= 0.0:
             log.debug(f"[Budget] {sym} skipped: no heat budget available")
             continue
+
+        # ══ [SING-TIMING Layer 3B] Resonance Risk Boost ══
+        # مطابق تماماً لمنطق Live: يضاعف المخاطرة في ACTIVE.
+        if (getattr(CFG, 'SING_RISK_BOOST_ENABLED', False)
+                and getattr(CFG, 'SING_TIMING_ENABLED', False)):
+            try:
+                _rb_state, _rb_rho = _resonance_state_for_direction(
+                    ad, int(sig.feat_idx), sig.action, CFG
+                )
+                if _rb_state == "ACTIVE":
+                    _boost = float(getattr(
+                        CFG, 'SING_RISK_BOOST_ACTIVE', 1.20
+                    ))
+                    risk_frac *= _boost
+                elif _rb_state == "EMERGING":
+                    _boost = float(getattr(
+                        CFG, 'SING_RISK_BOOST_EMERGING', 1.00
+                    ))
+                    risk_frac *= _boost
+            except Exception:
+                pass
 
         # Apply drawdown multiplier + floor protection
         risk_frac *= dd_mult * power_law_scale
@@ -5133,6 +5443,28 @@ def run_backtest(cfg):
     _filter_reset_stats()
     sigs = build_signals(assets)
     sigs = deduplicate_signals(sigs)
+
+
+    # ══ [SING-TIMING] تقرير حالة الرنين على الإشارات ══
+    if getattr(CFG, 'SING_TIMING_ENABLED', False):
+        _sng_stats = {"DORMANT": 0, "EMERGING": 0, "ACTIVE": 0,
+                       "DECAYING": 0, "INVALID": 0}
+        for _s in sigs:
+            _ad_s = assets.get(_s.symbol)
+            if _ad_s is None:
+                continue
+            try:
+                _st, _ = _resonance_state_for_direction(
+                    _ad_s, int(_s.feat_idx), _s.action, CFG
+                )
+                _sng_stats[_st] = _sng_stats.get(_st, 0) + 1
+            except Exception:
+                pass
+        _tot = sum(_sng_stats.values()) or 1
+        log.info(f"  [Sing-Timing] Distribution on signals:")
+        for _st_name, _cnt in _sng_stats.items():
+            log.info(f"    {_st_name:10s}: {_cnt:5d} "
+                     f"({_cnt/_tot*100:.1f}%)")
 
     # ══ [Rule Filter] ══
     if CFG.RULE_FILTER_ENABLED:
@@ -7647,7 +7979,8 @@ def _promote_pending_to_position(exchange, sym: str, rec: Dict,
 
 
 def monitor_pending_orders(exchange, open_pos_live: Dict,
-                           loop_iter: int = 0) -> None:
+                           loop_iter: int = 0,
+                           assets: Optional[Dict] = None) -> None:
     """
     Sweep all pending orders. Promote filled ones, drop canceled/expired,
     cancel timed-out ones. Bounded to PO_MAX_WAIT_S + grace.
@@ -7666,6 +7999,190 @@ def monitor_pending_orders(exchange, open_pos_live: Dict,
             rec = _PENDING_ORDERS.get(sym)
             if rec is None:
                 continue
+
+        status = str(rec.get('status') or 'open')
+
+        # ══ [SING-TIMING Layer 1 + Layer 2] فحص حالة الرنين الحالية ══
+        if getattr(CFG, 'SING_TIMING_ENABLED', False):
+            try:
+                _ad_curr = None
+                if assets is not None:
+                    _ad_curr = assets.get(sym)
+                if _ad_curr is None:
+                    _ad_curr = rec.get('ad_ref')
+
+                if _ad_curr is not None:
+                    # آخر شمعة مغلقة
+                    _cur_ci = max(0, len(_ad_curr.closes) - 2)
+                    _cur_fi = _cur_ci - _ad_curr.feat_start
+                    if 0 <= _cur_fi < len(_ad_curr.geodesic_accel):
+                        _st_now, _rho_now = _resonance_state_for_direction(
+                            _ad_curr, int(_cur_fi),
+                            str(rec.get('action', 'BUY')),
+                            CFG
+                        )
+
+                        # ══════════════════════════════════════════════
+                        # Layer 1: DECAYING → cancel + drop
+                        # ══════════════════════════════════════════════
+                        if _st_now == "DECAYING":
+                            _oid = rec.get('order_id')
+                            if _oid:
+                                try:
+                                    exchange.cancel_order(_oid, sym)
+                                except Exception:
+                                    pass
+                                time.sleep(0.2)
+                                _sweep_pending_once(exchange, sym)
+                                _rec_chk = _PENDING_ORDERS.get(sym)
+                                if (_rec_chk is not None
+                                        and float(_rec_chk.get(
+                                            'filled', 0.0) or 0.0) > 0.0):
+                                    pass  # promotion handles it
+                                else:
+                                    _PENDING_ORDERS.pop(sym, None)
+                                    log.info(
+                                        f"[Sing-Timing] {sym} DECAYING "
+                                        f"(rho={_rho_now:+.3f}) — pending "
+                                        f"cancelled"
+                                    )
+                                    continue
+                            else:
+                                _PENDING_ORDERS.pop(sym, None)
+                                continue
+
+                        # ══════════════════════════════════════════════
+                        # Layer 1: EMERGING/ACTIVE → تقصير المهلة
+                        # ══════════════════════════════════════════════
+                        if _st_now in ("EMERGING", "ACTIVE"):
+                            _bars_limit = int(getattr(
+                                CFG,
+                                'SING_PENDING_WAIT_EMERGING'
+                                if _st_now == "EMERGING"
+                                else 'SING_PENDING_WAIT_ACTIVE',
+                                2
+                            ))
+                            _tf_sec_u = (CFG.TF_SECONDS
+                                          if CFG.TF_SECONDS > 0 else 3600)
+                            _new_timeout = float(_bars_limit * _tf_sec_u)
+                            _old_timeout = float(rec.get(
+                                'timeout_s', 0.0) or 0.0
+                            )
+                            if (_old_timeout <= 0.0
+                                    or _new_timeout < _old_timeout):
+                                rec['timeout_s'] = _new_timeout
+                                rec['sing_state_current'] = _st_now
+                                rec['sing_rho_current'] = float(_rho_now)
+                                log.debug(
+                                    f"[Sing-Timing] {sym} {_st_now} — "
+                                    f"timeout shortened "
+                                    f"{_old_timeout:.0f}s → "
+                                    f"{_new_timeout:.0f}s"
+                                )
+
+                        # ══════════════════════════════════════════════
+                        # Layer 2: ترقية GTX إلى Marketable عند ACTIVE
+                        # ══════════════════════════════════════════════
+                        if (_st_now == "ACTIVE"
+                                and getattr(CFG, 'SING_ACTIVE_MARKETABLE',
+                                            False)
+                                and str(rec.get('execution_mode', 'gtx'))
+                                    != "marketable"
+                                and float(rec.get('filled', 0.0) or 0.0)
+                                    <= 0.0):
+                            _oid = rec.get('order_id')
+                            if _oid:
+                                # 1) cancel (with sweep)
+                                try:
+                                    exchange.cancel_order(_oid, sym)
+                                except Exception as _ce:
+                                    log.debug(
+                                        f"[Sing-Timing-L2] {sym} "
+                                        f"cancel for upgrade failed: {_ce}"
+                                    )
+                                time.sleep(0.2)
+                                _sweep_pending_once(exchange, sym)
+                                _rec_chk = _PENDING_ORDERS.get(sym)
+                                # 2) if partial fill arrived, let promotion
+                                if (_rec_chk is not None
+                                        and float(_rec_chk.get(
+                                            'filled', 0.0) or 0.0) > 0.0):
+                                    log.info(
+                                        f"[Sing-Timing-L2] {sym} "
+                                        f"partial fill during upgrade — "
+                                        f"keeping order"
+                                    )
+                                    continue
+
+                                # 3) place marketable
+                                try:
+                                    ob = exchange.fetch_order_book(
+                                        sym, limit=5
+                                    )
+                                    _bb = float(ob['bids'][0][0])
+                                    _ba = float(ob['asks'][0][0])
+                                    _pen_bps = float(getattr(
+                                        CFG,
+                                        'SING_ACTIVE_PENETRATION_BPS',
+                                        3.0
+                                    ))
+                                    _pen_frac = _pen_bps * 1e-4
+                                    _side = str(rec.get('side', 'buy'))
+
+                                    if _side == 'buy':
+                                        _mk_px = _ba * (1.0 + _pen_frac)
+                                    else:
+                                        _mk_px = _bb * (1.0 - _pen_frac)
+
+                                    # check slip vs original sig.price
+                                    _orig_px = float(rec.get(
+                                        'price', _mk_px) or _mk_px)
+                                    _slip_bps = (abs(_mk_px - _orig_px)
+                                                  / max(_orig_px, 1e-12)
+                                                  * 1e4)
+                                    _max_slip = float(getattr(
+                                        CFG,
+                                        'SING_ACTIVE_MAX_SLIP_BPS',
+                                        15.0
+                                    ))
+                                    if _slip_bps > _max_slip:
+                                        log.info(
+                                            f"[Sing-Timing-L2] {sym} "
+                                            f"upgrade skip: slip "
+                                            f"{_slip_bps:.1f}bps > "
+                                            f"{_max_slip:.1f}bps"
+                                        )
+                                    else:
+                                        _qty = float(rec.get('qty', 0.0)
+                                                     or 0.0)
+                                        _o2 = exchange.create_order(
+                                            sym, 'limit', _side, _qty,
+                                            _mk_px, params={}
+                                        )
+                                        rec['order_id'] = str(_o2['id'])
+                                        rec['price'] = float(_mk_px)
+                                        rec['execution_mode'] = "marketable"
+                                        rec['marketable_px'] = float(_mk_px)
+                                        rec['sing_state_current'] = "ACTIVE"
+                                        rec['sing_rho_current'] = float(
+                                            _rho_now
+                                        )
+                                        log.info(
+                                            f"[Sing-Timing-L2] {sym} "
+                                            f"upgraded GTX → marketable "
+                                            f"@ {_mk_px:.6f} "
+                                            f"(slip={_slip_bps:.1f}bps, "
+                                            f"rho={_rho_now:+.3f})"
+                                        )
+                                except Exception as _oe:
+                                    log.warning(
+                                        f"[Sing-Timing-L2] {sym} "
+                                        f"marketable upgrade failed: "
+                                        f"{_oe} — keeping previous order "
+                                        f"state"
+                                    )
+            except Exception as _e:
+                log.debug(f"[Sing-Timing] monitor hook failed: {_e}")
 
         status = str(rec.get('status') or 'open')
 
@@ -8008,6 +8525,50 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
     Place a single Post-Only order and register it as pending (non-blocking).
     Returns the pending record or None on failure.
     """
+    # ══ [SING-TIMING] حساب حالة الرنين مرة واحدة، واستخدامها في
+    # كل من Layer 1 (timeout) و Layer 2 (marketable). ══
+    _sing_state = "DORMANT"
+    _sing_rho = 0.0
+    _sing_timeout_reason = "default"
+    try:
+        if (getattr(CFG, 'SING_TIMING_ENABLED', False)
+                and ad is not None):
+            _sing_state, _sing_rho = _resonance_state_for_direction(
+                ad, int(sig.feat_idx), sig.action, CFG
+            )
+    except Exception as _e:
+        log.debug(f"[Sing-Timing] pre-compute state failed: {_e}")
+
+    # ══ [SING-TIMING Layer 3A] Funding Guard ══
+    # الغرض: تجنّب الدخول في نافذة N دقيقة قبل موعد التمويل.
+    # السبب: الدخول قبل التمويل يعني دفع ~0.01% فوراً (لأن أول
+    # دورة تمويل تحسب على أي مركز مفتوح عند اللحظة).
+    # هذا يوفر على المدى الطويل ما يعادل ~5-10% من الرسوم.
+    if (getattr(CFG, 'SING_FUNDING_GUARD_ENABLED', False)
+            and _sing_state not in ("DECAYING", "INVALID")):
+        try:
+            _min_to_funding = _minutes_to_next_funding_utc(CFG)
+            _window = int(getattr(
+                CFG, 'SING_FUNDING_GUARD_MINUTES', 30
+            ))
+            if 0 <= _min_to_funding <= _window:
+                log.info(
+                    f"[Sing-Timing-L3A] {sym} {sig.action} "
+                    f"rejected: funding in {_min_to_funding} min "
+                    f"(≤ {_window})"
+                )
+                return None
+        except Exception as _e:
+            log.debug(f"[Sing-Timing-L3A] funding guard failed: {_e}")
+
+    # ══ إذا كانت الحالة DECAYING، لا نضع أي أمر إطلاقاً ══
+    if _sing_state == "DECAYING":
+        log.info(
+            f"[Sing-Timing] {sym} {sig.action} DECAYING "
+            f"(rho={_sing_rho:+.3f}) — refusing pending order at source"
+        )
+        return None
+
     # ══ [RateLimit] skip if soft cap reached ══
     if not _rate_can_place():
         _RATE_TRACKER['rejected_count'] += 1
@@ -8069,14 +8630,79 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
                         f"falling back to sig.price")
             target = float(sig.price)
 
-    try:
-        o = exchange.create_order(
-            sym, 'limit', side, qty, target,
-            params={'timeInForce': 'GTX'}
-        )
-    except Exception as e:
-        log.debug(f"[Pending] {sym} GTX rejected @ {target:.6f}: {e}")
-        return None
+    # ══ [SING-TIMING Layer 2] القرار: GTX أم Marketable ══
+    # المنطق:
+    #   - إذا SING_TIMING_ENABLED=False → GTX عادي (لا شيء يتغير).
+    #   - إذا SING_TIMING_ENABLED=True و SING_ACTIVE_MARKETABLE=False
+    #     → GTX عادي (Layer 1 فقط يعمل).
+    #   - إذا SING_TIMING_ENABLED=True و SING_ACTIVE_MARKETABLE=True
+    #     و _sing_state == "ACTIVE" → Marketable Limit.
+    #   - غير ذلك → GTX عادي.
+    _exec_mode = "gtx"
+    _marketable_px = None
+
+    if (getattr(CFG, 'SING_TIMING_ENABLED', False)
+            and getattr(CFG, 'SING_ACTIVE_MARKETABLE', False)
+            and _sing_state == "ACTIVE"):
+        try:
+            ob = exchange.fetch_order_book(sym, limit=5)
+            _best_bid = float(ob['bids'][0][0])
+            _best_ask = float(ob['asks'][0][0])
+            _mid = (_best_bid + _best_ask) / 2.0
+            _pen_bps = float(getattr(
+                CFG, 'SING_ACTIVE_PENETRATION_BPS', 3.0
+            ))
+            _pen_frac = _pen_bps * 1e-4
+
+            # BUY يقتحم ask صعوداً، SELL يقتحم bid هبوطاً
+            if side == 'buy':
+                _marketable_px = _best_ask * (1.0 + _pen_frac)
+            else:
+                _marketable_px = _best_bid * (1.0 - _pen_frac)
+
+            # فحص الانزلاق: كم يبعد الـ marketable عن sig.price؟
+            _slip_bps = (abs(_marketable_px - sig.price)
+                          / max(sig.price, 1e-12) * 1e4)
+            _max_slip = float(getattr(
+                CFG, 'SING_ACTIVE_MAX_SLIP_BPS', 15.0
+            ))
+
+            if _slip_bps > _max_slip:
+                log.info(
+                    f"[Sing-Timing-L2] {sym} {sig.action} ACTIVE "
+                    f"but slip {_slip_bps:.1f}bps > {_max_slip:.1f}bps "
+                    f"— fallback to GTX"
+                )
+            else:
+                o = exchange.create_order(
+                    sym, 'limit', side, qty, _marketable_px,
+                    params={}  # بدون GTX → يقطع السبريد كـ taker
+                )
+                _exec_mode = "marketable"
+                target = _marketable_px
+                log.info(
+                    f"[Sing-Timing-L2] {sym} {sig.action} ACTIVE "
+                    f"(rho={_sing_rho:+.3f}) → marketable @ "
+                    f"{_marketable_px:.6f} (slip={_slip_bps:.1f}bps, "
+                    f"mid={_mid:.6f})"
+                )
+        except Exception as _e:
+            log.warning(
+                f"[Sing-Timing-L2] {sym} marketable failed: {_e} "
+                f"— falling back to GTX"
+            )
+            _exec_mode = "gtx"
+
+    # ══ وضع الأمر النهائي ══
+    if _exec_mode == "gtx":
+        try:
+            o = exchange.create_order(
+                sym, 'limit', side, qty, target,
+                params={'timeInForce': 'GTX'}
+            )
+        except Exception as e:
+            log.debug(f"[Pending] {sym} GTX rejected @ {target:.6f}: {e}")
+            return None
 
     entry_fi = 0
     try:
@@ -8092,6 +8718,85 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
             int(getattr(CFG, 'UNIFIED_WAIT_BARS_1H', 8))
         )
         timeout_s = float(_stage1_bars_u * _tf_sec_u)
+
+    # ══ [SING-TIMING Layer 1] تعديل المهلة حسب الحالة ══
+    # (نستخدم _sing_state المحسوبة في بداية الدالة)
+    if getattr(CFG, 'SING_TIMING_ENABLED', False):
+        try:
+            _tf_sec_u = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
+            if _sing_state == "EMERGING":
+                _bars = int(getattr(
+                    CFG, 'SING_PENDING_WAIT_EMERGING', 2
+                ))
+                timeout_s = float(_bars * _tf_sec_u)
+                _sing_timeout_reason = f"emerging({_bars}bars)"
+                log.info(
+                    f"[Sing-Timing] {sym} {sig.action} EMERGING "
+                    f"(rho={_sing_rho:+.3f}) — timeout → "
+                    f"{_bars} bars ({timeout_s:.0f}s)"
+                )
+            elif _sing_state == "ACTIVE":
+                _bars = int(getattr(
+                    CFG, 'SING_PENDING_WAIT_ACTIVE', 1
+                ))
+                timeout_s = float(_bars * _tf_sec_u)
+                _sing_timeout_reason = f"active({_bars}bars)"
+                log.debug(
+                    f"[Sing-Timing] {sym} {sig.action} ACTIVE "
+                    f"(rho={_sing_rho:+.3f}) — timeout → "
+                    f"{_bars} bars ({timeout_s:.0f}s)"
+                )
+        except Exception as _e:
+            log.debug(f"[Sing-Timing] L1 timeout hook failed: {_e}")
+
+    # ══ [SING-TIMING Layer 1] فحص حالة الرنين عند وضع الأمر ══
+    # الغرض: تعديل المهلة ديناميكياً حسب حالة الرنين.
+    #   - DORMANT   → المهلة الافتراضية (8 شموع)
+    #   - EMERGING  → 2 شموع (تسريع الانتظار)
+    #   - ACTIVE    → 1 شمعة
+    #   - DECAYING  → رفض الأمر نهائياً
+    #   - INVALID   → المهلة الافتراضية
+    _sing_state = "DORMANT"
+    _sing_rho = 0.0
+    _sing_timeout_reason = "default"
+    try:
+        if getattr(CFG, 'SING_TIMING_ENABLED', False) and ad is not None:
+            _sing_state, _sing_rho = _resonance_state_for_direction(
+                ad, int(sig.feat_idx), sig.action, CFG
+            )
+            _tf_sec_u = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
+
+            if _sing_state == "DECAYING":
+                log.info(
+                    f"[Sing-Timing] {sym} {sig.action} DECAYING "
+                    f"(rho={_sing_rho:+.3f}) — refusing pending order"
+                )
+                return None
+
+            if _sing_state == "EMERGING":
+                _bars = int(getattr(
+                    CFG, 'SING_PENDING_WAIT_EMERGING', 2
+                ))
+                timeout_s = float(_bars * _tf_sec_u)
+                _sing_timeout_reason = f"emerging({_bars}bars)"
+                log.info(
+                    f"[Sing-Timing] {sym} {sig.action} EMERGING "
+                    f"(rho={_sing_rho:+.3f}) — timeout → "
+                    f"{_bars} bars ({timeout_s:.0f}s)"
+                )
+            elif _sing_state == "ACTIVE":
+                _bars = int(getattr(
+                    CFG, 'SING_PENDING_WAIT_ACTIVE', 1
+                ))
+                timeout_s = float(_bars * _tf_sec_u)
+                _sing_timeout_reason = f"active({_bars}bars)"
+                log.info(
+                    f"[Sing-Timing] {sym} {sig.action} ACTIVE "
+                    f"(rho={_sing_rho:+.3f}) — timeout → "
+                    f"{_bars} bars ({timeout_s:.0f}s)"
+                )
+    except Exception as _e:
+        log.debug(f"[Sing-Timing] place_pending hook failed: {_e}")
 
     rec = {
         'order_id': str(o['id']),
@@ -8124,6 +8829,14 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
                                  or abs(target - sig.price)),
         'decay_stage': 0,
         'ad_ref': ad,
+        # ══ [SING-TIMING Layer 1] لقطة حالة الرنين عند الوضع ══
+        'sing_state_at_placement': str(_sing_state),
+        'sing_rho_at_placement': float(_sing_rho),
+        'sing_timeout_reason': str(_sing_timeout_reason),
+        # ══ [SING-TIMING Layer 2] نمط التنفيذ ══
+        'execution_mode': str(_exec_mode),
+        'marketable_px': (float(_marketable_px)
+                           if _marketable_px is not None else 0.0),
     }
     _PENDING_ORDERS[sym] = rec
     log.info(f"[Pending] {sig.action} {sym} @ {target:.6f} qty={qty:.6f} "
@@ -8469,8 +9182,12 @@ def run_live(cfg, exchange):
             loop_iter += 1
 
             # ══ [Pending] Sweep pending orders every cycle ══
+            # [Sing-Timing] نمرّر assets ليتمكن الفحص من قراءة الرنين الحالي.
             try:
-                monitor_pending_orders(exchange, open_pos_live, loop_iter)
+                monitor_pending_orders(
+                    exchange, open_pos_live, loop_iter,
+                    assets=assets if 'assets' in dir() else None
+                )
             except Exception as _e:
                 log.warning(f"[Pending] monitor error: {_e}")
             
@@ -9169,6 +9886,44 @@ def run_live(cfg, exchange):
                         log.debug(f"[Budget] {sym} skipped: no heat budget")
                         continue
 
+                    # ══ [SING-TIMING Layer 3B] Resonance Risk Boost ══
+                    # الغرض: رفع المخاطرة × N عندما تكون الإشارة في
+                    # حالة رنين ACTIVE (أقوى إشارة ممكنة). هذا يستغل
+                    # الـ Singularity لزيادة حجم المركز على أفضل الفرص.
+                    # تعمل فقط إذا SING_RISK_BOOST_ENABLED=True.
+                    if (getattr(CFG, 'SING_RISK_BOOST_ENABLED', False)
+                            and getattr(CFG, 'SING_TIMING_ENABLED', False)):
+                        try:
+                            _cur_ci_rb = max(0, len(ad.closes) - 2)
+                            _cur_fi_rb = _cur_ci_rb - ad.feat_start
+                            if 0 <= _cur_fi_rb < len(ad.geodesic_accel):
+                                _rb_state, _rb_rho = \
+                                    _resonance_state_for_direction(
+                                        ad, int(_cur_fi_rb),
+                                        sig.action, CFG
+                                    )
+                                _boost = 1.0
+                                if _rb_state == "ACTIVE":
+                                    _boost = float(getattr(
+                                        CFG, 'SING_RISK_BOOST_ACTIVE', 1.20
+                                    ))
+                                elif _rb_state == "EMERGING":
+                                    _boost = float(getattr(
+                                        CFG, 'SING_RISK_BOOST_EMERGING', 1.00
+                                    ))
+                                if _boost != 1.0:
+                                    risk_frac *= _boost
+                                    log.info(
+                                        f"[Sing-Timing-L3B] {sym} "
+                                        f"{sig.action} {_rb_state} "
+                                        f"(rho={_rb_rho:+.3f}) — risk "
+                                        f"boost ×{_boost:.2f}"
+                                    )
+                        except Exception as _e:
+                            log.debug(
+                                f"[Sing-Timing-L3B] boost failed: {_e}"
+                            )
+
                     risk_frac *= power_law_scale
                     risk_frac = float(np.clip(risk_frac,
                                                 CFG.MIN_RISK_PER_TRADE if CFG.BUDGET_ENABLED else CFG.MIN_RISK,
@@ -9328,8 +10083,8 @@ def run_live(cfg, exchange):
 
                         # ══ [SL-CLIP-LIVE] قصّ SL ليطابق الباكتيست ══
                         # الباكتيست يقصّ SL إلى max_sl_frac قبل LiqGate.
-                        # اللايف يجب أن يفعل نفس الشيء، وإلا فإن كل الدخولات
-                        # ستُرفض لأن SL الأصلي أوسع من الهامش المتاح.
+                        # اللايف يفعل نفس الشيء. فحص LiqGate يتم في STEP 3
+                        # بعد هذا القص (الترتيب مقصود: قصّ أولاً، ثم فحص).
                         _max_sl_frac_live = 0.015 * float(
                             getattr(CFG, 'SL_WIDEN_MULT', 1.0)
                         )
@@ -9350,18 +10105,6 @@ def run_live(cfg, exchange):
                                 f"{_sl_dist_now:.6f} → {_new_sl_dist:.6f} "
                                 f"({_max_sl_frac_live*100:.1f}% cap)"
                             )
-                            _liq_gap = abs(float(sig.price) - _liq_px)
-                            _sl_gap = abs(float(sig.price) - float(sig.sl))
-                            _safe_mult = float(getattr(CFG, 'LIQ_SAFETY_MULT', 1.5))
-                            if _liq_gap <= 1e-12 or _sl_gap * _safe_mult > _liq_gap:
-                                log.info(
-                                    f"[LiqGate] {sym} {sig.action} REJECT: "
-                                    f"SL gap={_sl_gap:.6f} × {_safe_mult} > "
-                                    f"Liq gap={_liq_gap:.6f} "
-                                    f"(L={_confirmed_lev}x, "
-                                    f"MMR={_mmr_sig*100:.3f}%)"
-                                )
-                                continue
 
                         # ══ 3. Entry — Non-Blocking Pending Order ══
                         if getattr(CFG, 'PENDING_ENABLED', True):
@@ -9712,6 +10455,21 @@ def main():
     p.add_argument("--trade-log", type=str, default=None,
                    help="Path to trade log file (JSONL). "
                         "Default: trades_log_{mode}.jsonl")
+    # ══ [SINGULARITY TIMING] ══
+    p.add_argument("--sing-timing", action="store_true",
+                   help="Enable Singularity timing layer (Layer 1: "
+                        "EMERGING) — adjusts pending window dynamically")
+    p.add_argument("--sing-active", action="store_true",
+                   help="Enable Singularity timing Layer 2 (ACTIVE) — "
+                        "upgrades GTX to marketable limit when resonance "
+                        "is ACTIVE. Requires --sing-timing")
+    p.add_argument("--sing-funding-guard", action="store_true",
+                   help="Enable Singularity Layer 3A: skip entries within "
+                        "30 minutes before funding time. Requires "
+                        "--sing-timing")
+    p.add_argument("--sing-risk-boost", action="store_true",
+                   help="Enable Singularity Layer 3B: boost risk × 1.2 "
+                        "when resonance is ACTIVE. Requires --sing-timing")
     # ══ [TRADE FILTER] ══
     p.add_argument("--filter", action="store_true",
                    help="Enable pre-entry trade filter (multi-signal)")
@@ -9980,6 +10738,64 @@ def main():
         CFG.FILTER_FRICTION_DRAG_MAX = float(args.filter_friction_max)
     if args.filter_log:
         CFG.FILTER_LOG_REJECTIONS = True
+    # ══ [SINGULARITY TIMING] ══
+    if args.sing_timing:
+        CFG.SING_TIMING_ENABLED = True
+        log.info("[Sing-Timing] Layer 1 (EMERGING) ENABLED")
+        log.info("[Sing-Timing] - DORMANT  → default timeout")
+        log.info("[Sing-Timing] - EMERGING → shortened timeout")
+        log.info("[Sing-Timing] - ACTIVE   → minimal timeout")
+        log.info("[Sing-Timing] - DECAYING → order cancelled")
+        # ══ [PARITY-CHECK] التحقق من أن الباكتيست والـ Live
+        # سيستخدمان نفس المنطق.
+        if CFG.mode == "backtest":
+            log.info("[Sing-Timing] Backtest simulation ENABLED "
+                     "(precompute_entry_fills + simulate_portfolio)")
+    if args.sing_active:
+        if not args.sing_timing:
+            log.warning(
+                "[Sing-Timing] --sing-active requires --sing-timing — "
+                "enabling both"
+            )
+            CFG.SING_TIMING_ENABLED = True
+        CFG.SING_ACTIVE_MARKETABLE = True
+        log.info("[Sing-Timing] Layer 2 (ACTIVE → Marketable) ENABLED")
+        log.info("[Sing-Timing] - ACTIVE + slip ≤ 15bps → marketable limit")
+        log.info("[Sing-Timing] - ACTIVE + slip > 15bps → fallback to GTX")
+        log.info("[Sing-Timing] - Taker fee applies to marketable fills")
+
+    if args.sing_funding_guard:
+        if not args.sing_timing:
+            log.warning(
+                "[Sing-Timing] --sing-funding-guard requires "
+                "--sing-timing — enabling it"
+            )
+            CFG.SING_TIMING_ENABLED = True
+        CFG.SING_FUNDING_GUARD_ENABLED = True
+        log.info("[Sing-Timing] Layer 3A (Funding Guard) ENABLED")
+        log.info(
+            f"[Sing-Timing] - Skip entries within "
+            f"{CFG.SING_FUNDING_GUARD_MINUTES} min of funding "
+            f"({CFG.SING_FUNDING_HOURS_UTC} UTC)"
+        )
+    if args.sing_risk_boost:
+        if not args.sing_timing:
+            log.warning(
+                "[Sing-Timing] --sing-risk-boost requires "
+                "--sing-timing — enabling it"
+            )
+            CFG.SING_TIMING_ENABLED = True
+        CFG.SING_RISK_BOOST_ENABLED = True
+        log.info("[Sing-Timing] Layer 3B (Resonance Risk Boost) ENABLED")
+        log.info(
+            f"[Sing-Timing] - ACTIVE → risk × "
+            f"{CFG.SING_RISK_BOOST_ACTIVE}"
+        )
+        log.info(
+            f"[Sing-Timing] - EMERGING → risk × "
+            f"{CFG.SING_RISK_BOOST_EMERGING}"
+        )
+
 
     print("╔"+"═"*70+"╗")
     print(f"  [Level-1] Parallel: {CFG.PARALLEL_PROCESSING}  "
