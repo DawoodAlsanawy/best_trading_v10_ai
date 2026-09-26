@@ -85,7 +85,7 @@ class Config:
     EMA_SPAN: int = 200; ATR_PERIOD: int = 14
 
     W_CURV: float=1.0; W_VOL: float=1.0; W_ENTROPY: float=2.0
-    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=3
+    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=4
 
     CURV_THRESHOLD: float=0.01; DH_ENTROPY_THRESHOLD: float=0.005
     DH_HMM_UPPER: float=0.01;  DH_HMM_LOWER: float=-0.01
