@@ -85,7 +85,7 @@ class Config:
     EMA_SPAN: int = 200; ATR_PERIOD: int = 14
 
     W_CURV: float=1.0; W_VOL: float=1.0; W_ENTROPY: float=2.0
-    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=4
+    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=5
 
     CURV_THRESHOLD: float=0.01; DH_ENTROPY_THRESHOLD: float=0.005
     DH_HMM_UPPER: float=0.01;  DH_HMM_LOWER: float=-0.01
@@ -125,11 +125,11 @@ class Config:
     REDUCED_RISK_MULT: float   = 0.25
     REDUCED_RISK_MULT_50: float= 0.10
     REDUCED_RISK_MULT_70: float= 0.05
-    DRAWDOWN_REDUCE_AT:  float = 0.30
-    DRAWDOWN_REDUCE_AT_50: float=0.50
-    DRAWDOWN_REDUCE_AT_70: float=0.70
+    DRAWDOWN_REDUCE_AT:  float = 0.20
+    DRAWDOWN_REDUCE_AT_50: float=0.40
+    DRAWDOWN_REDUCE_AT_70: float=0.60
 
-    MAX_CONCURRENT_ASSETS: int   = 5
+    MAX_CONCURRENT_ASSETS: int   = 4
     CORRELATION_THRESHOLD: float = 0.70
 
     MAX_HOLD_BARS: int = 168
@@ -211,7 +211,7 @@ class Config:
 
     # ══ [POST-ONLY EXECUTION] ══
     PO_PENETRATION_BPS: float = 1.0      # match backtest's FILL_PENETRATION_BPS
-    PO_MAX_WAIT_S: int = 0 # 200              # entry wait time (per attempt)
+    PO_MAX_WAIT_S: int = 200              # entry wait time (per attempt)
     PO_EXIT_MAX_WAIT_S: int = 45          # reduced from 180 to prevent long blocking
     PO_REPRICE_S: float = 3.0            # cancel/replace interval
     PO_FILL_THRESHOLD: float = 0.50      # accept partial if ≥ 50%
@@ -225,11 +225,11 @@ class Config:
     TRAIL_MIN_STEP: float = 0.0005       # only move SL if improvement ≥ 0.05%
 
     # ══ [PORTFOLIO RISK BUDGET] ══
-    PORTFOLIO_HEAT_MAX: float = 0.10       # 10% total risk-at-SL across all slots
+    PORTFOLIO_HEAT_MAX: float = 0.08       # 8% total risk-at-SL across all slots
     RISK_STRENGTH_MIN: float = 0.50        # weakest signal → 0.5 × base_per_slot
     RISK_STRENGTH_MAX: float = 1.50        # strongest signal → 1.5 × base_per_slot
     MIN_RISK_PER_TRADE: float = 0.005      # 0.5% floor (skip if below)
-    MAX_RISK_PER_TRADE: float = 0.030      # 3.0% ceiling per trade
+    MAX_RISK_PER_TRADE: float = 0.025      # 2.5% ceiling per trade
     BUDGET_ENABLED: bool = True            # master switch
     # ══ [STATE MACHINE — Persistent Symbol Metadata] ══
     SYMBOL_META_FILE: str = "symbol_meta"
@@ -269,7 +269,7 @@ class Config:
     RULE_REJECT_RANGE_POS_PCT: float = 0.66
     RULE_MIN_SCORE: int = 2                  # reject if #rules matched >= this
     # ══ [RE-ENTRY COOLDOWN — prevents close-and-reverse] ══
-    REENTRY_COOLDOWN_BARS: int = 3     # bars to wait after exit on same symbol
+    REENTRY_COOLDOWN_BARS: int = 4     # bars to wait after exit on same symbol
     REENTRY_COOLDOWN_ENABLED: bool = True
     # ══ [LIVE ASSET CACHE — reuse AssetData when closed bar unchanged] ══
     LIVE_ASSET_CACHE_ENABLED: bool = True
@@ -290,7 +290,7 @@ class Config:
     # ══ [SMART OHLCV FETCH] ══
     SMART_OHLCV_ENABLED: bool = True
     # ══ [SUPPORT/RESISTANCE FILTER] ══
-    SR_FILTER_ENABLED: bool = False      # disabled by default until tuned
+    SR_FILTER_ENABLED: bool = True      # enabled for structural anchoring
     SR_LOOKBACK: int = 100
     SR_MIN_TOUCHES: int = 2              # relaxed from 3
     SR_TOUCH_TOLERANCE: float = 0.0035   # relaxed from 0.0025 (0.35%)
@@ -307,16 +307,9 @@ class Config:
     KILL_STATE_ARMED: str = "ARMED"
     KILL_STATE_WARNING: str = "WARNING"
     KILL_STATE_TRIGGERED: str = "TRIGGERED"
-    # ══ [THRESHOLD MODE] ══
-    # True  → use the ABSOLUTE thresholds (DH_ENTROPY_THRESHOLD,
-    #         DF_FREE_E_THRESHOLD, DH_HMM_UPPER, DH_HMM_LOWER).
-    #         This is the original design.
-    # False → use Z-SCORE thresholds (DH_ENTROPY_Z, ...), the experiment.
-    # The diagnostic showed the z-score experiment produced 1.8× signals
-    # and a different score distribution. Restored to absolute.
-    USE_ABSOLUTE_THRESHOLDS: bool = True
-
-    # Z-score thresholds (kept for the opt-in path)
+    # ══ [ADAPTIVE FIX #1] Z-score thresholds for dH/dF ══
+    # Absolute thresholds (0.005, -0.01) fire ~50% of bars → noise.
+    # Z-scores make thresholds fire ~16% of bars → real signal.
     DH_ENTROPY_Z: float = -1.0
     DF_FREE_E_Z:  float = -1.0
     DH_HMM_UPPER_Z: float = 0.5
@@ -336,7 +329,7 @@ class Config:
     #   1.5 → moderate widening
     #   2.0 → recommended starting point
     #   2.5 → aggressive widening (fewer SL hits, larger drawdowns)
-    SL_WIDEN_MULT: float = 2.0
+    SL_WIDEN_MULT: float = 2.4
 
     # ══ [ADAPTIVE FIX #3] Tick-based penetration ══
     # WIF has 0.254 ticks/bps → 1 bps < 1 tick → orders can't fill properly.
@@ -396,11 +389,7 @@ class Config:
     ENTRY_STRUCTURE_RANGE_MULT_HI: float = 2.00  # don't anchor farther than this × dip
     ENTRY_STRUCTURE_BUFFER_MULT: float = 0.10    # buffer above support = 0.1 × ATR
     # Layer 4: time decay (applied during repricing)
-    # [DISABLED] Restored from diagnostic: with base dip = 0.34%,
-    # Stage-3 decays it to 0.10% — essentially a market order.
-    # With the restored friction dip (≈2%), time decay would chase
-    # the market down and destroy the mean-reversion edge.
-    ENTRY_TIME_DECAY: bool = False
+    ENTRY_TIME_DECAY: bool = True
     ENTRY_TIME_DECAY_BARS_1: int = 5
     ENTRY_TIME_DECAY_BARS_2: int = 10
     ENTRY_TIME_DECAY_BARS_3: int = 15
@@ -463,40 +452,6 @@ class Config:
     PO_EXIT_MAX_WAIT_S: int = 12            # was 45 (still used for soft exits)
     PO_EXIT_URGENT_WAIT_S: int = 4          # for SL/TP/LiqProximity
     PO_EXIT_URGENT_CROSS_SPREAD: bool = True
-    # ══ [BACKTEST↔LIVE PARITY] ══
-    # When True, backtest behaves like live:
-    #   - Uses the same entry timeout as live (PO_MAX_WAIT_S seconds)
-    #   - Applies time-decay repricing (if ENTRY_TIME_DECAY enabled)
-    #   - Applies LevCap (caps leverage by MMR)
-    #   - Applies LiqGate (rejects signals with SL too close to Liq)
-    # Set to False to restore the legacy "generous" backtest.
-    SIMULATE_LIVE_FAITHFULLY: bool = True
-    # ══ [FIX 1 — TRAILING ACTIVATION AT R-MULTIPLE] ══
-    # Old design activated trailing after a fixed MFE (0.4%), which was
-    # often BELOW the SL distance. So SL moved above entry on tiny moves
-    # and killed 52% of trades with a "profitable SL" that capped gains.
-    # New design: trailing only activates after N × sl_dist_initial of MFE.
-    TRAIL_ACTIVATE_AT_R: float = 1.0    # activate at +1R of profit
-
-    # ══ [FIX 2 — REGIME FILTER] ══
-    # Skip signals when EMA200 slope (over lookback) is too steep
-    # relative to ATR. Mean-reversion hates trending markets.
-    REGIME_FILTER_ENABLED: bool = False
-    REGIME_EMA_LOOKBACK: int = 50
-    REGIME_SLOPE_ATR_MAX: float = 2.0   # |slope×bars|/ATR > this → skip
-
-    # ══ [FIX 3 — TIME-BASED KILL] ══
-    # If after N bars the trade hasn't reached TIME_KILL_MIN_R, close it.
-    TIME_KILL_ENABLED: bool = False
-    TIME_KILL_BARS: int = 10            # bars to wait (TF-scaled)
-    TIME_KILL_MIN_R: float = 0.5        # must reach +0.5R by then
-
-    # ══ [FIX 4 — PARTIAL TAKE-PROFIT] ══
-    # Close PARTIAL_TP_PCT of the position at +PARTIAL_TP_R, let the
-    # rest ride with trailing.
-    PARTIAL_TP_ENABLED: bool = True
-    PARTIAL_TP_R: float = 1.0           # take profit at +1R
-    PARTIAL_TP_PCT: float = 0.5         # close 50% at that level
 
 CFG = Config()
 
@@ -1754,9 +1709,7 @@ class OpenPosition:
     trail_activate_frac: float = 0.004
     sl_dist_initial: float = 0.0
     trail_peak_R: float = 0.0
-    entry_sub_idx: int = 0
-    partial_taken: bool = False      # [FIX 4]
-    partial_pnl: float = 0.0         # [FIX 4] accumulated partial profit
+    entry_sub_idx: int = 0               # [SUB-BARS] fill sub-bar within entry bar
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1898,45 +1851,28 @@ def process_asset(symbol, df, km_ext=None, current_capital=None, sub_df=None):
     V_q20 = np.percentile(vv,20) if len(vv)>0 else np.percentile(V_tr,20)
     V_q20a = np.full(n, V_q20)
 
-    # ══ [THRESHOLD MODE] Absolute vs z-score for h and score terms ══
-    # We always compute the z-scores (cheap) so they remain available
-    # if USE_ABSOLUTE_THRESHOLDS is flipped later. The HMM state and
-    # score terms use whichever mode is active.
+    # ══ [ADAPTIVE FIX #1] Robust z-scores for dH and dF ══
+    # Fit center/scale on TRAINING portion only (causality preserved),
+    # then apply to entire series. This makes thresholds fire ~16% of
+    # bars (real signal) instead of ~50% (noise).
     _dH_mu, _dH_sd = _robust_center_scale(dH[:max(train_end, 1)])
     _dF_mu, _dF_sd = _robust_center_scale(dF[:max(train_end, 1)])
     dH_z = (dH - _dH_mu) / max(_dH_sd, 1e-12)
     dF_z = (dF - _dF_mu) / max(_dF_sd, 1e-12)
 
-    _use_abs = bool(getattr(CFG, 'USE_ABSOLUTE_THRESHOLDS', True))
+    # HMM state from z-scored dH
+    h = np.ones(n, dtype=np.int32)
+    h[dH_z >  CFG.DH_HMM_UPPER_Z] = 0
+    h[dH_z <  CFG.DH_HMM_LOWER_Z] = 2
 
-    if _use_abs:
-        # ── HMM state from ABSOLUTE dH ──
-        h = np.ones(n, dtype=np.int32)
-        h[dH >  CFG.DH_HMM_UPPER] = 0
-        h[dH <  CFG.DH_HMM_LOWER] = 2
-
-        # ── Score uses ABSOLUTE thresholds ──
-        sc = np.zeros(n)
-        sc += np.abs(geodesic_accel) * 10.0
-        sc += CFG.W_CURV    * (C > CFG.CURV_THRESHOLD).astype(float)
-        sc += CFG.W_VOL     * (V < V_q20a).astype(float)
-        sc += CFG.W_ENTROPY * ((dH < CFG.DH_ENTROPY_THRESHOLD) & (d2H < 0)).astype(float)
-        sc += CFG.W_HMM     * ((h == 2) | ((h == 0) & (dH < -CFG.DH_ENTROPY_THRESHOLD))).astype(float)
-        sc += CFG.W_FREE_E  * (dF < CFG.DF_FREE_E_THRESHOLD).astype(float)
-    else:
-        # ── HMM state from Z-SCORED dH ──
-        h = np.ones(n, dtype=np.int32)
-        h[dH_z >  CFG.DH_HMM_UPPER_Z] = 0
-        h[dH_z <  CFG.DH_HMM_LOWER_Z] = 2
-
-        # ── Score uses Z-SCORE thresholds ──
-        sc = np.zeros(n)
-        sc += np.abs(geodesic_accel) * 10.0
-        sc += CFG.W_CURV    * (C > CFG.CURV_THRESHOLD).astype(float)
-        sc += CFG.W_VOL     * (V < V_q20a).astype(float)
-        sc += CFG.W_ENTROPY * ((dH_z < CFG.DH_ENTROPY_Z) & (d2H < 0)).astype(float)
-        sc += CFG.W_HMM     * ((h == 2) | ((h == 0) & (dH_z < -CFG.DH_ENTROPY_Z))).astype(float)
-        sc += CFG.W_FREE_E  * (dF_z < CFG.DF_FREE_E_Z).astype(float)
+    # Score uses z-thresholds
+    sc = np.zeros(n)
+    sc += np.abs(geodesic_accel) * 10.0
+    sc += CFG.W_CURV    * (C > CFG.CURV_THRESHOLD).astype(float)
+    sc += CFG.W_VOL     * (V < V_q20a).astype(float)
+    sc += CFG.W_ENTROPY * ((dH_z < CFG.DH_ENTROPY_Z) & (d2H < 0)).astype(float)
+    sc += CFG.W_HMM     * ((h == 2) | ((h == 0) & (dH_z < -CFG.DH_ENTROPY_Z))).astype(float)
+    sc += CFG.W_FREE_E  * (dF_z < CFG.DF_FREE_E_Z).astype(float)
     # ══════════════════════════════════════════════════════════
     # ══════════════════════════════════════════════════════════
 
@@ -2402,24 +2338,8 @@ def build_signals(assets, mode="backtest"):
             if micro_momentum == 0: continue
             action = "BUY" if micro_momentum > 0 else "SELL"
 
-            # ══ [FIX 2] Regime filter — reject trending markets ══
-            if getattr(CFG, 'REGIME_FILTER_ENABLED', False):
-                _lb = int(getattr(CFG, 'REGIME_EMA_LOOKBACK', 50))
-                if ci - _lb >= 0 and ci < len(ad.ema200):
-                    _slope = (ad.ema200[ci] - ad.ema200[ci - _lb]) / max(_lb, 1)
-                    _atr_now = float(ad.atr14[ci]) if ci < len(ad.atr14) else 0.0
-                    if _atr_now > 0:
-                        _slope_norm = abs(_slope) * _lb / _atr_now
-                        _slope_sign = 1.0 if _slope > 0 else -1.0
-                        _thr = float(getattr(CFG, 'REGIME_SLOPE_ATR_MAX', 2.0))
-                        if _slope_norm > _thr:
-                            # Trending — reject regardless of direction.
-                            # Mean-reversion should not fight a strong trend.
-                            continue
-
             # ══ [ADAPTIVE FIX #4] dynamic per-asset MIN_SCORE ══
             _min_score = float(CFG.MIN_SCORE)
-
             if getattr(CFG, 'DYNAMIC_MIN_SCORE_ENABLED', False):
                 _min_score = float(getattr(ad, 'score_q95_train',
                                             CFG.MIN_SCORE))
@@ -2429,20 +2349,18 @@ def build_signals(assets, mode="backtest"):
             # (computed after SL/TP is known — moved below in this version)
             # See the deferred check after SL/TP computation.
 
-            # ══ [MEAN-REVERSION DIP — restores the OLD behavior] ══
-            # The dip the market must travel to exhaust its momentum.
-            # = friction_cost × 10 = what the market pays in entropy to
-            # reverse direction. Empirically:
-            #   OLD (friction dip ≈ 2%): fill 18%, 100% TP hit → edge +98
-            #   NEW (ATR dip ≈ 0.34%):   fill 46%,  10% TP hit → edge −1
-            # The friction dip is the primary signal; ATR is a floor
-            # only for very-quiet markets to avoid a near-zero dip.
-            _friction_dip = fric_val * p * 0.1
-            _atr_dip = _compute_entry_dip(ad, fi, ci, action, p)
-            # Floor: never use a dip smaller than 0.5×ATR
-            _entry_dip = max(_friction_dip, 0.5 * _atr_dip)
+            # ══ [SMART ENTRY — 3-layer dip at signal time] ══
+            # Layer 1: ATR base (physical, unit = price)
+            # Layer 2: regime scaling (ranging / trending / explosive)
+            # Layer 3: structure anchor (snap to nearest swing)
+            # Layer 4 (time decay) applied later during repricing.
+            _entry_dip = _compute_entry_dip(ad, fi, ci, action, p)
+
+            # Fallback: if ATR unavailable, use a tiny friction-based dip
             if _entry_dip <= 0.0:
-                _entry_dip = p * 0.001
+                _entry_dip = fric_val * p * 0.02
+                if _entry_dip <= 0.0:
+                    _entry_dip = p * 0.001  # 10 bps minimum
 
             tunnel_entry_p = (p - _entry_dip) if action == "BUY" \
                              else (p + _entry_dip)
@@ -2602,26 +2520,15 @@ def _backtest_entry_target(sig, ad) -> float:
 # § 14.5  Precompute Realistic Entry Fills (Backtest Only)
 # ════════════════════════════════════════════════════════════════
 
-def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps,
-                           time_decay_enabled=False,
-                           time_decay_bars=(5, 10, 15),
-                           time_decay_mults=(0.7, 0.5, 0.3),
-                           use_time_decay_price=False):
+def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps):
     """
-    For each signal, find (fill_ci, fill_price) where the limit order
-    would ACTUALLY fill.
-
+    For each signal, find the bar index where the limit entry would ACTUALLY fill.
     A fill requires the market to PENETRATE the limit price by `pen_bps`.
 
     Deadline = min(sig.close_idx + max_wait_bars, next_signal_ci_for_same_symbol)
+    so we never fill after the next signal has already superseded this one.
 
-    When `time_decay_enabled`:
-        The effective limit moves toward the market as time passes.
-        At bars (5, 10, 15) the dip is multiplied by (0.7, 0.5, 0.3).
-        Fill price = effective (decayed) target when use_time_decay_price=True,
-        else the original target.
-
-    Returns dict: signal_index → (fill_ci, fill_price) | None
+    Returns dict: signal_index → fill_ci | None
     """
     by_symbol = defaultdict(list)
     for i, s in enumerate(signals):
@@ -2639,70 +2546,34 @@ def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps,
         n_bars = len(ad.closes)
 
         for j, (sig_i, sig) in enumerate(sig_list):
-            # ══ [WAIT-SEMANTICS FIX] ══
-            # max_wait_bars = NUMBER of bars to check, starting from the
-            # bar immediately after the signal bar. Previous code treated
-            # it as an exclusive end index → with max_wait_bars=1 the
-            # window was empty (0 bars) → 0 fills.
-            #
-            # Also capped by: next signal on the same symbol (never fill
-            # after the signal is superseded), and end of data.
-            first_bar = sig.close_idx + 1
-            last_bar_exclusive = first_bar + max(1, int(max_wait_bars))
+            # Deadline
+            deadline = min(sig.close_idx + max_wait_bars, n_bars - 1)
             if j + 1 < len(sig_list):
                 next_sig = sig_list[j + 1][1]
-                last_bar_exclusive = min(last_bar_exclusive,
-                                          next_sig.close_idx)
-            last_bar_exclusive = min(last_bar_exclusive, n_bars)
-            if first_bar >= last_bar_exclusive:
+                deadline = min(deadline, next_sig.close_idx)
+
+            start = sig.close_idx + 1
+            if start >= deadline:
                 result[sig_i] = None
                 continue
 
-            target0 = _backtest_entry_target(sig, ad)
-            # Time-decay reference
-            ref_px = float(getattr(sig, 'entry_ref_price', 0.0) or 0.0)
-            base_dip = float(getattr(sig, 'entry_base_dip', 0.0) or 0.0)
-
+            target = _backtest_entry_target(sig, ad)
             fill_ci = None
-            fill_px = None
 
-            for bar in range(first_bar, last_bar_exclusive):
-                # ── Effective target for this bar ──
-                if (time_decay_enabled and ref_px > 0 and base_dip > 0):
-                    bars_elapsed = bar - sig.close_idx
-                    if bars_elapsed > int(time_decay_bars[2]):
-                        mult = float(time_decay_mults[2])
-                    elif bars_elapsed > int(time_decay_bars[1]):
-                        mult = float(time_decay_mults[1])
-                    elif bars_elapsed > int(time_decay_bars[0]):
-                        mult = float(time_decay_mults[0])
-                    else:
-                        mult = 1.0
-                    eff_dip = base_dip * mult
-                    if sig.action == "BUY":
-                        eff_target = ref_px - eff_dip
-                    else:
-                        eff_target = ref_px + eff_dip
-                else:
-                    eff_target = target0
+            if sig.action == "BUY":
+                need_low = target * (1.0 - pen_frac)
+                window = ad.lows[start:deadline]
+                idx = np.where(window <= need_low)[0]
+                if len(idx) > 0:
+                    fill_ci = start + int(idx[0])
+            else:  # SELL
+                need_high = target * (1.0 + pen_frac)
+                window = ad.highs[start:deadline]
+                idx = np.where(window >= need_high)[0]
+                if len(idx) > 0:
+                    fill_ci = start + int(idx[0])
 
-                # ── Check for fill ──
-                if sig.action == "BUY":
-                    need_low = eff_target * (1.0 - pen_frac)
-                    if ad.lows[bar] <= need_low:
-                        fill_ci = bar
-                        fill_px = eff_target if use_time_decay_price \
-                                  else target0
-                        break
-                else:  # SELL
-                    need_high = eff_target * (1.0 + pen_frac)
-                    if ad.highs[bar] >= need_high:
-                        fill_ci = bar
-                        fill_px = eff_target if use_time_decay_price \
-                                  else target0
-                        break
-
-            result[sig_i] = (fill_ci, fill_px) if fill_ci is not None else None
+            result[sig_i] = fill_ci
 
     return result
 
@@ -2763,7 +2634,7 @@ def compute_trail_params(ad, entry_fi: int) -> Tuple[float, float]:
     except Exception:
         return float(CFG.TRAIL_DISTANCE), float(CFG.TRAIL_ACTIVATE_MFE)
 
-def _advance(pos, ad, to_ci, partial_cb=None):
+def _advance(pos, ad, to_ci):
     """
     Walk bars from current_ci+1 to to_ci.
 
@@ -2845,13 +2716,7 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                 # Legacy trailing (uses sub-bar high/low as peak candidate)
                 _td = pos.trail_dist_frac if pos.trail_dist_frac > 0 else CFG.TRAIL_DISTANCE
                 _ta = pos.trail_activate_frac if pos.trail_activate_frac > 0 else CFG.TRAIL_ACTIVATE_MFE
-                # ══ [FIX 1] Activation tied to R-multiple, not fixed MFE ══
-                _sl_frac_init = (pos.sl_dist_initial / pos.entry_px
-                                 if pos.entry_px > 0 and pos.sl_dist_initial > 0
-                                 else 0.01)
-                _act_at_r = float(getattr(CFG, 'TRAIL_ACTIVATE_AT_R', 1.0))
-                _ta_eff = _sl_frac_init * _act_at_r
-                if CFG.TRAIL_ENABLED and pos.mfe_frac >= _ta_eff:
+                if CFG.TRAIL_ENABLED and pos.mfe_frac >= _ta:
                     if sig.action == "BUY":
                         peak = pos.peak_price if pos.peak_price > 0 else pos.entry_px
                         if s_high > peak:
@@ -2866,23 +2731,6 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                         new_sl = peak * (1.0 + _td)
                         if new_sl < trail_sl * (1.0 - CFG.TRAIL_MIN_STEP):
                             trail_sl = new_sl
-
-                # ══ [FIX 4] Partial TP trigger ══
-                if (getattr(CFG, 'PARTIAL_TP_ENABLED', False)
-                        and not getattr(pos, 'partial_taken', False)
-                        and partial_cb is not None
-                        and pos.sl_dist_initial > 0):
-                    _ptr = float(getattr(CFG, 'PARTIAL_TP_R', 1.0))
-                    if sig.action == "BUY":
-                        _trig = pos.entry_px + pos.sl_dist_initial * _ptr
-                        if s_high >= _trig:
-                            pos.partial_taken = True
-                            partial_cb(pos, _trig, cidx)
-                    else:
-                        _trig = pos.entry_px - pos.sl_dist_initial * _ptr
-                        if s_low <= _trig:
-                            pos.partial_taken = True
-                            partial_cb(pos, _trig, cidx)
 
                 # SL / TP check on sub-bar
                 res, px = _check_sl_tp(s_high, s_low, p, fi)
@@ -2909,13 +2757,7 @@ def _advance(pos, ad, to_ci, partial_cb=None):
 
             _td = pos.trail_dist_frac if pos.trail_dist_frac > 0 else CFG.TRAIL_DISTANCE
             _ta = pos.trail_activate_frac if pos.trail_activate_frac > 0 else CFG.TRAIL_ACTIVATE_MFE
-            # ══ [FIX 1] Activation tied to R-multiple, not fixed MFE ══
-            _sl_frac_init = (pos.sl_dist_initial / pos.entry_px
-                             if pos.entry_px > 0 and pos.sl_dist_initial > 0
-                             else 0.01)
-            _act_at_r = float(getattr(CFG, 'TRAIL_ACTIVATE_AT_R', 1.0))
-            _ta_eff = _sl_frac_init * _act_at_r
-            if CFG.TRAIL_ENABLED and pos.mfe_frac >= _ta_eff:
+            if CFG.TRAIL_ENABLED and pos.mfe_frac >= _ta:
                 if sig.action == "BUY":
                     peak = pos.peak_price if pos.peak_price > 0 else pos.entry_px
                     if high > peak:
@@ -2956,28 +2798,9 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                 pos.trail_sl = trail_sl; pos.current_ci = cidx
                 return p, f"Topo-Div({div_t:.3f})", cidx
 
-        # 3. MaxHold (close-based)
-        # ══ [TF-FIX] scale bar-count to preserve real-time duration ══
         if cidx - pos.entry_ci > effective_bars(CFG.MAX_HOLD_BARS):
             pos.trail_sl = trail_sl; pos.current_ci = cidx
             return p, "MaxHold", cidx
-
-        # ══ [FIX 3] Time-based kill — if flat after N bars, cut it ══
-        if getattr(CFG, 'TIME_KILL_ENABLED', False):
-            _tk_bars = effective_bars(int(getattr(CFG, 'TIME_KILL_BARS', 10)))
-            if (cidx - pos.entry_ci) >= _tk_bars:
-                # Compute current R-multiple
-                if pos.sl_dist_initial > 0:
-                    if sig.action == "BUY":
-                        _pnl_frac = (p - pos.entry_px) / pos.entry_px
-                    else:
-                        _pnl_frac = (pos.entry_px - p) / pos.entry_px
-                    _sl_frac0 = pos.sl_dist_initial / pos.entry_px
-                    _r_now = _pnl_frac / _sl_frac0 if _sl_frac0 > 0 else 0.0
-                    _min_r = float(getattr(CFG, 'TIME_KILL_MIN_R', 0.5))
-                    if _r_now < _min_r:
-                        pos.trail_sl = trail_sl; pos.current_ci = cidx
-                        return p, f"TimeKill({_r_now:.2f}R)", cidx
 
     pos.trail_sl = trail_sl
     pos.current_ci = max(end, pos.current_ci)
@@ -3083,51 +2906,18 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
     # ══ [RE-ENTRY COOLDOWN] Track last exit bar per symbol ══
     last_exit_ci: Dict[str, int] = {}
     # ══ [BACKTEST REALISM] Precompute which entries actually fill ══
-    # When SIMULATE_LIVE_FAITHFULLY, use the LIVE entry timeout
-    # (PO_MAX_WAIT_S seconds converted to bars) instead of the
-    # generous backtest window (25 bars).
-    _tf_sec = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
-    _sim_live = bool(getattr(CFG, 'SIMULATE_LIVE_FAITHFULLY', False))
-
-    if _sim_live:
-        _live_wait_cap_s = float(getattr(CFG, 'PO_MAX_WAIT_S', 0) or 0)
-        if _live_wait_cap_s > 0:
-            _bars_from_seconds = max(1, int(np.ceil(_live_wait_cap_s / _tf_sec)))
-        else:
-            _bars_from_seconds = effective_bars(CFG.FILL_ENTRY_MAX_WAIT_BARS)
-        _effective_wait_bars = min(
-            effective_bars(CFG.FILL_ENTRY_MAX_WAIT_BARS),
-            _bars_from_seconds,
-        )
-        _wait_label = (f"live={_live_wait_cap_s:.0f}s "
-                       f"→ {_effective_wait_bars} bars")
-    else:
-        _effective_wait_bars = effective_bars(CFG.FILL_ENTRY_MAX_WAIT_BARS)
-        _wait_label = (f"{CFG.FILL_ENTRY_MAX_WAIT_BARS} bars × "
-                       f"scale {CFG.TF_SCALE:.2f} = {_effective_wait_bars}")
-
-    # Time-decay: only applied if live-mode is on
-    _td_enabled = _sim_live and bool(getattr(CFG, 'ENTRY_TIME_DECAY', False))
-
     fill_map = precompute_entry_fills(
         assets, signals,
-        max_wait_bars=_effective_wait_bars,
+        max_wait_bars=effective_bars(CFG.FILL_ENTRY_MAX_WAIT_BARS),   # ══ [TF-FIX]
         pen_bps=CFG.FILL_PENETRATION_BPS,
-        time_decay_enabled=_td_enabled,
-        time_decay_bars=(CFG.ENTRY_TIME_DECAY_BARS_1,
-                         CFG.ENTRY_TIME_DECAY_BARS_2,
-                         CFG.ENTRY_TIME_DECAY_BARS_3),
-        time_decay_mults=(CFG.ENTRY_TIME_DECAY_MULT_1,
-                          CFG.ENTRY_TIME_DECAY_MULT_2,
-                          CFG.ENTRY_TIME_DECAY_MULT_3),
-        use_time_decay_price=_td_enabled,
     )
     n_total_sigs = len(signals)
     n_would_fill = sum(1 for v in fill_map.values() if v is not None)
     log.info(f"  [Backtest Realism] Entry fills: "
              f"{n_would_fill:,}/{n_total_sigs:,} "
              f"({100*n_would_fill/max(n_total_sigs,1):.1f}%) "
-             f"[pen={CFG.FILL_PENETRATION_BPS}bps, wait={_wait_label}]")
+             f"[pen={CFG.FILL_PENETRATION_BPS}bps, "
+             f"wait={CFG.FILL_ENTRY_MAX_WAIT_BARS}bars]")
 
     def _close(pos, ad, exit_px, exit_rsn, exit_ci):
         nonlocal capital, peak_cap
@@ -3157,8 +2947,7 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         funding_payments = max(0, hold_bars) // CFG.FUNDING_INTERVAL_BARS
         funding_cost = pos.pos_size * pos.entry_px * CFG.FUNDING_RATE_COST * funding_payments
 
-        # Include any accumulated partial-TP profit in the final trade PnL
-        net  = gross - fee - funding_cost + float(getattr(pos, 'partial_pnl', 0.0))
+        net  = gross - fee - funding_cost
         cap0 = pos.entry_cap
         capital = max(capital+net, 0.)
         peak_cap= max(peak_cap, capital)
@@ -3180,30 +2969,6 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
             T_info_at_entry=sig.T_info_val,
             mfe_frac=pos.mfe_frac
         ))
-    # ══ [FIX 4] Partial TP callback ══
-    def _partial_tp(pos, px, ci):
-        """Record a partial take-profit and reduce the position size."""
-        nonlocal capital, peak_cap
-        sig = pos.signal
-        _pct = float(getattr(CFG, 'PARTIAL_TP_PCT', 0.5))
-        _close_qty = pos.pos_size * _pct
-        if _close_qty <= 0:
-            return
-        adv_here = ad_here = pos.entry_cap  # placeholder — see below
-        # Compute gross PnL for the partial close
-        if sig.action == "BUY":
-            _gross = (px - pos.entry_px) * _close_qty
-        else:
-            _gross = (pos.entry_px - px) * _close_qty
-        _fee = _close_qty * (pos.entry_px + px) * CFG.MAKER_FEE
-        _net = _gross - _fee
-        capital += _net
-        peak_cap = max(peak_cap, capital)
-        equity.append(capital)
-        pos.partial_pnl = pos.partial_pnl + _net
-        pos.pos_size -= _close_qty
-        log.debug(f"[PartialTP] {sig.symbol} closed {_pct*100:.0f}% "
-                  f"@ {px:.6f}  net=${_net:+.4f}  remaining={pos.pos_size:.6f}")
 
     for sig_i, sig in enumerate(signals):
         # حاجز أمان مطلق: يستحيل بدء تداول جديد إذا اقترب الجسيم من عتبة الفناء (5.1$)
@@ -3215,7 +2980,7 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         for sym, pos in open_pos.items():
             ad   = assets[sym]
             toci = _ts_to_ci(ad, sig.timestamp)
-            ep, er, ec = _advance(pos, ad, toci, partial_cb=_partial_tp)
+            ep, er, ec = _advance(pos, ad, toci)
             if ep > 0:
                 _close(pos, ad, ep, er, ec)
                 to_close.append(sym)
@@ -3252,17 +3017,16 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
 
         ad = assets[sym]
 
-        # ══ [BACKTEST REALISM] Look up actual fill bar and price ══
-        fill_info = fill_map.get(sig_i)
-        if fill_info is None:
+        # ══ [BACKTEST REALISM] Look up actual fill bar ══
+        fill_ci = fill_map.get(sig_i)
+        if fill_ci is None:
             # Order never penetrated — skip this signal entirely
             continue
-        fill_ci, fill_px = fill_info
 
         # 🚀 التوافق السببي: الدخول يتم عند الشمعة التي اخترق فيها السوق السعر
         opt_ci = fill_ci
-        # ══ [TIME-DECAY PRICE] Use the actual fill price (may be decayed) ══
-        opt_px = float(fill_px)
+        # ══ [NO-FIXED-PRICE] Use the same target logic as Live ══
+        opt_px = _backtest_entry_target(sig, ad)
         opt_entry = False
 
         # ══ [SUB-BARS] Find the sub-bar within the entry bar where
@@ -3293,7 +3057,7 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         sl_distance = abs(sig.price - sig.sl)
         tp_distance = abs(sig.tp1 - sig.price)
         # Cap scales with widening so the loosened SL isn't re-clipped.
-        _max_sl_frac = 0.015 * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
+        _max_sl_frac = 0.15 * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
         if sl_distance > opt_px * _max_sl_frac:
             _rr = tp_distance / max(sl_distance, 1e-12)
             sl_distance = opt_px * _max_sl_frac
@@ -3339,34 +3103,6 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
 
         # Leverage cap
         dynamic_leverage = compute_dynamic_leverage(capital, CFG)
-
-        # ══ [LIVE PARITY] Apply LevCap + LiqGate like live does ══
-        # Live uses real MMR from the exchange. Backtest uses the
-        # LIQ_FALLBACK_MMR (2%) as a proxy — same as live's fallback.
-        if _sim_live and getattr(CFG, 'LIQ_ENABLED', True):
-            _mmr = float(CFG.LIQ_FALLBACK_MMR)
-            _sl_frac_max = 0.015 * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
-            _lev_by_liq = compute_max_leverage_by_liq(
-                sl_frac_max=_sl_frac_max,
-                mmr=_mmr,
-                safety_mult=float(CFG.LIQ_SAFETY_MULT),
-            )
-            if dynamic_leverage > _lev_by_liq:
-                dynamic_leverage = max(int(CFG.LEVERAGE_MIN), _lev_by_liq)
-            if dynamic_leverage < int(CFG.LEVERAGE_MIN):
-                log.debug(f"[LevCap] {sym} leverage below min — skip")
-                continue
-            # LiqGate: reject if SL too close to Liq
-            _liq_px = compute_liquidation_price(
-                opt_px, sig.action, dynamic_leverage, _mmr
-            )
-            _liq_gap = abs(opt_px - _liq_px)
-            _sl_gap = abs(opt_px - sl_h)
-            if (_liq_gap <= 1e-12 or
-                    _sl_gap * float(CFG.LIQ_SAFETY_MULT) > _liq_gap):
-                log.debug(f"[LiqGate] {sym} REJECT at backtest entry")
-                continue
-
         max_notional = capital * dynamic_leverage
         qty = min(qty, max_notional / opt_px)
 
@@ -6862,7 +6598,7 @@ def _promote_pending_to_position(exchange, sym: str, rec: Dict,
 
     rr = orig_tp_dist / orig_sl_dist
     # Cap scales with widening so the loosened SL isn't re-clipped.
-    max_sl_frac = 0.015 * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
+    max_sl_frac = 0.15 * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
     if orig_sl_dist > entry_price * max_sl_frac:
         orig_sl_dist = entry_price * max_sl_frac
         orig_tp_dist = orig_sl_dist * rr
@@ -7754,46 +7490,19 @@ def run_live(cfg, exchange):
                 if not ex:
                     entry_ts = pos.get('entry_ts', 0)
                     if entry_ts > 0:
+                        # ══ [TF-FIX] use TF_SECONDS instead of if-else on 1m/1h ══
                         tf_sec = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
                         bars_held = (time.time() - entry_ts) / tf_sec
                         if bars_held > effective_bars(cfg.MAX_HOLD_BARS):
                             ex = True
                             rsn = f"MaxHold({int(bars_held)}bars)"
 
-                # ── [FIX 3] Time-based kill ──
-                if (not ex
-                        and getattr(CFG, 'TIME_KILL_ENABLED', False)
-                        and entry_ts > 0):
-                    _tk_bars = effective_bars(int(getattr(CFG, 'TIME_KILL_BARS', 10)))
-                    _bars_now = (time.time() - entry_ts) / (
-                        CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600)
-                    if _bars_now >= _tk_bars:
-                        _entry_px = float(pos['entry'])
-                        _sl_d0 = float(pos.get('sl_dist_initial', 0) or 0)
-                        if _sl_d0 > 0 and _entry_px > 0:
-                            if pos['action'] == "BUY":
-                                _pnl_f = (price - _entry_px) / _entry_px
-                            else:
-                                _pnl_f = (_entry_px - price) / _entry_px
-                            _sl_f0 = _sl_d0 / _entry_px
-                            _r_now = _pnl_f / _sl_f0 if _sl_f0 > 0 else 0.0
-                            _min_r = float(getattr(CFG, 'TIME_KILL_MIN_R', 0.5))
-                            if _r_now < _min_r:
-                                ex = True
-                                rsn = f"TimeKill({_r_now:.2f}R)"
-
-                # ── Trailing SL (dynamic σ-scaled) ──
+                # ── Trailing SL (legacy — proven formula, restored) ──
                 if not ex:
                     entry_px = float(pos['entry'])
-                    _sl_before = float(pos['sl'])   # ← [FIX] was missing
+                    _sl_before = float(pos['sl'])
                     _td = float(pos.get('trail_dist_frac', CFG.TRAIL_DISTANCE))
-                    # ══ [FIX 1] Activation at R-multiple of initial SL ══
-                    _sl_dist_init = float(pos.get('sl_dist_initial', 0) or 0)
-                    _sl_frac_init = (_sl_dist_init / entry_px
-                                     if entry_px > 0 and _sl_dist_init > 0
-                                     else 0.01)
-                    _act_at_r = float(getattr(CFG, 'TRAIL_ACTIVATE_AT_R', 1.0))
-                    _ta = _sl_frac_init * _act_at_r
+                    _ta = float(pos.get('trail_activate_frac', CFG.TRAIL_ACTIVATE_MFE))
 
                     # Update peak from live price and compute MFE
                     if pos['action'] == "BUY":
@@ -7826,49 +7535,6 @@ def run_live(cfg, exchange):
                             _sync_protective_orders(exchange, sym, pos)
                         except Exception as _e:
                             log.debug(f"[Prot] {sym} sync error: {_e}")
-
-                # ── [FIX 4] Partial TP ──
-                if (not ex
-                        and getattr(CFG, 'PARTIAL_TP_ENABLED', False)
-                        and not pos.get('_partial_taken', False)):
-                    _entry_px_p = float(pos['entry'])
-                    _sl_d0_p = float(pos.get('sl_dist_initial', 0) or 0)
-                    if _sl_d0_p > 0 and _entry_px_p > 0:
-                        _ptr = float(getattr(CFG, 'PARTIAL_TP_R', 1.0))
-                        _pct = float(getattr(CFG, 'PARTIAL_TP_PCT', 0.5))
-                        if pos['action'] == "BUY":
-                            _trig_p = _entry_px_p + _sl_d0_p * _ptr
-                            _hit_p = price >= _trig_p
-                        else:
-                            _trig_p = _entry_px_p - _sl_d0_p * _ptr
-                            _hit_p = price <= _trig_p
-                        if _hit_p:
-                            _qty_close = float(pos['qty']) * _pct
-                            try:
-                                _s_p = 'sell' if pos['action'] == 'BUY' else 'buy'
-                                _res_p = execute_post_only(
-                                    exchange, sym, _s_p, _qty_close,
-                                    max_wait_s=int(getattr(CFG, 'PO_EXIT_URGENT_WAIT_S', 4)),
-                                    fallback_market=True,
-                                    cross_spread=True,
-                                    reduce_only=True,
-                                )
-                                if (_res_p.get('filled_qty') or 0) > 0:
-                                    pos['qty'] = float(pos['qty']) - float(_res_p['filled_qty'])
-                                    pos['_partial_taken'] = True
-                                    pos['_partial_pnl'] = float(pos.get('_partial_pnl', 0.0))
-                                    log.info(f"[PartialTP] {sym} closed "
-                                             f"{_pct*100:.0f}% @ "
-                                             f"{_res_p['avg_price']:.6f} "
-                                             f"remaining={pos['qty']:.6f}")
-                                    # Persist state
-                                    try:
-                                        with open(state_file, 'w') as _f:
-                                            json.dump(open_pos_live, _f, indent=2)
-                                    except Exception:
-                                        pass
-                            except Exception as _e:
-                                log.warning(f"[PartialTP] {sym} failed: {_e}")
 
                 # ── SL / TP ──
                 if not ex:
@@ -8426,11 +8092,7 @@ def run_live(cfg, exchange):
                             continue
 
                         rr_ratio = orig_tp_dist / orig_sl_dist
-                        # [SL-CLIP-CONSISTENCY] Scale with SL_WIDEN_MULT
-                        # so the widened SL isn't re-clipped back to 1.5%.
-                        max_sl_frac = 0.015 * float(
-                            getattr(CFG, 'SL_WIDEN_MULT', 1.0)
-                        )
+                        max_sl_frac = 0.015
                         if orig_sl_dist > entry_price * max_sl_frac:
                             orig_sl_dist = entry_price * max_sl_frac
                             orig_tp_dist = orig_sl_dist * rr_ratio
