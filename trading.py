@@ -253,7 +253,7 @@ class Config:
     TF_SECONDS: int = 3600        # seconds per bar
     TF_HOURS: float = 1.0         # hours per bar
     # ══ [NOTIONAL CAP — anti-compounding] ══
-    MAX_ABS_NOTIONAL: float = 20_000.0     # tuned for alt liquidity
+    MAX_ABS_NOTIONAL: float = 10000.0     # tuned for alt liquidity
     # ══ [DYNAMIC TRAILING — volatility-scaled] ══
     TRAIL_DYNAMIC: bool = True
     TRAIL_KAPPA: float = 0.30                # tuned to 1h timeframe
@@ -366,7 +366,7 @@ class Config:
     #   1.5 → moderate widening
     #   2.0 → recommended starting point
     #   2.5 → aggressive widening (fewer SL hits, larger drawdowns)
-    SL_WIDEN_MULT: float = 2.0
+    SL_WIDEN_MULT: float = 1.0
 
     # ══ [ADAPTIVE FIX #3] Tick-based penetration ══
     # WIF has 0.254 ticks/bps → 1 bps < 1 tick → orders can't fill properly.
@@ -527,7 +527,7 @@ class Config:
     PARTIAL_TP_ENABLED: bool = True
     PARTIAL_TP_R: float = 3.0           # take profit at +1R
     PARTIAL_TP_PCT: float = 0.5         # close 50% at that level
-    TP_MULT: float = 5    # كان 2.0 → الآن 1.5 (R:R = 1.5)
+    TP_MULT: float = 1.5    # كان 2.0 → الآن 1.5 (R:R = 1.5)
     APEX_ENABLED: bool = False    # عطّله مؤقتاً حتى نضبط عتباته
 
     # ══ [SINGULARITY TIMING LAYER 1 — EMERGING] ══
