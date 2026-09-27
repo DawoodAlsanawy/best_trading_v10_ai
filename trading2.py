@@ -85,7 +85,7 @@ class Config:
     EMA_SPAN: int = 200; ATR_PERIOD: int = 14
 
     W_CURV: float=1.0; W_VOL: float=1.0; W_ENTROPY: float=2.0
-    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=4
+    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=5
 
     CURV_THRESHOLD: float=0.01; DH_ENTROPY_THRESHOLD: float=0.005
     DH_HMM_UPPER: float=0.01;  DH_HMM_LOWER: float=-0.01
@@ -125,11 +125,11 @@ class Config:
     REDUCED_RISK_MULT: float   = 0.25
     REDUCED_RISK_MULT_50: float= 0.10
     REDUCED_RISK_MULT_70: float= 0.05
-    DRAWDOWN_REDUCE_AT:  float = 0.30
-    DRAWDOWN_REDUCE_AT_50: float=0.50
-    DRAWDOWN_REDUCE_AT_70: float=0.70
+    DRAWDOWN_REDUCE_AT:  float = 0.20
+    DRAWDOWN_REDUCE_AT_50: float=0.40
+    DRAWDOWN_REDUCE_AT_70: float=0.60
 
-    MAX_CONCURRENT_ASSETS: int   = 5
+    MAX_CONCURRENT_ASSETS: int   = 4
     CORRELATION_THRESHOLD: float = 0.70
 
     MAX_HOLD_BARS: int = 168
@@ -211,7 +211,7 @@ class Config:
 
     # ══ [POST-ONLY EXECUTION] ══
     PO_PENETRATION_BPS: float = 1.0      # match backtest's FILL_PENETRATION_BPS
-    PO_MAX_WAIT_S: int = 0 # 200              # entry wait time (per attempt)
+    PO_MAX_WAIT_S: int = 200              # entry wait time (per attempt)
     PO_EXIT_MAX_WAIT_S: int = 45          # reduced from 180 to prevent long blocking
     PO_REPRICE_S: float = 3.0            # cancel/replace interval
     PO_FILL_THRESHOLD: float = 0.50      # accept partial if ≥ 50%
@@ -219,23 +219,17 @@ class Config:
     PO_DRIFT_BPS: float = 0.5            # reprice if target drifts > this
 
     # ══ [TRAILING STOP] ══
-    # ══ [TRAILING STOP LOSS — Master Switch] ══
-    # True  → SL يتحرك مع السعر بعد الوصول إلى TRAIL_ACTIVATE_AT_R.
-    #         يُحدَّث أيضاً على البورصة عبر _sync_protective_orders.
-    # False → SL يبقى ثابتاً عند مستواه عند الدخول (لا Trailing).
-    #         مطبّق في الباكتيست واللايف بشكل متطابق.
-    # CLI: --no-trailing لتعطيله، --trailing لإجباره.
     TRAIL_ENABLED: bool = True
     TRAIL_ACTIVATE_MFE: float = 0.004    # activate after 0.4% MFE
     TRAIL_DISTANCE: float = 0.003        # trail 0.3% below peak
     TRAIL_MIN_STEP: float = 0.0005       # only move SL if improvement ≥ 0.05%
 
     # ══ [PORTFOLIO RISK BUDGET] ══
-    PORTFOLIO_HEAT_MAX: float = 0.10       # 10% total risk-at-SL across all slots
+    PORTFOLIO_HEAT_MAX: float = 0.08       # 8% total risk-at-SL across all slots
     RISK_STRENGTH_MIN: float = 0.50        # weakest signal → 0.5 × base_per_slot
     RISK_STRENGTH_MAX: float = 1.50        # strongest signal → 1.5 × base_per_slot
     MIN_RISK_PER_TRADE: float = 0.005      # 0.5% floor (skip if below)
-    MAX_RISK_PER_TRADE: float = 0.030      # 3.0% ceiling per trade
+    MAX_RISK_PER_TRADE: float = 0.025      # 2.5% ceiling per trade
     BUDGET_ENABLED: bool = True            # master switch
     # ══ [STATE MACHINE — Persistent Symbol Metadata] ══
     SYMBOL_META_FILE: str = "symbol_meta"
@@ -275,37 +269,13 @@ class Config:
     RULE_REJECT_RANGE_POS_PCT: float = 0.66
     RULE_MIN_SCORE: int = 2                  # reject if #rules matched >= this
     # ══ [RE-ENTRY COOLDOWN — prevents close-and-reverse] ══
-    REENTRY_COOLDOWN_BARS: int = 3     # bars to wait after exit on same symbol
+    REENTRY_COOLDOWN_BARS: int = 4     # bars to wait after exit on same symbol
     REENTRY_COOLDOWN_ENABLED: bool = True
     # ══ [LIVE ASSET CACHE — reuse AssetData when closed bar unchanged] ══
     LIVE_ASSET_CACHE_ENABLED: bool = True
     LIVE_ASSET_CACHE_MAX: int = 40           # max entries (safety)
     # ══ [FIXED PRICE ENTRY — no chasing] ══
-    PO_FIXED_PRICE: bool = False              # use sig.price, hold it fixed
-    # ══ [TF-UNIFIED SCALING] ══
-    # كل المسافات بوحدة σ_price = E_therm[fi] × price.
-    # كل النوافذ بالساعات الحقيقية (تُحوَّل إلى شموع عند الإقلاع).
-    FRICTION_DIP_KAPPA: float = 4.0       # friction_drag = κ × σ_price
-    SL_REF_KAPPA: float = 2.0             # SL/σ = κ × uncertainty / (1 + fric×5)
-    SL_MIN_SIGMA: float = 1.0             # أدنى SL بوحدة σ
-    SL_MAX_SIGMA: float = 5.0             # أقصى SL بوحدة σ
-    N_HOURS: float = 24.0                 # نافذة الميزات (ساعات)
-    W_HOURS: float = 20.0                 # نافذة الإنتروبيا
-    L_HOURS: float = 10.0                 # نافذة الهندسة
-    ADV_HOURS: float = 24.0               # نافذة ADV
-    ADV_BARS: int = 24                    # يُضبط ديناميكياً في main()
-    # ══ [UNIFIED ENTRY LOGIC] ══
-    # منطق موحّد بمرحلتين:
-    #   Stage 1: أمر Limit عند tunnel_entry_p، انتظر UNIFIED_WAIT_BARS_1H.
-    #   Stage 2: إن لم يمتلئ، وُجد زخم مؤيد + إشارة حيّة → ادخل بسعر
-    #            السوق، وأعد بناء SL/TP من S_new = p - friction_drag.
-    # عند UNIFIED_ENTRY_ENABLED=False، يعمل البوت كما كان (PO_FIXED_PRICE).
-    UNIFIED_ENTRY_ENABLED: bool = True
-    UNIFIED_WAIT_BARS_1H: int = 8            # نافذة Stage 1 (بوحدات 1h)
-    UNIFIED_MAX_AGE_BARS_1H: int = 12        # أقصى عمر للإشارة (Stage 2)
-    UNIFIED_MOMENTUM_KAPPA: float = 0.50     # عتبة الزخم المؤيد (× σ_bar)
-    UNIFIED_REQUIRE_FRESH_SIGNAL: bool = True
-    UNIFIED_FRESH_SCORE_FRAC: float = 0.85   # حداثة الإشارة (نسبة)
+    PO_FIXED_PRICE: bool = True              # use sig.price, hold it fixed
     # ══ [ATOMIC FILL ACCOUNTING] ══
     PO_MAX_ATTEMPTS: int = 3              # reduced from 5 (rate-limit safety)
     PO_MAX_DRIFT_BPS: float = 5.0
@@ -320,7 +290,7 @@ class Config:
     # ══ [SMART OHLCV FETCH] ══
     SMART_OHLCV_ENABLED: bool = True
     # ══ [SUPPORT/RESISTANCE FILTER] ══
-    SR_FILTER_ENABLED: bool = False      # disabled by default until tuned
+    SR_FILTER_ENABLED: bool = True      # enabled for structural anchoring
     SR_LOOKBACK: int = 100
     SR_MIN_TOUCHES: int = 2              # relaxed from 3
     SR_TOUCH_TOLERANCE: float = 0.0035   # relaxed from 0.0025 (0.35%)
@@ -337,16 +307,9 @@ class Config:
     KILL_STATE_ARMED: str = "ARMED"
     KILL_STATE_WARNING: str = "WARNING"
     KILL_STATE_TRIGGERED: str = "TRIGGERED"
-    # ══ [THRESHOLD MODE] ══
-    # True  → use the ABSOLUTE thresholds (DH_ENTROPY_THRESHOLD,
-    #         DF_FREE_E_THRESHOLD, DH_HMM_UPPER, DH_HMM_LOWER).
-    #         This is the original design.
-    # False → use Z-SCORE thresholds (DH_ENTROPY_Z, ...), the experiment.
-    # The diagnostic showed the z-score experiment produced 1.8× signals
-    # and a different score distribution. Restored to absolute.
-    USE_ABSOLUTE_THRESHOLDS: bool = True
-
-    # Z-score thresholds (kept for the opt-in path)
+    # ══ [ADAPTIVE FIX #1] Z-score thresholds for dH/dF ══
+    # Absolute thresholds (0.005, -0.01) fire ~50% of bars → noise.
+    # Z-scores make thresholds fire ~16% of bars → real signal.
     DH_ENTROPY_Z: float = -1.0
     DF_FREE_E_Z:  float = -1.0
     DH_HMM_UPPER_Z: float = 0.5
@@ -366,7 +329,7 @@ class Config:
     #   1.5 → moderate widening
     #   2.0 → recommended starting point
     #   2.5 → aggressive widening (fewer SL hits, larger drawdowns)
-    SL_WIDEN_MULT: float = 2.0
+    SL_WIDEN_MULT: float = 2.4
 
     # ══ [ADAPTIVE FIX #3] Tick-based penetration ══
     # WIF has 0.254 ticks/bps → 1 bps < 1 tick → orders can't fill properly.
@@ -426,11 +389,7 @@ class Config:
     ENTRY_STRUCTURE_RANGE_MULT_HI: float = 2.00  # don't anchor farther than this × dip
     ENTRY_STRUCTURE_BUFFER_MULT: float = 0.10    # buffer above support = 0.1 × ATR
     # Layer 4: time decay (applied during repricing)
-    # [DISABLED] Restored from diagnostic: with base dip = 0.34%,
-    # Stage-3 decays it to 0.10% — essentially a market order.
-    # With the restored friction dip (≈2%), time decay would chase
-    # the market down and destroy the mean-reversion edge.
-    ENTRY_TIME_DECAY: bool = False
+    ENTRY_TIME_DECAY: bool = True
     ENTRY_TIME_DECAY_BARS_1: int = 5
     ENTRY_TIME_DECAY_BARS_2: int = 10
     ENTRY_TIME_DECAY_BARS_3: int = 15
@@ -493,316 +452,8 @@ class Config:
     PO_EXIT_MAX_WAIT_S: int = 12            # was 45 (still used for soft exits)
     PO_EXIT_URGENT_WAIT_S: int = 4          # for SL/TP/LiqProximity
     PO_EXIT_URGENT_CROSS_SPREAD: bool = True
-    # ══ [BACKTEST↔LIVE PARITY] ══
-    # When True, backtest behaves like live:
-    #   - Uses the same entry timeout as live (PO_MAX_WAIT_S seconds)
-    #   - Applies time-decay repricing (if ENTRY_TIME_DECAY enabled)
-    #   - Applies LevCap (caps leverage by MMR)
-    #   - Applies LiqGate (rejects signals with SL too close to Liq)
-    # Set to False to restore the legacy "generous" backtest.
-    SIMULATE_LIVE_FAITHFULLY: bool = True
-    # ══ [FIX 1 — TRAILING ACTIVATION AT R-MULTIPLE] ══
-    # Old design activated trailing after a fixed MFE (0.4%), which was
-    # often BELOW the SL distance. So SL moved above entry on tiny moves
-    # and killed 52% of trades with a "profitable SL" that capped gains.
-    # New design: trailing only activates after N × sl_dist_initial of MFE.
-    TRAIL_ACTIVATE_AT_R: float = 2.5    # activate at +1R of profit
-
-    # ══ [FIX 2 — REGIME FILTER] ══
-    # Skip signals when EMA200 slope (over lookback) is too steep
-    # relative to ATR. Mean-reversion hates trending markets.
-    REGIME_FILTER_ENABLED: bool = False
-    REGIME_EMA_LOOKBACK: int = 50
-    REGIME_SLOPE_ATR_MAX: float = 2.0   # |slope×bars|/ATR > this → skip
-
-    # ══ [FIX 3 — TIME-BASED KILL] ══
-    # If after N bars the trade hasn't reached TIME_KILL_MIN_R, close it.
-    TIME_KILL_ENABLED: bool = False
-    TIME_KILL_BARS: int = 10            # bars to wait (TF-scaled)
-    TIME_KILL_MIN_R: float = 0.5        # must reach +0.5R by then
-
-    # ══ [FIX 4 — PARTIAL TAKE-PROFIT] ══
-    # Close PARTIAL_TP_PCT of the position at +PARTIAL_TP_R, let the
-    # rest ride with trailing.
-    PARTIAL_TP_ENABLED: bool = True
-    PARTIAL_TP_R: float = 3.0           # take profit at +1R
-    PARTIAL_TP_PCT: float = 0.5         # close 50% at that level
-    TP_MULT: float = 5    # كان 2.0 → الآن 1.5 (R:R = 1.5)
-    APEX_ENABLED: bool = False    # عطّله مؤقتاً حتى نضبط عتباته
-
-    # ══ [SINGULARITY TIMING LAYER 1 — EMERGING] ══
-    # طبقة توقيت تكشف الرنين الكسري قبل الانفجار بدقائق وتُعجّل
-    # الأمر المعلّق دون تغيير أي منطق آخر. معطّلة افتراضياً.
-    SING_TIMING_ENABLED: bool = False       # المفتاح الرئيسي
-    # [DEPRECATED — تم استبدالها بالمراتب المئوية]
-    # SING_RESONANCE_THETA, SING_JERK_MIN, SING_JERK_LAMBDA,
-    # SING_JERK_PERSIST, SING_RHO_EMERGING, SING_RHO_ACTIVE
-    # احتُفظ بها للتوافق مع الإصدارات السابقة، لكنها غير مستخدمة.
-    SING_PENDING_WAIT_EMERGING: int = 2     # شموع الانتظار في EMERGING
-    SING_PENDING_WAIT_ACTIVE: int = 1       # شموع الانتظار في ACTIVE
-    # ══ [Percentile Thresholds] ══
-    SING_LOOKBACK_BARS: int = 200
-    SING_PCT_EMERGING: float = 0.70
-    SING_PCT_ACTIVE: float = 0.90
-    SING_PCT_AGAINST_DECAY: float = 0.50
-    # ══ [SINGULARITY TIMING LAYER 2 — ACTIVE MARKETABLE] ══
-    # عند حالة ACTIVE، يستبدل الأمر GTX بأمر Marketable Limit
-    # يقطع السبريد جزئياً ليمتلئ فوراً. معطّلة افتراضياً.
-    SING_ACTIVE_MARKETABLE: bool = True
-    SING_ACTIVE_PENETRATION_BPS: float = 3.0   # اختراق السبريد
-    SING_ACTIVE_MAX_SLIP_BPS: float = 15.0     # أقصى انزلاق عن سعر النفق
-    SING_ACTIVE_MIN_FILL_RATIO: float = 0.5    # أدنى نسبة امتلاء مقبولة
-    # ══ [SINGULARITY TIMING LAYER 3 — Funding Guard + Risk Boost] ══
-    # 3A: Funding Guard — تجنّب الدخول قبل موعد التمويل بـ N دقيقة.
-    # 3B: Resonance Risk Boost — رفع المخاطرة عند ACTIVE.
-    # كلاهما معطّل افتراضياً.
-    SING_FUNDING_GUARD_ENABLED: bool = False    # 3A
-    SING_FUNDING_GUARD_MINUTES: int = 30         # نافذة التجنّب
-    SING_FUNDING_HOURS_UTC: Tuple = (0, 8, 16)   # مواعيد Binance الثابتة
-    SING_RISK_BOOST_ENABLED: bool = False        # 3B
-    SING_RISK_BOOST_ACTIVE: float = 1.20         # مضاعف المخاطرة في ACTIVE
-    SING_RISK_BOOST_EMERGING: float = 1.00       # مضاعف في EMERGING (لا تغيير)
-    # ══ [SING-TIMING Layer 1 — Percentile Thresholds] ══
-    # بدلاً من عتبات مطلقة (التي لا تتكيف مع تقلب كل أصل)، نستخدم
-    # مراتب مئوية محسوبة من نافذة زمنية متدحرجة على geodesic_accel.
-    SING_LOOKBACK_BARS: int = 200         # نافذة حساب المراتب
-    SING_PCT_EMERGING: float = 0.70       # أعلى 30% → EMERGING
-    SING_PCT_ACTIVE: float = 0.90         # أعلى 10% → ACTIVE
-    SING_PCT_AGAINST_DECAY: float = 0.50  # إذا كان التسارع في الاتجاه المعاكس
-
-    # ══ [TRADE FILTER — Pre-entry rejection] ══
-    # فلتر متعدد الإشارات يعمل داخل build_signals قبل إضافة الإشارة.
-    # يقبل الإشارة إلا إذا اجتمع عليها عدد كافٍ من "أصوات الرفض".
-    #
-    # ملاحظة مهمة: FILTER_USE_ACTION_BIAS معطّل افتراضياً لأن
-    # التشخيص أظهر أنه انحياز نظام (85% احتمال) وليس حافة حقيقية.
-    # فعّله فقط إذا أثبتت اختبارات الاستقرار الزمني أنه حقيقي.
-    FILTER_ENABLED: bool = False        # المفتاح الرئيسي (معطّل افتراضياً)
-
-    # الأصوات الفردية (كل صوت = سبب مستقل للرفض)
-    FILTER_USE_ACTION_BIAS: bool = False   # ⚠️ انحياز نظام — معطّل
-    FILTER_USE_EMA_SLOPE: bool = True      # ✅ بنيوي — مفعّل
-    FILTER_USE_HIGH_ATR: bool = True       # ✅ عام — مفعّل
-    FILTER_USE_FRICTION_DRAG: bool = True  # ✅ هندسي — مفعّل
-
-    # العتبات
-    FILTER_ATR_FRAC_MAX: float = 0.024      # atr_frac فوق هذا = تقلب مرتفع
-    FILTER_FRICTION_DRAG_MAX: float = 2.5   # friction_drag/sl_dist فوق هذا = R:R ضعيف
-
-    # الحد الأدنى للأصوات المطلوبة للرفض
-    FILTER_MIN_VOTES: int = 2               # يحتاج صوتين على الأقل
-
-    # التسجيل والتحليل
-    FILTER_LOG_REJECTIONS: bool = False     # سجّل كل رفض في LOG
 
 CFG = Config()
-
-# ════════════════════════════════════════════════════════════════
-# § TRADE LOGGER — Universal (backtest / testnet / live)
-# ════════════════════════════════════════════════════════════════
-# يسجّل كل صفقة في ملف JSONL موحّد للتحليل الخارجي.
-# يعمل في الأوضاع الثلاثة بنفس الصيغة → قابل للمقارنة.
-
-_TRADE_LOG_PATH = None
-
-
-def _trade_log_init(mode: str, explicit_path: Optional[str] = None):
-    """Initialize trade log file for the current run."""
-    global _TRADE_LOG_PATH
-    if explicit_path:
-        _TRADE_LOG_PATH = explicit_path
-    else:
-        _TRADE_LOG_PATH = f"trades_log_{mode}.jsonl"
-    try:
-        with open(_TRADE_LOG_PATH, 'w', encoding='utf-8') as f:
-            f.write(json.dumps({
-                '_meta': True,
-                'mode': mode,
-                'timeframe': CFG.timeframe,
-                'started_at': time.strftime('%Y-%m-%d %H:%M:%S'),
-                'N': CFG.N, 'W': CFG.W, 'L': CFG.L,
-                'K_MAX': CFG.K_MAX, 'K_MIN': CFG.K_MIN,
-                'INITIAL_CAPITAL': CFG.INITIAL_CAPITAL,
-                'LEVERAGE_BASE': CFG.LEVERAGE_BASE,
-                'PO_FIXED_PRICE': CFG.PO_FIXED_PRICE,
-            }, default=str) + "\n")
-        log.info(f"[TradeLog] Logging trades to {_TRADE_LOG_PATH}")
-    except Exception as e:
-        log.warning(f"[TradeLog] init failed: {e}")
-        _TRADE_LOG_PATH = None
-
-
-def _trade_log_write(record: Dict) -> None:
-    """Append one trade record (non-blocking, fail-safe)."""
-    if _TRADE_LOG_PATH is None:
-        return
-    try:
-        with open(_TRADE_LOG_PATH, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(record, default=str) + "\n")
-    except Exception as e:
-        log.debug(f"[TradeLog] write failed: {e}")
-
-
-def _extract_entry_features_for_log(sig, ad=None) -> Dict:
-    """Extract features at entry time (no look-ahead)."""
-    out = {}
-    try:
-        out['score'] = float(getattr(sig, 'score', 0.0))
-        out['action'] = str(getattr(sig, 'action', '?'))
-        out['signal_price'] = float(getattr(sig, 'price', 0.0))
-        out['signal_sl'] = float(getattr(sig, 'sl', 0.0))
-        out['signal_tp1'] = float(getattr(sig, 'tp1', 0.0))
-        out['atr'] = float(getattr(sig, 'atr', 0.0))
-        out['tri_val'] = float(getattr(sig, 'tri_val', 0.0))
-        out['dynamic_risk'] = float(getattr(sig, 'dynamic_risk', 0.0))
-        out['T_info_val'] = float(getattr(sig, 'T_info_val', 0.0))
-        out['dyn_sl_factor'] = float(getattr(sig, 'dyn_sl_factor', 0.0))
-        out['adv_usd'] = float(getattr(sig, 'adv_usd', 0.0))
-        out['feat_idx'] = int(getattr(sig, 'feat_idx', -1))
-        out['close_idx'] = int(getattr(sig, 'close_idx', -1))
-
-        # Geometry
-        p = out['signal_price']
-        sl = out['signal_sl']
-        tp = out['signal_tp1']
-        if p > 0:
-            out['sl_dist_frac'] = abs(p - sl) / p
-            out['rr_design'] = abs(tp - p) / max(abs(p - sl), 1e-12)
-
-        # Asset features at feat_idx
-        if ad is not None:
-            fi = out['feat_idx']
-            if 0 <= fi < len(ad.E_therm):
-                out['E_therm'] = float(ad.E_therm[fi])
-                out['friction'] = float(ad.friction[fi])
-                out['gauge_force'] = float(ad.gauge_force[fi])
-                out['delta_gap'] = float(ad.delta_gap[fi])
-                out['geodesic_accel'] = float(ad.geodesic_accel[fi])
-                out['H'] = float(ad.H[fi])
-                out['dH'] = float(ad.dH[fi])
-                out['dF'] = float(ad.dF[fi])
-                out['T_info'] = float(ad.T_info[fi])
-                out['V'] = float(ad.V[fi])
-                out['C'] = float(ad.C[fi])
-                _dyn_k = max(int(getattr(ad, 'dynamic_k', 2)), 2)
-                Hmax = np.log2(_dyn_k) + 1e-12
-                out['H_over_Hmax'] = out['H'] / Hmax
-
-                # Sigma-normalized geometry
-                sigma_frac = out['E_therm'] if out['E_therm'] > 1e-6 else 0.01
-                sigma_price = sigma_frac * p
-                fd_kappa = float(getattr(CFG, 'FRICTION_DIP_KAPPA', 4.0))
-                fd = fd_kappa * sigma_price
-                sl_dist = abs(p - sl)
-                out['friction_drag_over_sl'] = fd / max(sl_dist, 1e-12)
-                out['sl_sigma'] = sl_dist / max(sigma_price, 1e-12)
-
-                # EMA slope against
-                ci = out['close_idx']
-                if 0 <= ci < len(ad.ema200) and ci >= 50:
-                    ema_now = float(ad.ema200[ci])
-                    ema_prev = float(ad.ema200[ci - 50])
-                    slope = (ema_now - ema_prev) / 50.0
-                    out['ema_slope'] = float(slope)
-                    out['ema_slope_against'] = 1.0 if (
-                        (out['action'] == 'BUY' and slope < 0) or
-                        (out['action'] == 'SELL' and slope > 0)
-                    ) else 0.0
-                    out['dist_from_ema_norm'] = float(
-                        (p - ema_now) / max(sigma_price, 1e-12)
-                    )
-    except Exception as e:
-        out['_extract_err'] = str(e)[:80]
-    return out
-
-
-def _trade_log_from_backtest(pos, ad, exit_px, exit_rsn, exit_ci,
-                              capital_before, capital_after):
-    """Called from simulate_portfolio._close()."""
-    try:
-        sig = pos.signal
-        net = float(capital_after - capital_before)
-        lr = float(np.log(capital_after / capital_before)) \
-            if capital_before > 0 else 0.0
-        rec = {
-            'mode': 'backtest',
-            'symbol': str(sig.symbol),
-            'entry_time': str(sig.timestamp),
-            'entry_price': float(pos.entry_px),
-            'exit_price': float(exit_px),
-            'exit_reason': str(exit_rsn),
-            'pos_size': float(pos.pos_size),
-            'net_pnl': net,
-            'log_return': lr,
-            'capital_before': float(capital_before),
-            'capital_after': float(capital_after),
-            'is_win': bool(net > 0),
-            'mfe_frac': float(getattr(pos, 'mfe_frac', 0.0)),
-            'entry_ci': int(pos.entry_ci),
-            'exit_ci': int(exit_ci),
-            'hold_bars': int(exit_ci - pos.entry_ci),
-            'sl_dist_initial': float(getattr(pos, 'sl_dist_initial', 0.0)),
-        }
-        rec.update(_extract_entry_features_for_log(sig, ad))
-        _trade_log_write(rec)
-    except Exception as e:
-        log.debug(f"[TradeLog] backtest log failed: {e}")
-
-
-def _trade_log_from_live(pos: Dict, exit_px: float, exit_rsn: str,
-                          ad=None, net_pnl=None):
-    """Called from run_live after successful exit."""
-    try:
-        rec = {
-            'mode': str(CFG.mode),
-            'symbol': str(pos.get('_sym') or pos.get('symbol') or '?'),
-            'entry_time': str(pos.get('entry_ts', 0)),
-            'entry_price': float(pos.get('entry', 0.0)),
-            'exit_price': float(exit_px),
-            'exit_reason': str(exit_rsn),
-            'pos_size': float(pos.get('qty', 0.0)),
-            'net_pnl': net_pnl,
-            'leverage': int(pos.get('leverage', 0)),
-            'dyn_risk': float(pos.get('dyn_risk', 0.0)),
-            'T_info_val': float(pos.get('T_info', 0.0)),
-            'sl_dist_initial': float(pos.get('sl_dist_initial', 0.0)),
-            'fill_ratio': float(pos.get('fill_ratio', 0.0)),
-            'action': str(pos.get('action', '?')),
-            'stage': str(pos.get('stage', 'S1')),
-            '_entry_fi': int(pos.get('_entry_fi', -1)),
-            '_entry_ci': int(pos.get('_entry_ci', -1)),
-        }
-        # Minimal feature extraction from ad if available
-        if ad is not None:
-            try:
-                _fi = rec['_entry_fi']
-                _ci = rec['_entry_ci']
-                if 0 <= _fi < len(ad.E_therm):
-                    rec['E_therm'] = float(ad.E_therm[_fi])
-                    rec['friction'] = float(ad.friction[_fi])
-                    rec['gauge_force'] = float(ad.gauge_force[_fi])
-                    rec['delta_gap'] = float(ad.delta_gap[_fi])
-                    rec['geodesic_accel'] = float(ad.geodesic_accel[_fi])
-                    rec['H'] = float(ad.H[_fi])
-                    rec['T_info'] = float(ad.T_info[_fi])
-                    rec['V'] = float(ad.V[_fi])
-                    _dyn_k = max(int(getattr(ad, 'dynamic_k', 2)), 2)
-                    Hmax = np.log2(_dyn_k) + 1e-12
-                    rec['H_over_Hmax'] = rec['H'] / Hmax
-                if 0 <= _ci < len(ad.ema200) and _ci >= 50:
-                    ema_now = float(ad.ema200[_ci])
-                    ema_prev = float(ad.ema200[_ci - 50])
-                    slope = (ema_now - ema_prev) / 50.0
-                    rec['ema_slope'] = float(slope)
-                    rec['ema_slope_against'] = 1.0 if (
-                        (rec['action'] == 'BUY' and slope < 0) or
-                        (rec['action'] == 'SELL' and slope > 0)
-                    ) else 0.0
-            except Exception:
-                pass
-        _trade_log_write(rec)
-    except Exception as e:
-        log.debug(f"[TradeLog] live log failed: {e}")
 
 
 def _resolve_data_params(cfg, mode: str, tf_hours: float,
@@ -912,17 +563,17 @@ def _resolve_data_params(cfg, mode: str, tf_hours: float,
 #            "DOGE/USDT","AVAX/USDT","LINK/USDT","DOT/USDT",
 #            "LTC/USDT","UNI/USDT","ATOM/USDT","ETC/USDT","POL/USDT"]
 
-#def _default_assets():
-#    return ["BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT","XRP/USDT",
-#            "DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT","DOT/USDT",
-#            "LTC/USDT","UNI/USDT","ATOM/USDT","ETC/USDT","POL/USDT",
-#            "TRX/USDT","TON/USDT","BCH/USDT","NEAR/USDT",
-#            "APT/USDT","HBAR/USDT","VET/USDT",
-#            "AAVE/USDT","ARB/USDT",
-#            "OP/USDT","INJ/USDT","SUI/USDT","TIA/USDT","SEI/USDT",
-#            "ALGO/USDT","GRT/USDT","FET/USDT","RENDER/USDT",
-#            "LDO/USDT","KAS/USDT","WIF/USDT","THETA/USDT","EGLD/USDT",
-#            "SAND/USDT","MANA/USDT","AXS/USDT","XLM/USDT","CHZ/USDT"]
+def _default_assets():
+    return ["BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT","XRP/USDT",
+            "DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT","DOT/USDT",
+            "LTC/USDT","UNI/USDT","ATOM/USDT","ETC/USDT","POL/USDT",
+            "TRX/USDT","TON/USDT","BCH/USDT","NEAR/USDT",
+            "APT/USDT","HBAR/USDT","VET/USDT",
+            "AAVE/USDT","ARB/USDT",
+            "OP/USDT","INJ/USDT","SUI/USDT","TIA/USDT","SEI/USDT",
+            "ALGO/USDT","GRT/USDT","FET/USDT","RENDER/USDT",
+            "LDO/USDT","KAS/USDT","WIF/USDT","THETA/USDT","EGLD/USDT",
+            "SAND/USDT","MANA/USDT","AXS/USDT","XLM/USDT","CHZ/USDT"]
 #def _default_assets():
 #    # أعلى 50 عملة من حيث القيمة السوقية مع قبول رافعة 50x على Binance Futures
 #    return [
@@ -979,134 +630,6 @@ def _resolve_data_params(cfg, mode: str, tf_hours: float,
 #    ]
 
 # "ADA/USDT"
-
-def _default_assets():
-    # 100 أصل: أعلى القيمة السوقية + دعم رافعة 50x+ على Binance Futures
-    return [
-        # --- الطبقة الأولى: أعلى سيولة ورافعة (75x-125x) ---
-        "BTC/USDT",    # بيتكوين - رافعة 125x
-        "ETH/USDT",    # إيثيريوم - رافعة 100x
-        "BNB/USDT",    # بيнанс كوين - رافعة 75x
-        "SOL/USDT",    # سولانا - رافعة 50x
-#        "XRP/USDT",    # ريبل - رافعة 50x
-#        "DOGE/USDT",   # دوجكوين - رافعة 50x
-        "ADA/USDT",    # كاردانو - رافعة 50x
-        "AVAX/USDT",   # أفالانش - رافعة 50x
-        "LINK/USDT",   # تشين لينك - رافعة 50x
-        "DOT/USDT",    # بولكادوت - رافعة 50x
-        "LTC/USDT",    # لايتكوين - رافعة 50x
-        "UNI/USDT",    # يونيسواب - رافعة 50x
-        "ATOM/USDT",   # كوزموس - رافعة 50x
-        "ETC/USDT",    # إيثيريوم كلاسيك - رافعة 50x
-        "TRX/USDT",    # ترون - رافعة 50x
-        "TON/USDT",    # تون كوين - رافعة 50x
-        "BCH/USDT",    # بيتكوين كاش - رافعة 50x
-        "NEAR/USDT",   # نير بروتوكول - رافعة 50x
-        "APT/USDT",    # أبتوس - رافعة 50x
-        "HBAR/USDT",   # هيدرا - رافعة 50x
-        "VET/USDT",    # في تشين - رافعة 50x
-        "STX/USDT",    # ستاكس - رافعة 50x
-        "AAVE/USDT",   # آفي - رافعة 50x
-        "ARB/USDT",    # أربيتروم - رافعة 50x
-        "OP/USDT",     # أوبتيميزم - رافعة 50x
-        "INJ/USDT",    # إنجكتيف - رافعة 50x
-        "SUI/USDT",    # سوي - رافعة 50x
-        "TIA/USDT",    # سيليستيا - رافعة 50x
-        "SEI/USDT",    # ساي - رافعة 50x
-        "ALGO/USDT",   # ألجوراند - رافعة 50x
-        "GRT/USDT",    # ذا غراف - رافعة 50x
-        "FET/USDT",    # فيتشد أيه آي - رافعة 50x
-        "RENDER/USDT", # ريندر - رافعة 50x
-        "LDO/USDT",    # ليدو داو - رافعة 50x
-        "KAS/USDT",    # كاسبا - رافعة 50x
-        "WIF/USDT",    # دوج ويف هات - رافعة 50x
-        "THETA/USDT",  # ثيتا - رافعة 50x
-        "SAND/USDT",   # ذا ساندبوكس - رافعة 50x
-        "MANA/USDT",   # ديسنترالاند - رافعة 50x
-        "AXS/USDT",    # أكسي إنفينيتي - رافعة 50x
-        "XLM/USDT",    # ستيلر - رافعة 50x
-        "CHZ/USDT",    # تشيليز - رافعة 50x
-        "POL/USDT",    # بوليجون - رافعة 50x
-        "FIL/USDT",    # فيل كوين - رافعة 50x
-        "QNT/USDT",    # كوانت - رافعة 50x
-        "DASH/USDT",   # داش - رافعة 50x
-#        "EOS/USDT",    # إيوس - رافعة 50x
-        "FTM/USDT",    # فانتوم - رافعة 50x
-        "FLOW/USDT",   # فلو - رافعة 50x
-        "CAKE/USDT",   # بانكيك سواب - رافعة 50x
-        "ROSE/USDT",   # أوايسيس نتوورك - رافعة 50x
-        "ZIL/USDT",    # زيلكا - رافعة 50x
-#        "ONE/USDT",    # هارموني - رافعة 50x
-        "IOTA/USDT",   # أيوتا - رافعة 50x
-        "NEO/USDT",    # نيو - رافعة 50x
-        "KAVA/USDT",   # كافا - رافعة 50x
-        "CRV/USDT",    # كورف - رافعة 50x
-        "SNX/USDT",    # سينثيتيكس - رافعة 50x
-        "COMP/USDT",   # كومباووند - رافعة 50x
-        "MKR/USDT",    # ميكر - رافعة 50x
-        "SUSHI/USDT",  # سوشي سواب - رافعة 50x
-        "YFI/USDT",    # يرن فايننس - رافعة 50x
-        "ZRX/USDT",    # زيرو إكس - رافعة 50x
-        "BAT/USDT",    # باسيك أتنشن توكن - رافعة 50x
-        "ENJ/USDT",    # إنجين - رافعة 50x
-        "ANKR/USDT",   # أنكر - رافعة 50x
-#        "OCEAN/USDT",  # أوشن بروتوكول - رافعة 50x
-        "BAND/USDT",   # باند بروتوكول - رافعة 50x
-        "NMR/USDT",    # نوميرا - رافعة 50x
-        "STORJ/USDT",  # ستورج - رافعة 50x
-        "KSM/USDT",    # كوساما - رافعة 50x
-#        "WAVES/USDT",  # ويفز - رافعة 50x
-        "ZEN/USDT",    # هوريزن - رافعة 50x
-#        "ICP/USDT",    # إنترنت كمبيوتر - رافعة 50x
-        "CELO/USDT",   # سيلو - رافعة 50x
-#        "AR/USDT",     # أرويف - رافعة 50x
-        "MASK/USDT",   # ماسك نتوورك - رافعة 50x
-        "DYDX/USDT",   # دي واي دي إكس - رافعة 50x
-        "ENS/USDT",    # إيثيريوم نيم سيرفس - رافعة 50x
-        "GMX/USDT",    # جي إم إكس - رافعة 50x
-        "MAGIC/USDT",  # ماجيك - رافعة 50x
-        "HIGH/USDT",   # هاي - رافعة 50x
-        "PENDLE/USDT", # بيندل - رافعة 50x
-        "JOE/USDT",    # ترايدر جو - رافعة 50x
-        "CYBER/USDT",  # سايبر كونكت - رافعة 50x
-        "ARKM/USDT",   # أركهام - رافعة 50x
-        "WLD/USDT",    # وورلد كوين - رافعة 50x
-        "BLUR/USDT",   # بلور - رافعة 50x
-        "ID/USDT",     # سبيس آي دي - رافعة 50x
-        "EDU/USDT",    # إيدي - رافعة 50x
-#        "PEPE/USDT",   # بيبي - رافعة 50x
-#        "FLOKI/USDT",  # فلوكي - رافعة 50x
-#        "BONK/USDT",   # بونك - رافعة 50x
-#        "MEME/USDT",   # ميم كوين - رافعة 50x
-        "ORDI/USDT",   # أوردينالز - رافعة 50x
-#        "1000SATS/USDT", # ساتس - رافعة 50x
-        "JUP/USDT",    # جوبيتر - رافعة 50x
-        "PYTH/USDT",   # بايث - رافعة 50x
-        "JTO/USDT",    # جيتو - رافعة 50x
-        "DYM/USDT",    # دايمنشن - رافعة 50x
-        "STRK/USDT",   # ستارك نت - رافعة 50x
-        "MANTA/USDT",  # مانتا - رافعة 50x
-        "ALT/USDT",    # ألت لاير - رافعة 50x
-        "AEVO/USDT",   # أفيفو - رافعة 50x
-        "ETHFI/USDT",  # إيثير فاي - رافعة 50x
-#        "BOME/USDT",   # بوك أوف ميم - رافعة 50x
-        "W/USDT",      # ورم هول - رافعة 50x
-        "SAGA/USDT",   # ساغا - رافعة 50x
-        "OMNI/USDT",   # أومني - رافعة 50x
-#        "REZ/USDT",    # رينزو - رافعة 50x
-        "BB/USDT",     # باونس بيت - رافعة 50x
-        "IO/USDT",     # آي أو نت - رافعة 50x
-        "ZK/USDT",     # zkSync - رافعة 50x
-        "LISTA/USDT",  # ليستا - رافعة 50x
-        "TAIKO/USDT",  # تايكو - رافعة 50x
-        "ZRO/USDT",    # لاير زيرو - رافعة 50x
-        "G/USDT",      # جي - رافعة 50x
-        "RARE/USDT",   # رير - رافعة 50x
-        "SYN/USDT",    # سينابس - رافعة 50x
-        "MEW/USDT",    # ميو - رافعة 50x
-        "MERL/USDT",   # ميرلين - رافعة 50x
-        "BANANA/USDT", # بانانا - رافعة 50x
-    ]
 
 def _robust_center_scale(x):
     """
@@ -2186,9 +1709,7 @@ class OpenPosition:
     trail_activate_frac: float = 0.004
     sl_dist_initial: float = 0.0
     trail_peak_R: float = 0.0
-    entry_sub_idx: int = 0
-    partial_taken: bool = False      # [FIX 4]
-    partial_pnl: float = 0.0         # [FIX 4] accumulated partial profit
+    entry_sub_idx: int = 0               # [SUB-BARS] fill sub-bar within entry bar
 
 
 # ════════════════════════════════════════════════════════════════
@@ -2262,8 +1783,7 @@ def process_asset(symbol, df, km_ext=None, current_capital=None, sub_df=None):
     train_end = int(n*CFG.TRAIN_FRACTION)
 
     # ══ التعديل ③: K ديناميكي ════════════════════════════════
-    _adv_bars_eff = int(getattr(CFG, 'ADV_BARS', 24))
-    adv_raw = pd.Series(vols*closes).rolling(_adv_bars_eff, min_periods=1).mean().values
+    adv_raw = pd.Series(vols*closes).rolling(24, min_periods=1).mean().values
     cap_now = current_capital if current_capital else CFG.INITIAL_CAPITAL
     dyn_k   = compute_dynamic_k(cap_now, adv_raw[:train_end+feat_start],
                                  n_train_features=train_end)
@@ -2303,14 +1823,11 @@ def process_asset(symbol, df, km_ext=None, current_capital=None, sub_df=None):
     F  = E_therm - H
     dF = np.diff(F, prepend=F[0])
 
-    # ══ التعديل ①: درجة الحرارة المعلوماتية (TF-UNIFIED) ══
-    # T_abs يجب أن يكون ثابتاً عبر الأُطر. بما أن E_therm ∝ √(TF_SECONDS)،
-    # نضرب في √TF_SCALE لجعله مستقلاً عن الإطار.
+    # ══ التعديل ①: درجة الحرارة المعلوماتية ══════════════════
     T_info_raw = np.abs(dF / (np.abs(dH) + 1e-9))
-    _tf_scale_t = max(float(getattr(CFG, 'TF_SCALE', 1.0)), 1e-6)
-    T_abs = E_therm * 400.0 * np.sqrt(_tf_scale_t)
+    T_abs = E_therm * 400.0   # تضاعف التأثير
     T_info = T_info_raw + T_abs
-    T_info = np.clip(T_info, 0.5, 20.0)
+    T_info = np.clip(T_info, 0.5, 20.0) 
     # ══════════════════════════════════════════════════════════
 
     # ══ حساب المكونات المادية والهندسة الناشئة ═══════════════
@@ -2334,45 +1851,28 @@ def process_asset(symbol, df, km_ext=None, current_capital=None, sub_df=None):
     V_q20 = np.percentile(vv,20) if len(vv)>0 else np.percentile(V_tr,20)
     V_q20a = np.full(n, V_q20)
 
-    # ══ [THRESHOLD MODE] Absolute vs z-score for h and score terms ══
-    # We always compute the z-scores (cheap) so they remain available
-    # if USE_ABSOLUTE_THRESHOLDS is flipped later. The HMM state and
-    # score terms use whichever mode is active.
+    # ══ [ADAPTIVE FIX #1] Robust z-scores for dH and dF ══
+    # Fit center/scale on TRAINING portion only (causality preserved),
+    # then apply to entire series. This makes thresholds fire ~16% of
+    # bars (real signal) instead of ~50% (noise).
     _dH_mu, _dH_sd = _robust_center_scale(dH[:max(train_end, 1)])
     _dF_mu, _dF_sd = _robust_center_scale(dF[:max(train_end, 1)])
     dH_z = (dH - _dH_mu) / max(_dH_sd, 1e-12)
     dF_z = (dF - _dF_mu) / max(_dF_sd, 1e-12)
 
-    _use_abs = bool(getattr(CFG, 'USE_ABSOLUTE_THRESHOLDS', True))
+    # HMM state from z-scored dH
+    h = np.ones(n, dtype=np.int32)
+    h[dH_z >  CFG.DH_HMM_UPPER_Z] = 0
+    h[dH_z <  CFG.DH_HMM_LOWER_Z] = 2
 
-    if _use_abs:
-        # ── HMM state from ABSOLUTE dH ──
-        h = np.ones(n, dtype=np.int32)
-        h[dH >  CFG.DH_HMM_UPPER] = 0
-        h[dH <  CFG.DH_HMM_LOWER] = 2
-
-        # ── Score uses ABSOLUTE thresholds ──
-        sc = np.zeros(n)
-        sc += np.abs(geodesic_accel) * 10.0
-        sc += CFG.W_CURV    * (C > CFG.CURV_THRESHOLD).astype(float)
-        sc += CFG.W_VOL     * (V < V_q20a).astype(float)
-        sc += CFG.W_ENTROPY * ((dH < CFG.DH_ENTROPY_THRESHOLD) & (d2H < 0)).astype(float)
-        sc += CFG.W_HMM     * ((h == 2) | ((h == 0) & (dH < -CFG.DH_ENTROPY_THRESHOLD))).astype(float)
-        sc += CFG.W_FREE_E  * (dF < CFG.DF_FREE_E_THRESHOLD).astype(float)
-    else:
-        # ── HMM state from Z-SCORED dH ──
-        h = np.ones(n, dtype=np.int32)
-        h[dH_z >  CFG.DH_HMM_UPPER_Z] = 0
-        h[dH_z <  CFG.DH_HMM_LOWER_Z] = 2
-
-        # ── Score uses Z-SCORE thresholds ──
-        sc = np.zeros(n)
-        sc += np.abs(geodesic_accel) * 10.0
-        sc += CFG.W_CURV    * (C > CFG.CURV_THRESHOLD).astype(float)
-        sc += CFG.W_VOL     * (V < V_q20a).astype(float)
-        sc += CFG.W_ENTROPY * ((dH_z < CFG.DH_ENTROPY_Z) & (d2H < 0)).astype(float)
-        sc += CFG.W_HMM     * ((h == 2) | ((h == 0) & (dH_z < -CFG.DH_ENTROPY_Z))).astype(float)
-        sc += CFG.W_FREE_E  * (dF_z < CFG.DF_FREE_E_Z).astype(float)
+    # Score uses z-thresholds
+    sc = np.zeros(n)
+    sc += np.abs(geodesic_accel) * 10.0
+    sc += CFG.W_CURV    * (C > CFG.CURV_THRESHOLD).astype(float)
+    sc += CFG.W_VOL     * (V < V_q20a).astype(float)
+    sc += CFG.W_ENTROPY * ((dH_z < CFG.DH_ENTROPY_Z) & (d2H < 0)).astype(float)
+    sc += CFG.W_HMM     * ((h == 2) | ((h == 0) & (dH_z < -CFG.DH_ENTROPY_Z))).astype(float)
+    sc += CFG.W_FREE_E  * (dF_z < CFG.DF_FREE_E_Z).astype(float)
     # ══════════════════════════════════════════════════════════
     # ══════════════════════════════════════════════════════════
 
@@ -2389,7 +1889,7 @@ def process_asset(symbol, df, km_ext=None, current_capital=None, sub_df=None):
           np.maximum(np.abs(highs[1:]-closes[:-1]), np.abs(lows[1:]-closes[:-1])))
     tr  = np.concatenate([[tr[0]],tr])
     atr = pd.Series(tr).rolling(CFG.ATR_PERIOD, min_periods=1).mean().values
-    adv = pd.Series(vols*closes).rolling(_adv_bars_eff, min_periods=1).mean().values
+    adv = pd.Series(vols*closes).rolling(24, min_periods=1).mean().values
 
     ed  = compute_energy_dynamics(closes, lr_full, X, feat_start)
     KE  = ed['KE']; dKE = ed['dKE']
@@ -2469,363 +1969,32 @@ def compute_geodesic_kelly(ad, fi, cfg):
     return float(np.clip(f_star, cfg.MIN_RISK, cfg.MAX_RISK))
 
 
-# ════════════════════════════════════════════════════════════════
-# § SINGULARITY TIMING — Resonance State Detector (Layer 1)
-# ════════════════════════════════════════════════════════════════
-#
-# يكشف حالة الرنين الكسري عند الفهرس fi واتجاه محدد (BUY/SELL).
-# الحالات: DORMANT / EMERGING / ACTIVE / DECAYING / INVALID
-#
-# المنطق الرياضي:
-#   a(t) = geodesic_accel[fi]           — التسارع الآني
-#   j(t) = a(t) - a(t-1)                — الجيرك (تسارع التسارع)
-#   ρ    = (a·sign)/θ  +  λ·(j·sign)/θ_j  — مؤشر الرنين
-# حيث sign = +1 للـ BUY و -1 للـ SELL.
-#
-# التصنيف:
-#   ρ < 0                → DORMANT
-#   0 ≤ ρ < RHO_EMERGING → DORMANT (لكن Jerk لا يزال ضعيفاً)
-#   RHO_EMERGING ≤ ρ < RHO_ACTIVE → EMERGING (إن استمر الجيرك)
-#   ρ ≥ RHO_ACTIVE       → ACTIVE  (إن استمر الجيرك)
-#   a·sign < -θ أو a·sign ≥ 0.9θ → DECAYING (انفجر أو عكس)
-# ════════════════════════════════════════════════════════════════
-
-def _resonance_state_for_direction(ad, fi: int, action: str,
-                                     cfg=None) -> Tuple[str, float]:
-    """
-    يُعيد (state, rho) للاتجاه المطلوب باستخدام مراتب مئوية.
-
-    المنهجية الجديدة:
-      - يُحسب توزيع |geodesic_accel| على نافذة متدحرجة (SING_LOOKBACK_BARS).
-      - يُصنَّف التسارع الحالي حسب مرتبته ضمن هذا التوزيع.
-      - هذا يتكيف تلقائياً مع تقلب كل أصل دون عتبات مطلقة.
-
-    الحالات:
-      - DECAYING : التسارع قوي وضد الاتجاه (a1_s < -median)
-      - ACTIVE   : |a| في أعلى 10% وjerk مؤيد
-      - EMERGING : |a| في أعلى 30% وjerk مؤيد
-      - DORMANT  : باقي الحالات
-      - INVALID  : بيانات غير كافية
-    """
-    if cfg is None:
-        cfg = CFG
-
-    if not getattr(cfg, 'SING_TIMING_ENABLED', False):
-        return "DORMANT", 0.0
-
-    try:
-        if fi < 30:
-            return "INVALID", 0.0
-        if fi >= len(ad.geodesic_accel):
-            return "INVALID", 0.0
-
-        # ── نافذة التاريخ ──
-        _lookback = int(getattr(cfg, 'SING_LOOKBACK_BARS', 200))
-        _start = max(0, fi - _lookback)
-        _window = ad.geodesic_accel[_start:fi + 1]
-
-        if len(_window) < 30:
-            return "DORMANT", 0.0
-
-        _abs_window = np.abs(_window).astype(np.float64)
-        _a_med = float(np.median(_abs_window))
-        _a_p70 = float(np.percentile(_abs_window, 70))
-        _a_p90 = float(np.percentile(_abs_window, 90))
-
-        if _a_med < 1e-12:
-            return "DORMANT", 0.0
-
-        # ── القيم الحالية ──
-        a1 = float(ad.geodesic_accel[fi])
-        j1 = a1 - float(ad.geodesic_accel[fi - 1])
-        sign = 1.0 if action == "BUY" else -1.0
-        a1_s = a1 * sign
-        j1_s = j1 * sign
-        a1_abs = abs(a1)
-
-        # ── DECAYING: التسارع قوي وضد الاتجاه ──
-        # إذا كان التسارع > الوسيط وضد الاتجاه → انفجار معاكس
-        if a1_s < -_a_med:
-            return "DECAYING", float(-a1_abs / max(_a_p90, 1e-12))
-
-        # ── رتبة |a| الحالية في النافذة ──
-        pct_rank = float(np.mean(_abs_window <= a1_abs))
-
-        # ── التحقق من اتجاه الجيرك ──
-        # Jerk مؤيد = j1_s > 0 (التسارع يزيد في اتجاهنا)
-        j1_ok = (j1_s > 0.0)
-
-        # ── ACTIVE: أعلى 10% + jerk مؤيد ──
-        if pct_rank >= float(getattr(cfg, 'SING_PCT_ACTIVE', 0.90)) and j1_ok:
-            return "ACTIVE", pct_rank
-
-        # ── EMERGING: أعلى 30% + jerk مؤيد ──
-        if pct_rank >= float(getattr(cfg, 'SING_PCT_EMERGING', 0.70)) and j1_ok:
-            return "EMERGING", pct_rank
-
-        # ── DECAYING: التسارع في اتجاهنا لكنه ضعيف ومتراجع ──
-        # (اختياري: إذا كان jerk سلبياً بقوة، قد يعني انتهاء الانفجار)
-        if (a1_s > 0.0 and j1_s < -0.3 * _a_med):
-            return "DECAYING", pct_rank
-
-        return "DORMANT", pct_rank
-
-    except Exception as e:
-        log.debug(f"[Sing-Timing] state error: {e}")
-        return "INVALID", 0.0
-
-# ════════════════════════════════════════════════════════════════
-# § SINGULARITY LAYER 3 — Funding Guard Helper
-# ════════════════════════════════════════════════════════════════
-#
-# يحسب عدد الدقائق حتى موعد التمويل القادم على Binance USDT-M.
-# مواعيد التمويل الثابتة: 00:00، 08:00، 16:00 UTC.
-#
-# المنطق:
-#   current_hour → (hour // 8 + 1) * 8
-#   إذا تجاوز 24 → 0 (منتصف الليل غداً)
-#   الدقائق المتبقية = delta_hours × 60 − current_minute
-#
-# Returns
-# -------
-# int
-#   عدد الدقائق حتى التمويل القادم (قد يكون سالباً إذا مرّ الوقت).
-# ════════════════════════════════════════════════════════════════
-
-def _minutes_to_next_funding_utc(cfg=None) -> int:
-    """
-    يحسب الدقائق المتبقية حتى موعد التمويل القادم على Binance.
-
-    إذا كان NOW قبل 00:00، 08:00، أو 16:00 UTC:
-        يرجع عدد الدقائق الإيجابية.
-    إذا كان NOW عند موعد التمويل بالضبط:
-        يرجع 0.
-    """
-    if cfg is None:
-        cfg = CFG
-    try:
-        funding_hours = tuple(getattr(
-            cfg, 'SING_FUNDING_HOURS_UTC', (0, 8, 16)
-        ))
-        if not funding_hours:
-            funding_hours = (0, 8, 16)
-
-        now_utc = datetime.now(timezone.utc)
-        h = int(now_utc.hour)
-        m = int(now_utc.minute)
-
-        # ابحث عن أول ساعة تمويل ≥ h
-        next_h = None
-        for fh in sorted(funding_hours):
-            if fh > h:
-                next_h = fh
-                break
-            if fh == h and m == 0:
-                next_h = fh
-                break
-
-        if next_h is None:
-            # لا يوجد موعد اليوم → التالي غداً
-            next_h = min(funding_hours) + 24
-
-        delta_minutes = (next_h - h) * 60 - m
-        return int(delta_minutes)
-    except Exception as e:
-        log.debug(f"[Funding Guard] minutes calc failed: {e}")
-        return 9999  # fail-open (لا حجب)
-
 def compute_geodesic_stop(entry_price, ad, fi, cfg):
     """
     الطور الخامس: حساب الوقف بنصف قطر فيشر (Decoherence Edge).
+    المسافة تتسع طردياً مع حجم عدم اليقين (V) وتتقلص مع الاحتكاك ولزوجة دفتر الأوامر.
 
-    [TF-UNIFIED] sl_dist يُحسب بوحدة σ_price = E_therm[fi] × entry_price.
-    هذا يضمن أن sl_dist/σ ثابت عبر الأُطر.
-
-    على 1h مع uncertainty=1, friction≈0.18:
-        sl_sigma = 2.0 × 1 / (1 + 0.18×5) = 1.05σ
-    وهو مطابق لسلوك الإصدار السابق على 1h.
+    [SL-WIDEN] The raw physics estimate yields 1.0–1.5% on most assets,
+    which is below typical hourly noise. SL_WIDEN_MULT scales the entire
+    distance so trades get breathing room. The clip bounds scale too,
+    so widening isn't silently capped at 5%.
     """
-    # مقياس عدم اليقين
+    # ad.V يمثل محدد مصفوفة التغاير (مقياس تشتت المعلومات)
     uncertainty = np.clip(ad.V[fi] / (np.mean(ad.V) + 1e-9), 0.5, 3.0)
     friction = float(ad.friction[fi]) + 1e-6
 
-    # σ_price في هذه الشمعة
-    try:
-        sigma_frac = float(ad.E_therm[fi]) if 0 <= fi < len(ad.E_therm) else 0.01
-        if not np.isfinite(sigma_frac) or sigma_frac <= 1e-6:
-            sigma_frac = 0.01
-    except Exception:
-        sigma_frac = 0.01
-    sigma_price = sigma_frac * entry_price
+    # كلما قل الاحتكاك، زادت احتمالية الاختراق، فنضع وقفاً يتناسب عكسياً مع لزوجة السوق
+    sl_pct = (0.012 * uncertainty) / (1.0 + friction * 5.0)
 
-    # SL بوحدة σ (عدد الانحرافات المعيارية)
-    _sl_kappa = float(getattr(cfg, 'SL_REF_KAPPA', 2.0))
-    sl_sigma = (_sl_kappa * uncertainty) / (1.0 + friction * 5.0)
+    # ══ [SL-WIDEN] Scale before clipping ══
+    _widen = float(getattr(cfg, 'SL_WIDEN_MULT', 1.0))
+    sl_pct *= _widen
+    sl_dist = entry_price * sl_pct
 
-    # clip بوحدة σ
-    _min_s = float(getattr(cfg, 'SL_MIN_SIGMA', 1.0))
-    _max_s = float(getattr(cfg, 'SL_MAX_SIGMA', 5.0))
-    sl_sigma = float(np.clip(sl_sigma, _min_s, _max_s))
-
-    return float(sl_sigma * sigma_price)
-
-
-# ════════════════════════════════════════════════════════════════
-# § 12.85  UNIFIED ENTRY — Geometry Rebuild at Market Price
-# ════════════════════════════════════════════════════════════════
-#
-# عند الدخول بسعر السوق (Stage 2)، لا نستخدم SL/TP القديمة لأنها
-# محسوبة من tunnel_entry_p. نُعيد بناءها من نقطة التوازن الجديدة
-# S_new = p_current ∓ friction_drag_current، ثم نحسب sl_dist_new
-# بنفس دالة compute_geodesic_stop المستخدمة في build_signals.
-#
-# النتيجة: R:R = 2.0 دائماً، والهندسة طازجة بنيوياً.
-# ════════════════════════════════════════════════════════════════
-
-def _recompute_entry_geometry_at_market(sig, ad, entry_ci, entry_fi, cfg):
-    """
-    يعيد بناء SL/TP من سعر السوق الحالي بنفس فيزياء build_signals.
-
-    Returns
-    -------
-    dict | None
-        {'entry_px', 'S_new', 'sl_dist_new', 'sl', 'tp1'}
-        أو None عند الفشل.
-    """
-    try:
-        if entry_ci < 0 or entry_ci >= len(ad.closes):
-            return None
-        if entry_fi < 0 or entry_fi >= len(ad.friction):
-            return None
-
-        p_current = float(ad.closes[entry_ci])
-        if p_current <= 0:
-            return None
-
-        # friction_drag_current (نفس معادلة build_signals)
-        fric_current = float(ad.friction[entry_fi])
-        if not np.isfinite(fric_current) or fric_current < 0:
-            fric_current = 0.0
-
-        # ══ [TF-UNIFIED] friction_drag بوحدة σ_price (مطابق لـ build_signals) ══
-        try:
-            _sigma_frac_g = float(ad.E_therm[entry_fi]) if 0 <= entry_fi < len(ad.E_therm) else 0.01
-            if not np.isfinite(_sigma_frac_g) or _sigma_frac_g <= 1e-6:
-                _sigma_frac_g = 0.01
-        except Exception:
-            _sigma_frac_g = 0.01
-        _sigma_price_g = _sigma_frac_g * p_current
-        _fd_kappa_g = float(getattr(cfg, 'FRICTION_DIP_KAPPA', 4.0))
-        friction_drag = _fd_kappa_g * _sigma_price_g
-
-        if sig.action == "BUY":
-            S_new = p_current - friction_drag
-        else:
-            S_new = p_current + friction_drag
-
-        # نفس دالة build_signals
-        sl_dist_new = compute_geodesic_stop(S_new, ad, entry_fi, cfg)
-        if sl_dist_new <= 0 or not np.isfinite(sl_dist_new):
-            return None
-
-        if sig.action == "BUY":
-            sl_new = S_new - sl_dist_new
-            tp_new = S_new + (sl_dist_new * 2.0)
-        else:
-            sl_new = S_new + sl_dist_new
-            tp_new = S_new - (sl_dist_new * 2.0)
-
-        return {
-            'entry_px': p_current,
-            'S_new': S_new,
-            'sl_dist_new': float(sl_dist_new),
-            'sl': float(sl_new),
-            'tp1': float(tp_new),
-        }
-    except Exception:
-        return None
-
-
-# ════════════════════════════════════════════════════════════════
-# § 12.86  UNIFIED ENTRY — Stage 2 Conditions
-# ════════════════════════════════════════════════════════════════
-
-def _check_unified_stage2(sig, ad, current_ci, current_fi, cfg):
-    """
-    فحص شروط Stage 2 (الدخول بسعر السوق بعد فشل Stage 1).
-
-    الشروط:
-      1. العمر ≤ UNIFIED_MAX_AGE_BARS_1H (بالوحدات الفعلية).
-      2. الزخم المؤيد: p_current تحرك في اتجاه الإشارة
-         بأكثر من UNIFIED_MOMENTUM_KAPPA × σ_bar.
-      3. الإشارة حيّة: score[current_fi] ≥ UNIFIED_FRESH_SCORE_FRAC
-         × score[signal_fi].
-
-    Returns
-    -------
-    (ok, reason, p_current)
-    """
-    if not getattr(cfg, 'UNIFIED_ENTRY_ENABLED', True):
-        return False, "unified_disabled", 0.0
-
-    try:
-        age_bars = current_ci - int(sig.close_idx)
-        if age_bars <= 0:
-            return False, "not_yet", 0.0
-
-        max_age = effective_bars(
-            int(getattr(cfg, 'UNIFIED_MAX_AGE_BARS_1H', 12))
-        )
-        if age_bars > max_age:
-            return False, f"too_old({age_bars}>{max_age})", 0.0
-
-        p_current = float(ad.closes[current_ci])
-        p_signal = float(ad.closes[int(sig.close_idx)])
-        if p_signal <= 0 or p_current <= 0:
-            return False, "invalid_prices", 0.0
-
-        # ── σ_bar الحالي ──
-        try:
-            sigma_bar = float(ad.E_therm[current_fi]) \
-                if 0 <= current_fi < len(ad.E_therm) else 0.01
-            if not np.isfinite(sigma_bar) or sigma_bar <= 1e-6:
-                sigma_bar = 0.01
-        except Exception:
-            sigma_bar = 0.01
-
-        # ── شرط الزخم ──
-        kappa = float(getattr(cfg, 'UNIFIED_MOMENTUM_KAPPA', 0.5))
-        threshold = kappa * sigma_bar * p_signal
-
-        if sig.action == "BUY":
-            momentum_ok = (p_current - p_signal) > threshold
-            move = p_current - p_signal
-        else:
-            momentum_ok = (p_signal - p_current) > threshold
-            move = p_signal - p_current
-
-        if not momentum_ok:
-            return False, (f"no_momentum(move={move:.6f}<"
-                           f"thr={threshold:.6f})"), 0.0
-
-        # ── شرط حداثة الإشارة ──
-        if getattr(cfg, 'UNIFIED_REQUIRE_FRESH_SIGNAL', True):
-            try:
-                score_now = float(ad.score[current_fi]) \
-                    if 0 <= current_fi < len(ad.score) else 0.0
-                score_orig = float(sig.score)
-                fresh_frac = float(getattr(cfg,
-                    'UNIFIED_FRESH_SCORE_FRAC', 0.85))
-                if score_orig > 0 and \
-                        score_now < score_orig * fresh_frac:
-                    return False, (f"stale_score({score_now:.2f}<"
-                                   f"{score_orig*fresh_frac:.2f})"), 0.0
-            except Exception:
-                pass
-
-        return True, "OK", p_current
-    except Exception as e:
-        return False, f"error:{e}", 0.0
+    # تقييد المسافة: الحد الأدنى ثابت (0.5%), الحد الأعلى يوسع مع _widen
+    _min_frac = 0.005
+    _max_frac = 0.05 * _widen
+    return float(np.clip(sl_dist, _min_frac * entry_price, _max_frac * entry_price))
 
 def compute_dynamic_leverage(capital, cfg):
     """
@@ -3120,123 +2289,6 @@ def _compute_entry_dip(ad, fi: int, ci: int, action: str,
     except Exception:
         return 0.0
 
-# ════════════════════════════════════════════════════════════════
-# § TRADE FILTER — Pre-entry multi-signal rejection
-# ════════════════════════════════════════════════════════════════
-
-_FILTER_STATS: Dict = {
-    'total_signals': 0,
-    'kept': 0,
-    'rejected': 0,
-    'vote_counts': defaultdict(int),   # كم مرة رُفض بسبب كل مزيج
-    'vote_singles': defaultdict(int),  # عدد الأصوات لكل صوت منفرد
-}
-
-
-def _filter_reset_stats() -> None:
-    """Reset filter statistics (called at start of each run)."""
-    _FILTER_STATS['total_signals'] = 0
-    _FILTER_STATS['kept'] = 0
-    _FILTER_STATS['rejected'] = 0
-    _FILTER_STATS['vote_counts'].clear()
-    _FILTER_STATS['vote_singles'].clear()
-
-
-def _trade_filter_check(sig, ad, fi, ci) -> Tuple[bool, str]:
-    """
-    فحص فلتر الدخول. يعيد (reject, reason).
-
-    المنطق:
-      - يحسب "أصوات الرفض" من إشارات مستقلة.
-      - يرفض الإشارة إذا كان عدد الأصوات >= FILTER_MIN_VOTES.
-
-    الأصوات:
-      1. action_bias  : action == 'BUY' (معطّل افتراضياً)
-      2. ema_slope    : ميل EMA200 ضد الإشارة
-      3. high_atr     : atr_frac > FILTER_ATR_FRAC_MAX
-      4. friction     : friction_drag/sl_dist > FILTER_FRICTION_DRAG_MAX
-    """
-    if not getattr(CFG, 'FILTER_ENABLED', False):
-        return False, ""
-
-    try:
-        votes = []
-        action = getattr(sig, 'action', '?')
-        price = float(getattr(sig, 'price', 0.0))
-        sl = float(getattr(sig, 'sl', 0.0))
-        atr = float(getattr(sig, 'atr', 0.0))
-
-        if price <= 0:
-            return False, ""
-
-        # ── Vote 1: action_bias (BUY) — معطّل افتراضياً ──
-        if getattr(CFG, 'FILTER_USE_ACTION_BIAS', False):
-            if action == 'BUY':
-                votes.append('action_bias')
-
-        # ── Vote 2: EMA slope ضد الإشارة ──
-        if getattr(CFG, 'FILTER_USE_EMA_SLOPE', True):
-            try:
-                if (ad is not None
-                        and 0 <= ci < len(ad.ema200)
-                        and ci >= 50):
-                    ema_now = float(ad.ema200[ci])
-                    ema_prev = float(ad.ema200[ci - 50])
-                    slope = (ema_now - ema_prev) / 50.0
-                    if ((action == 'BUY' and slope < 0) or
-                            (action == 'SELL' and slope > 0)):
-                        votes.append('ema_slope')
-            except Exception:
-                pass
-
-        # ── Vote 3: تقلب مرتفع ──
-        if getattr(CFG, 'FILTER_USE_HIGH_ATR', True):
-            try:
-                atr_frac = atr / max(price, 1e-12)
-                _thr = float(getattr(CFG, 'FILTER_ATR_FRAC_MAX', 0.024))
-                if atr_frac > _thr:
-                    votes.append('high_atr')
-            except Exception:
-                pass
-
-        # ── Vote 4: friction_drag / sl_dist مرتفع ──
-        if getattr(CFG, 'FILTER_USE_FRICTION_DRAG', True):
-            try:
-                sl_dist = abs(price - sl)
-                if sl_dist > 1e-12:
-                    sigma_frac = float(ad.E_therm[fi]) \
-                        if (ad is not None
-                            and 0 <= fi < len(ad.E_therm)) else 0.01
-                    if not np.isfinite(sigma_frac) or sigma_frac <= 1e-6:
-                        sigma_frac = 0.01
-                    sigma_price = sigma_frac * price
-                    fd_kappa = float(getattr(CFG, 'FRICTION_DIP_KAPPA', 4.0))
-                    friction_drag = fd_kappa * sigma_price
-                    ratio = friction_drag / sl_dist
-                    _thr = float(getattr(CFG, 'FILTER_FRICTION_DRAG_MAX', 2.5))
-                    if ratio > _thr:
-                        votes.append('friction_drag')
-            except Exception:
-                pass
-
-        # ── القرار ──
-        _min_votes = int(getattr(CFG, 'FILTER_MIN_VOTES', 2))
-        if len(votes) >= _min_votes:
-            reason = '|'.join(votes)
-            # إحصاءات
-            _FILTER_STATS['vote_counts'][reason] += 1
-            for v in votes:
-                _FILTER_STATS['vote_singles'][v] += 1
-            if getattr(CFG, 'FILTER_LOG_REJECTIONS', False):
-                log.debug(f"[Filter] {sig.symbol} {action} rejected: {reason}")
-            return True, reason
-
-        return False, ""
-    except Exception as e:
-        # fail-open: خطأ في الفلتر لا يمنع الصفقة
-        log.debug(f"[Filter] exception (fail-open): {e}")
-        return False, "filter_error"
-
 def build_signals(assets, mode="backtest"):
     """
     محرك استشعار الإشارات الكمي:
@@ -3286,24 +2338,8 @@ def build_signals(assets, mode="backtest"):
             if micro_momentum == 0: continue
             action = "BUY" if micro_momentum > 0 else "SELL"
 
-            # ══ [FIX 2] Regime filter — reject trending markets ══
-            if getattr(CFG, 'REGIME_FILTER_ENABLED', False):
-                _lb = int(getattr(CFG, 'REGIME_EMA_LOOKBACK', 50))
-                if ci - _lb >= 0 and ci < len(ad.ema200):
-                    _slope = (ad.ema200[ci] - ad.ema200[ci - _lb]) / max(_lb, 1)
-                    _atr_now = float(ad.atr14[ci]) if ci < len(ad.atr14) else 0.0
-                    if _atr_now > 0:
-                        _slope_norm = abs(_slope) * _lb / _atr_now
-                        _slope_sign = 1.0 if _slope > 0 else -1.0
-                        _thr = float(getattr(CFG, 'REGIME_SLOPE_ATR_MAX', 2.0))
-                        if _slope_norm > _thr:
-                            # Trending — reject regardless of direction.
-                            # Mean-reversion should not fight a strong trend.
-                            continue
-
             # ══ [ADAPTIVE FIX #4] dynamic per-asset MIN_SCORE ══
             _min_score = float(CFG.MIN_SCORE)
-
             if getattr(CFG, 'DYNAMIC_MIN_SCORE_ENABLED', False):
                 _min_score = float(getattr(ad, 'score_q95_train',
                                             CFG.MIN_SCORE))
@@ -3313,32 +2349,18 @@ def build_signals(assets, mode="backtest"):
             # (computed after SL/TP is known — moved below in this version)
             # See the deferred check after SL/TP computation.
 
-            # ══ [MEAN-REVERSION DIP — restores the OLD behavior] ══
-            # The dip the market must travel to exhaust its momentum.
-            # = friction_cost × 10 = what the market pays in entropy to
-            # reverse direction. Empirically:
-            #   OLD (friction dip ≈ 2%): fill 18%, 100% TP hit → edge +98
-            #   NEW (ATR dip ≈ 0.34%):   fill 46%,  10% TP hit → edge −1
-            # The friction dip is the primary signal; ATR is a floor
-            # only for very-quiet markets to avoid a near-zero dip.
-            # ══ [TF-UNIFIED] friction_drag بوحدة σ_price ══
-            # على 1h مع σ≈0.44% و κ=4.0: dip = 1.76% (مطابق للسلوك السابق)
-            # على 4h مع σ≈0.91% و κ=4.0: dip = 3.64%
-            # على 5m مع σ≈0.09% و κ=4.0: dip = 0.36%
-            try:
-                _sigma_frac_bs = float(ad.E_therm[fi]) if fi < len(ad.E_therm) else 0.01
-                if not np.isfinite(_sigma_frac_bs) or _sigma_frac_bs <= 1e-6:
-                    _sigma_frac_bs = 0.01
-            except Exception:
-                _sigma_frac_bs = 0.01
-            _sigma_price_bs = _sigma_frac_bs * p
-            _fd_kappa = float(getattr(CFG, 'FRICTION_DIP_KAPPA', 4.0))
-            _friction_dip = _fd_kappa * _sigma_price_bs
-            _atr_dip = _compute_entry_dip(ad, fi, ci, action, p)
-            # Floor: never use a dip smaller than 0.5×ATR
-            _entry_dip = max(_friction_dip, 0.5 * _atr_dip)
+            # ══ [SMART ENTRY — 3-layer dip at signal time] ══
+            # Layer 1: ATR base (physical, unit = price)
+            # Layer 2: regime scaling (ranging / trending / explosive)
+            # Layer 3: structure anchor (snap to nearest swing)
+            # Layer 4 (time decay) applied later during repricing.
+            _entry_dip = _compute_entry_dip(ad, fi, ci, action, p)
+
+            # Fallback: if ATR unavailable, use a tiny friction-based dip
             if _entry_dip <= 0.0:
-                _entry_dip = p * 0.001
+                _entry_dip = fric_val * p * 0.02
+                if _entry_dip <= 0.0:
+                    _entry_dip = p * 0.001  # 10 bps minimum
 
             tunnel_entry_p = (p - _entry_dip) if action == "BUY" \
                              else (p + _entry_dip)
@@ -3346,8 +2368,7 @@ def build_signals(assets, mode="backtest"):
             # حساب الوقف والهدف بناءً على سعر النفق (Limit Entry)
             sl_dist = compute_geodesic_stop(tunnel_entry_p, ad, fi, CFG)
             sl = tunnel_entry_p - sl_dist if action == "BUY" else tunnel_entry_p + sl_dist
-            _tp_mult = float(getattr(CFG, 'TP_MULT', 1.5))
-            tp1 = tunnel_entry_p + (sl_dist * _tp_mult) if action == "BUY" else tunnel_entry_p - (sl_dist * _tp_mult)
+            tp1 = tunnel_entry_p + (sl_dist * 2.0) if action == "BUY" else tunnel_entry_p - (sl_dist * 2.0)
             
 
             # حظر الصفقات الهشة التي تكون تكلفتها أكبر من ربحها
@@ -3370,8 +2391,7 @@ def build_signals(assets, mode="backtest"):
 
             dynamic_risk = compute_geodesic_kelly(ad, fi, CFG)
 
-            # ══ [TRADE FILTER] ══
-            _new_sig = Signal(
+            sigs.append(Signal(
                 timestamp=ad.timestamps[ci], symbol=sym,
                 price=tunnel_entry_p,
                 score=float(ad.score[fi]), action=action,
@@ -3382,19 +2402,7 @@ def build_signals(assets, mode="backtest"):
                 dyn_sl_factor=sl_dist / tunnel_entry_p,
                 entry_ref_price=float(p),
                 entry_base_dip=float(_entry_dip),
-            )
-
-            _FILTER_STATS['total_signals'] += 1
-
-            _rej, _rej_reason = _trade_filter_check(
-                _new_sig, ad, fi, ci
-            )
-            if _rej:
-                _FILTER_STATS['rejected'] += 1
-                continue
-
-            _FILTER_STATS['kept'] += 1
-            sigs.append(_new_sig)
+            ))
             
     sigs.sort(key=lambda s: (s.timestamp, -s.score))
     return sigs
@@ -3512,24 +2520,15 @@ def _backtest_entry_target(sig, ad) -> float:
 # § 14.5  Precompute Realistic Entry Fills (Backtest Only)
 # ════════════════════════════════════════════════════════════════
 
-def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps,
-                           time_decay_enabled=False,
-                           time_decay_bars=(5, 10, 15),
-                           time_decay_mults=(0.7, 0.5, 0.3),
-                           use_time_decay_price=False):
+def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps):
     """
-    [UNIFIED] لكل إشارة:
-      - Stage 1: حاول ملء Limit عند sig.price خلال UNIFIED_WAIT_BARS_1H.
-      - Stage 2: إن فشل Stage 1، افحص شروط Stage 2 على كل شمعة تالية
-                 حتى UNIFIED_MAX_AGE_BARS_1H. إن تحققت، ادخل بسعر السوق
-                 وأعد بناء SL/TP.
+    For each signal, find the bar index where the limit entry would ACTUALLY fill.
+    A fill requires the market to PENETRATE the limit price by `pen_bps`.
 
-    Returns
-    -------
-    dict {sig_i: tuple | None}
-        ('S1', fill_ci, fill_px)                         — Stage 1
-        ('S2', ci, px, sl_new, tp_new, sl_dist_new)      — Stage 2
-        None                                              — skip
+    Deadline = min(sig.close_idx + max_wait_bars, next_signal_ci_for_same_symbol)
+    so we never fill after the next signal has already superseded this one.
+
+    Returns dict: signal_index → fill_ci | None
     """
     by_symbol = defaultdict(list)
     for i, s in enumerate(signals):
@@ -3537,14 +2536,6 @@ def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps,
 
     pen_frac = pen_bps * 1e-4
     result = {}
-
-    _unified = bool(getattr(CFG, 'UNIFIED_ENTRY_ENABLED', True))
-    _stage1_bars = effective_bars(
-        int(getattr(CFG, 'UNIFIED_WAIT_BARS_1H', 8))
-    )
-    _max_age_bars = effective_bars(
-        int(getattr(CFG, 'UNIFIED_MAX_AGE_BARS_1H', 12))
-    )
 
     for sym, sig_list in by_symbol.items():
         if sym not in assets:
@@ -3555,181 +2546,34 @@ def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps,
         n_bars = len(ad.closes)
 
         for j, (sig_i, sig) in enumerate(sig_list):
-            # ══ [SING-TIMING Layer 1] حالة الرنين لهذه الإشارة ══
-            _sing_state = "DORMANT"
-            _sing_rho = 0.0
-            if getattr(CFG, 'SING_TIMING_ENABLED', False):
-                try:
-                    _sing_state, _sing_rho = _resonance_state_for_direction(
-                        ad, int(sig.feat_idx), sig.action, CFG
-                    )
-                except Exception:
-                    _sing_state, _sing_rho = "DORMANT", 0.0
-
-            # DECAYING → رفض الإشارة كلياً (مطابق لـ Live)
-            if _sing_state == "DECAYING":
-                result[sig_i] = None
-                continue
-
-            # ══ [SING-TIMING Layer 3A] Funding Guard ══
-            if getattr(CFG, 'SING_FUNDING_GUARD_ENABLED', False):
-                try:
-                    _ts = sig.timestamp
-                    if _ts.tz is None:
-                        _ts = _ts.tz_localize('UTC')
-                    else:
-                        _ts = _ts.tz_convert('UTC')
-                    _minutes_now = int(_ts.hour) * 60 + int(_ts.minute)
-                    _funding_hours = tuple(getattr(
-                        CFG, 'SING_FUNDING_HOURS_UTC', (0, 8, 16)
-                    ))
-                    _window = int(getattr(
-                        CFG, 'SING_FUNDING_GUARD_MINUTES', 30
-                    ))
-                    _skip_funding = False
-                    for _fh in _funding_hours:
-                        _fm = int(_fh) * 60
-                        _delta = _fm - _minutes_now
-                        if _delta < 0:
-                            _delta += 24 * 60
-                        if 0 <= _delta <= _window:
-                            _skip_funding = True
-                            break
-                    if _skip_funding:
-                        result[sig_i] = None
-                        continue
-                except Exception:
-                    pass
-
-            # ══ [SING-TIMING Layer 2] ACTIVE → marketable فوري ══
-            if (_sing_state == "ACTIVE"
-                    and getattr(CFG, 'SING_ACTIVE_MARKETABLE', False)):
-                try:
-                    _geom = _recompute_entry_geometry_at_market(
-                        sig, ad, int(sig.close_idx), int(sig.feat_idx), CFG
-                    )
-                    if _geom is not None:
-                        _pen_bps = float(getattr(
-                            CFG, 'SING_ACTIVE_PENETRATION_BPS', 3.0
-                        ))
-                        _pen_frac = _pen_bps * 1e-4
-                        _entry_px = float(_geom['entry_px'])
-                        if sig.action == "BUY":
-                            _mk_px = _entry_px * (1.0 + _pen_frac)
-                        else:
-                            _mk_px = _entry_px * (1.0 - _pen_frac)
-                        result[sig_i] = (
-                            'S2', int(sig.close_idx), float(_mk_px),
-                            float(_geom['sl']), float(_geom['tp1']),
-                            float(_geom['sl_dist_new'])
-                        )
-                        continue
-                except Exception:
-                    pass
-
-            # ══ [SING-TIMING Layer 1] تعديل المهلة حسب الحالة ══
-            _eff_stage1_bars = _stage1_bars
-            if _sing_state == "EMERGING":
-                _eff_stage1_bars = effective_bars(int(getattr(
-                    CFG, 'SING_PENDING_WAIT_EMERGING', 2
-                )))
-            elif _sing_state == "ACTIVE":
-                _eff_stage1_bars = effective_bars(int(getattr(
-                    CFG, 'SING_PENDING_WAIT_ACTIVE', 1
-                )))
-
-            # Deadline = min(signal + max_wait, next signal)
-            first_bar = sig.close_idx + 1
-            stage1_last = first_bar + max(1, _eff_stage1_bars)
-            stage2_last = first_bar + max(1, _max_age_bars)
+            # Deadline
+            deadline = min(sig.close_idx + max_wait_bars, n_bars - 1)
             if j + 1 < len(sig_list):
                 next_sig = sig_list[j + 1][1]
-                stage1_last = min(stage1_last, next_sig.close_idx)
-                stage2_last = min(stage2_last, next_sig.close_idx)
-            stage1_last = min(stage1_last, n_bars)
-            stage2_last = min(stage2_last, n_bars)
+                deadline = min(deadline, next_sig.close_idx)
 
-            if first_bar >= stage1_last and first_bar >= stage2_last:
+            start = sig.close_idx + 1
+            if start >= deadline:
                 result[sig_i] = None
                 continue
 
-            target0 = _backtest_entry_target(sig, ad)
-            ref_px = float(getattr(sig, 'entry_ref_price', 0.0) or 0.0)
-            base_dip = float(getattr(sig, 'entry_base_dip', 0.0) or 0.0)
+            target = _backtest_entry_target(sig, ad)
+            fill_ci = None
 
-            # ── Stage 1 ──
-            # [PARITY-FIX] Fill criterion now matches live exactly:
-            #   Live places the order at `base × (1 ∓ pen)` and the exchange
-            #   fills it when the market reaches that price.
-            #   Backtest previously required an EXTRA penetration
-            #   (need_low = target × (1 - pen)) → ~half the fills of live.
-            #   Now: fill when market simply touches the target.
-            stage1_fill = None
-            for bar in range(first_bar, stage1_last):
-                if (time_decay_enabled and ref_px > 0 and base_dip > 0):
-                    bars_elapsed = bar - sig.close_idx
-                    if bars_elapsed > int(time_decay_bars[2]):
-                        mult = float(time_decay_mults[2])
-                    elif bars_elapsed > int(time_decay_bars[1]):
-                        mult = float(time_decay_mults[1])
-                    elif bars_elapsed > int(time_decay_bars[0]):
-                        mult = float(time_decay_mults[0])
-                    else:
-                        mult = 1.0
-                    eff_dip = base_dip * mult
-                    eff_target = (ref_px - eff_dip) if sig.action == "BUY" \
-                                 else (ref_px + eff_dip)
-                else:
-                    eff_target = target0
+            if sig.action == "BUY":
+                need_low = target * (1.0 - pen_frac)
+                window = ad.lows[start:deadline]
+                idx = np.where(window <= need_low)[0]
+                if len(idx) > 0:
+                    fill_ci = start + int(idx[0])
+            else:  # SELL
+                need_high = target * (1.0 + pen_frac)
+                window = ad.highs[start:deadline]
+                idx = np.where(window >= need_high)[0]
+                if len(idx) > 0:
+                    fill_ci = start + int(idx[0])
 
-                if sig.action == "BUY":
-                    # Live semantics: order sits AT eff_target; fills when
-                    # market price reaches it (low ≤ eff_target).
-                    if ad.lows[bar] <= eff_target:
-                        fill_px = eff_target if use_time_decay_price \
-                                  else target0
-                        stage1_fill = (bar, fill_px)
-                        break
-                else:
-                    # Live semantics: order sits AT eff_target; fills when
-                    # market price reaches it (high ≥ eff_target).
-                    if ad.highs[bar] >= eff_target:
-                        fill_px = eff_target if use_time_decay_price \
-                                  else target0
-                        stage1_fill = (bar, fill_px)
-                        break
-
-            if stage1_fill is not None:
-                result[sig_i] = ('S1', stage1_fill[0], stage1_fill[1])
-                continue
-
-            # ── Stage 2 ──
-            if not _unified:
-                result[sig_i] = None
-                continue
-
-            stage2_entry = None
-            for bar in range(max(first_bar, stage1_last), stage2_last):
-                current_fi = bar - ad.feat_start
-                if current_fi < 0 or current_fi >= len(ad.score):
-                    continue
-                ok, reason, p_cur = _check_unified_stage2(
-                    sig, ad, bar, current_fi, CFG
-                )
-                if not ok:
-                    continue
-                geom = _recompute_entry_geometry_at_market(
-                    sig, ad, bar, current_fi, CFG
-                )
-                if geom is None:
-                    continue
-                stage2_entry = (
-                    'S2', bar, geom['entry_px'],
-                    geom['sl'], geom['tp1'], geom['sl_dist_new']
-                )
-                break
-
-            result[sig_i] = stage2_entry
+            result[sig_i] = fill_ci
 
     return result
 
@@ -3790,7 +2634,7 @@ def compute_trail_params(ad, entry_fi: int) -> Tuple[float, float]:
     except Exception:
         return float(CFG.TRAIL_DISTANCE), float(CFG.TRAIL_ACTIVATE_MFE)
 
-def _advance(pos, ad, to_ci, partial_cb=None):
+def _advance(pos, ad, to_ci):
     """
     Walk bars from current_ci+1 to to_ci.
 
@@ -3872,13 +2716,7 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                 # Legacy trailing (uses sub-bar high/low as peak candidate)
                 _td = pos.trail_dist_frac if pos.trail_dist_frac > 0 else CFG.TRAIL_DISTANCE
                 _ta = pos.trail_activate_frac if pos.trail_activate_frac > 0 else CFG.TRAIL_ACTIVATE_MFE
-                # ══ [FIX 1] Activation tied to R-multiple, not fixed MFE ══
-                _sl_frac_init = (pos.sl_dist_initial / pos.entry_px
-                                 if pos.entry_px > 0 and pos.sl_dist_initial > 0
-                                 else 0.01)
-                _act_at_r = float(getattr(CFG, 'TRAIL_ACTIVATE_AT_R', 1.0))
-                _ta_eff = _sl_frac_init * _act_at_r
-                if CFG.TRAIL_ENABLED and pos.mfe_frac >= _ta_eff:
+                if CFG.TRAIL_ENABLED and pos.mfe_frac >= _ta:
                     if sig.action == "BUY":
                         peak = pos.peak_price if pos.peak_price > 0 else pos.entry_px
                         if s_high > peak:
@@ -3893,23 +2731,6 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                         new_sl = peak * (1.0 + _td)
                         if new_sl < trail_sl * (1.0 - CFG.TRAIL_MIN_STEP):
                             trail_sl = new_sl
-
-                # ══ [FIX 4] Partial TP trigger ══
-                if (getattr(CFG, 'PARTIAL_TP_ENABLED', False)
-                        and not getattr(pos, 'partial_taken', False)
-                        and partial_cb is not None
-                        and pos.sl_dist_initial > 0):
-                    _ptr = float(getattr(CFG, 'PARTIAL_TP_R', 1.0))
-                    if sig.action == "BUY":
-                        _trig = pos.entry_px + pos.sl_dist_initial * _ptr
-                        if s_high >= _trig:
-                            pos.partial_taken = True
-                            partial_cb(pos, _trig, cidx)
-                    else:
-                        _trig = pos.entry_px - pos.sl_dist_initial * _ptr
-                        if s_low <= _trig:
-                            pos.partial_taken = True
-                            partial_cb(pos, _trig, cidx)
 
                 # SL / TP check on sub-bar
                 res, px = _check_sl_tp(s_high, s_low, p, fi)
@@ -3936,13 +2757,7 @@ def _advance(pos, ad, to_ci, partial_cb=None):
 
             _td = pos.trail_dist_frac if pos.trail_dist_frac > 0 else CFG.TRAIL_DISTANCE
             _ta = pos.trail_activate_frac if pos.trail_activate_frac > 0 else CFG.TRAIL_ACTIVATE_MFE
-            # ══ [FIX 1] Activation tied to R-multiple, not fixed MFE ══
-            _sl_frac_init = (pos.sl_dist_initial / pos.entry_px
-                             if pos.entry_px > 0 and pos.sl_dist_initial > 0
-                             else 0.01)
-            _act_at_r = float(getattr(CFG, 'TRAIL_ACTIVATE_AT_R', 1.0))
-            _ta_eff = _sl_frac_init * _act_at_r
-            if CFG.TRAIL_ENABLED and pos.mfe_frac >= _ta_eff:
+            if CFG.TRAIL_ENABLED and pos.mfe_frac >= _ta:
                 if sig.action == "BUY":
                     peak = pos.peak_price if pos.peak_price > 0 else pos.entry_px
                     if high > peak:
@@ -3967,11 +2782,9 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                 return px, "Hard TP", cidx
 
         # ── Physics-based exits (close-only, per main bar) ──
-        is_apex, apex_rsn = False, ""
-        if getattr(CFG, 'APEX_ENABLED', True):
-            is_apex, apex_rsn = check_thermodynamic_apex(
-                sig.action, pos.entry_px, p, ad, fi
-            )
+        is_apex, apex_rsn = check_thermodynamic_apex(
+            sig.action, pos.entry_px, p, ad, fi
+        )
         if is_apex:
             pos.trail_sl = trail_sl; pos.current_ci = cidx
             return p, apex_rsn, cidx
@@ -3985,28 +2798,9 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                 pos.trail_sl = trail_sl; pos.current_ci = cidx
                 return p, f"Topo-Div({div_t:.3f})", cidx
 
-        # 3. MaxHold (close-based)
-        # ══ [TF-FIX] scale bar-count to preserve real-time duration ══
         if cidx - pos.entry_ci > effective_bars(CFG.MAX_HOLD_BARS):
             pos.trail_sl = trail_sl; pos.current_ci = cidx
             return p, "MaxHold", cidx
-
-        # ══ [FIX 3] Time-based kill — if flat after N bars, cut it ══
-        if getattr(CFG, 'TIME_KILL_ENABLED', False):
-            _tk_bars = effective_bars(int(getattr(CFG, 'TIME_KILL_BARS', 10)))
-            if (cidx - pos.entry_ci) >= _tk_bars:
-                # Compute current R-multiple
-                if pos.sl_dist_initial > 0:
-                    if sig.action == "BUY":
-                        _pnl_frac = (p - pos.entry_px) / pos.entry_px
-                    else:
-                        _pnl_frac = (pos.entry_px - p) / pos.entry_px
-                    _sl_frac0 = pos.sl_dist_initial / pos.entry_px
-                    _r_now = _pnl_frac / _sl_frac0 if _sl_frac0 > 0 else 0.0
-                    _min_r = float(getattr(CFG, 'TIME_KILL_MIN_R', 0.5))
-                    if _r_now < _min_r:
-                        pos.trail_sl = trail_sl; pos.current_ci = cidx
-                        return p, f"TimeKill({_r_now:.2f}R)", cidx
 
     pos.trail_sl = trail_sl
     pos.current_ci = max(end, pos.current_ci)
@@ -4112,51 +2906,18 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
     # ══ [RE-ENTRY COOLDOWN] Track last exit bar per symbol ══
     last_exit_ci: Dict[str, int] = {}
     # ══ [BACKTEST REALISM] Precompute which entries actually fill ══
-    # When SIMULATE_LIVE_FAITHFULLY, use the LIVE entry timeout
-    # (PO_MAX_WAIT_S seconds converted to bars) instead of the
-    # generous backtest window (25 bars).
-    _tf_sec = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
-    _sim_live = bool(getattr(CFG, 'SIMULATE_LIVE_FAITHFULLY', False))
-
-    if _sim_live:
-        _live_wait_cap_s = float(getattr(CFG, 'PO_MAX_WAIT_S', 0) or 0)
-        if _live_wait_cap_s > 0:
-            _bars_from_seconds = max(1, int(np.ceil(_live_wait_cap_s / _tf_sec)))
-        else:
-            _bars_from_seconds = effective_bars(CFG.FILL_ENTRY_MAX_WAIT_BARS)
-        _effective_wait_bars = min(
-            effective_bars(CFG.FILL_ENTRY_MAX_WAIT_BARS),
-            _bars_from_seconds,
-        )
-        _wait_label = (f"live={_live_wait_cap_s:.0f}s "
-                       f"→ {_effective_wait_bars} bars")
-    else:
-        _effective_wait_bars = effective_bars(CFG.FILL_ENTRY_MAX_WAIT_BARS)
-        _wait_label = (f"{CFG.FILL_ENTRY_MAX_WAIT_BARS} bars × "
-                       f"scale {CFG.TF_SCALE:.2f} = {_effective_wait_bars}")
-
-    # Time-decay: only applied if live-mode is on
-    _td_enabled = _sim_live and bool(getattr(CFG, 'ENTRY_TIME_DECAY', False))
-
     fill_map = precompute_entry_fills(
         assets, signals,
-        max_wait_bars=_effective_wait_bars,
+        max_wait_bars=effective_bars(CFG.FILL_ENTRY_MAX_WAIT_BARS),   # ══ [TF-FIX]
         pen_bps=CFG.FILL_PENETRATION_BPS,
-        time_decay_enabled=_td_enabled,
-        time_decay_bars=(CFG.ENTRY_TIME_DECAY_BARS_1,
-                         CFG.ENTRY_TIME_DECAY_BARS_2,
-                         CFG.ENTRY_TIME_DECAY_BARS_3),
-        time_decay_mults=(CFG.ENTRY_TIME_DECAY_MULT_1,
-                          CFG.ENTRY_TIME_DECAY_MULT_2,
-                          CFG.ENTRY_TIME_DECAY_MULT_3),
-        use_time_decay_price=_td_enabled,
     )
     n_total_sigs = len(signals)
     n_would_fill = sum(1 for v in fill_map.values() if v is not None)
     log.info(f"  [Backtest Realism] Entry fills: "
              f"{n_would_fill:,}/{n_total_sigs:,} "
              f"({100*n_would_fill/max(n_total_sigs,1):.1f}%) "
-             f"[pen={CFG.FILL_PENETRATION_BPS}bps, wait={_wait_label}]")
+             f"[pen={CFG.FILL_PENETRATION_BPS}bps, "
+             f"wait={CFG.FILL_ENTRY_MAX_WAIT_BARS}bars]")
 
     def _close(pos, ad, exit_px, exit_rsn, exit_ci):
         nonlocal capital, peak_cap
@@ -4186,8 +2947,7 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         funding_payments = max(0, hold_bars) // CFG.FUNDING_INTERVAL_BARS
         funding_cost = pos.pos_size * pos.entry_px * CFG.FUNDING_RATE_COST * funding_payments
 
-        # Include any accumulated partial-TP profit in the final trade PnL
-        net  = gross - fee - funding_cost + float(getattr(pos, 'partial_pnl', 0.0))
+        net  = gross - fee - funding_cost
         cap0 = pos.entry_cap
         capital = max(capital+net, 0.)
         peak_cap= max(peak_cap, capital)
@@ -4210,40 +2970,6 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
             mfe_frac=pos.mfe_frac
         ))
 
-        # ══ [TradeLog] تسجيل الصفقة ══
-        try:
-            _trade_log_from_backtest(
-                pos, ad, exit_eff, exit_rsn, exit_ci,
-                pos.entry_cap, capital
-            )
-        except Exception as _tle:
-            log.debug(f"[TradeLog] backtest hook failed: {_tle}")
-
-    # ══ [FIX 4] Partial TP callback ══
-    def _partial_tp(pos, px, ci):
-        """Record a partial take-profit and reduce the position size."""
-        nonlocal capital, peak_cap
-        sig = pos.signal
-        _pct = float(getattr(CFG, 'PARTIAL_TP_PCT', 0.5))
-        _close_qty = pos.pos_size * _pct
-        if _close_qty <= 0:
-            return
-        adv_here = ad_here = pos.entry_cap  # placeholder — see below
-        # Compute gross PnL for the partial close
-        if sig.action == "BUY":
-            _gross = (px - pos.entry_px) * _close_qty
-        else:
-            _gross = (pos.entry_px - px) * _close_qty
-        _fee = _close_qty * (pos.entry_px + px) * CFG.MAKER_FEE
-        _net = _gross - _fee
-        capital += _net
-        peak_cap = max(peak_cap, capital)
-        equity.append(capital)
-        pos.partial_pnl = pos.partial_pnl + _net
-        pos.pos_size -= _close_qty
-        log.debug(f"[PartialTP] {sig.symbol} closed {_pct*100:.0f}% "
-                  f"@ {px:.6f}  net=${_net:+.4f}  remaining={pos.pos_size:.6f}")
-
     for sig_i, sig in enumerate(signals):
         # حاجز أمان مطلق: يستحيل بدء تداول جديد إذا اقترب الجسيم من عتبة الفناء (5.1$)
         if capital <= CFG.CAPITAL_FLOOR + 0.1:
@@ -4254,7 +2980,7 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         for sym, pos in open_pos.items():
             ad   = assets[sym]
             toci = _ts_to_ci(ad, sig.timestamp)
-            ep, er, ec = _advance(pos, ad, toci, partial_cb=_partial_tp)
+            ep, er, ec = _advance(pos, ad, toci)
             if ep > 0:
                 _close(pos, ad, ep, er, ec)
                 to_close.append(sym)
@@ -4291,42 +3017,17 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
 
         ad = assets[sym]
 
-        # ══ [UNIFIED ENTRY] Look up Stage 1 or Stage 2 ══
-        fill_info = fill_map.get(sig_i)
-        if fill_info is None:
+        # ══ [BACKTEST REALISM] Look up actual fill bar ══
+        fill_ci = fill_map.get(sig_i)
+        if fill_ci is None:
+            # Order never penetrated — skip this signal entirely
             continue
 
-        _is_stage2 = False
-        _stage2_sl = _stage2_tp = _stage2_sl_dist = None
-
-        if len(fill_info) >= 2 and isinstance(fill_info[0], str):
-            if fill_info[0] == 'S1':
-                _, opt_ci, opt_px = fill_info
-            elif fill_info[0] == 'S2':
-                _, opt_ci, opt_px, _stage2_sl, _stage2_tp, _stage2_sl_dist \
-                    = fill_info
-                _is_stage2 = True
-            else:
-                continue
-        else:
-            # توافق مع الصيغة القديمة
-            opt_ci, opt_px = fill_info
-
-        opt_ci = int(opt_ci)
-        opt_px = float(opt_px)
+        # 🚀 التوافق السببي: الدخول يتم عند الشمعة التي اخترق فيها السوق السعر
+        opt_ci = fill_ci
+        # ══ [NO-FIXED-PRICE] Use the same target logic as Live ══
+        opt_px = _backtest_entry_target(sig, ad)
         opt_entry = False
-
-        # ══ [STAGE 2] أعد كتابة SL/TP على الإشارة قبل أي حساب ══
-        if _is_stage2:
-            _old_sl = sig.sl
-            _old_tp = sig.tp1
-            sig.sl = float(_stage2_sl)
-            sig.tp1 = float(_stage2_tp)
-            log.debug(
-                f"[Unified-S2] {sym} entry@{opt_px:.6f} "
-                f"old_sl={_old_sl:.6f}→new_sl={sig.sl:.6f} "
-                f"old_tp={_old_tp:.6f}→new_tp={sig.tp1:.6f}"
-            )
 
         # ══ [SUB-BARS] Find the sub-bar within the entry bar where
         # the limit was first touched. This is used by _advance to
@@ -4349,39 +3050,26 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
                 if len(_idx) > 0:
                     opt_sub_idx = int(_idx[0])
 
-        # ══ [SL/TP SETUP — works for both fixed and no-fix] ══
-        # Design distances from the original signal (preserves R:R intent).
-        _design_sl_dist = abs(sig.price - sig.sl)
-        _design_tp_dist = abs(sig.tp1 - sig.price)
-        if _design_sl_dist <= 1e-12:
-            continue
-
-        # Clip SL to max_sl_frac × opt_px (entry-based cap)
-        _max_sl_frac = 0.015 * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
-        if _design_sl_dist > opt_px * _max_sl_frac:
-            _rr = _design_tp_dist / max(_design_sl_dist, 1e-12)
-            _design_sl_dist = opt_px * _max_sl_frac
-            _design_tp_dist = _design_sl_dist * _rr
-
-        # ══ [CRITICAL FIX] Rebuild sig.sl / sig.tp1 from opt_px ══
-        # This is what the LIVE code already does in
-        # _promote_pending_to_position. Without this, when
-        # PO_FIXED_PRICE=False and entry ≠ sig.price, TP ends up
-        # BELOW entry (for BUY) → "Hard TP" exits are actually losses.
-        if sig.action == "BUY":
-            sig.sl  = opt_px - _design_sl_dist
-            sig.tp1 = opt_px + _design_tp_dist
-        else:
-            sig.sl  = opt_px + _design_sl_dist
-            sig.tp1 = opt_px - _design_tp_dist
-
-        sl_distance = _design_sl_dist
-        tp_distance = _design_tp_dist
-
-        if sig.action == "BUY":
-            sl_h = opt_px - sl_distance
-        else:
-            sl_h = opt_px + sl_distance
+        # ══ [SL-CLIP-PARITY] Match Live's max_sl_frac = 0.015 ══
+        # Live clips SL at 1.5% of entry (and scales TP to preserve R/R)
+        # in _promote_pending_to_position. Backtest must apply the same
+        # clip so the two engines see identical levels.
+        sl_distance = abs(sig.price - sig.sl)
+        tp_distance = abs(sig.tp1 - sig.price)
+        # Cap scales with widening so the loosened SL isn't re-clipped.
+        _max_sl_frac = 0.15 * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
+        if sl_distance > opt_px * _max_sl_frac:
+            _rr = tp_distance / max(sl_distance, 1e-12)
+            sl_distance = opt_px * _max_sl_frac
+            tp_distance = sl_distance * _rr
+            # Update sig.sl / sig.tp1 in place so _advance uses clipped
+            # levels for the SL/TP trigger checks and exit prices.
+            if sig.action == "BUY":
+                sig.sl  = sig.price - sl_distance
+                sig.tp1 = sig.price + tp_distance
+            else:
+                sig.sl  = sig.price + sl_distance
+                sig.tp1 = sig.price - tp_distance
 
         if sig.action == "BUY":
             sl_h = opt_px - sl_distance
@@ -4401,27 +3089,6 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
             log.debug(f"[Budget] {sym} skipped: no heat budget available")
             continue
 
-        # ══ [SING-TIMING Layer 3B] Resonance Risk Boost ══
-        # مطابق تماماً لمنطق Live: يضاعف المخاطرة في ACTIVE.
-        if (getattr(CFG, 'SING_RISK_BOOST_ENABLED', False)
-                and getattr(CFG, 'SING_TIMING_ENABLED', False)):
-            try:
-                _rb_state, _rb_rho = _resonance_state_for_direction(
-                    ad, int(sig.feat_idx), sig.action, CFG
-                )
-                if _rb_state == "ACTIVE":
-                    _boost = float(getattr(
-                        CFG, 'SING_RISK_BOOST_ACTIVE', 1.20
-                    ))
-                    risk_frac *= _boost
-                elif _rb_state == "EMERGING":
-                    _boost = float(getattr(
-                        CFG, 'SING_RISK_BOOST_EMERGING', 1.00
-                    ))
-                    risk_frac *= _boost
-            except Exception:
-                pass
-
         # Apply drawdown multiplier + floor protection
         risk_frac *= dd_mult * power_law_scale
         risk_frac = float(np.clip(risk_frac,
@@ -4436,34 +3103,6 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
 
         # Leverage cap
         dynamic_leverage = compute_dynamic_leverage(capital, CFG)
-
-        # ══ [LIVE PARITY] Apply LevCap + LiqGate like live does ══
-        # Live uses real MMR from the exchange. Backtest uses the
-        # LIQ_FALLBACK_MMR (2%) as a proxy — same as live's fallback.
-        if _sim_live and getattr(CFG, 'LIQ_ENABLED', True):
-            _mmr = float(CFG.LIQ_FALLBACK_MMR)
-            _sl_frac_max = 0.015 * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
-            _lev_by_liq = compute_max_leverage_by_liq(
-                sl_frac_max=_sl_frac_max,
-                mmr=_mmr,
-                safety_mult=float(CFG.LIQ_SAFETY_MULT),
-            )
-            if dynamic_leverage > _lev_by_liq:
-                dynamic_leverage = max(int(CFG.LEVERAGE_MIN), _lev_by_liq)
-            if dynamic_leverage < int(CFG.LEVERAGE_MIN):
-                log.debug(f"[LevCap] {sym} leverage below min — skip")
-                continue
-            # LiqGate: reject if SL too close to Liq
-            _liq_px = compute_liquidation_price(
-                opt_px, sig.action, dynamic_leverage, _mmr
-            )
-            _liq_gap = abs(opt_px - _liq_px)
-            _sl_gap = abs(opt_px - sl_h)
-            if (_liq_gap <= 1e-12 or
-                    _sl_gap * float(CFG.LIQ_SAFETY_MULT) > _liq_gap):
-                log.debug(f"[LiqGate] {sym} REJECT at backtest entry")
-                continue
-
         max_notional = capital * dynamic_leverage
         qty = min(qty, max_notional / opt_px)
 
@@ -4627,38 +3266,6 @@ def print_report(m, mode):
     print(f"\n▶ توزيع أسباب الخروج")
     for r,c in sorted(m['exit_distribution'].items(), key=lambda x:-x[1]):
         print(f"   {r:25s}: {c:7,}  ({c/m['n_trades']*100:.1f}%)")
-
-    # ══ [FILTER REPORT] ══
-    if CFG.FILTER_ENABLED and _FILTER_STATS['total_signals'] > 0:
-        _tot = _FILTER_STATS['total_signals']
-        _rej = _FILTER_STATS['rejected']
-        _kept = _FILTER_STATS['kept']
-        print(f"\n▶ فلتر الدخول (TRADE FILTER)")
-        print(f"   إشارات مُنتَجة إجمالاً : {_tot:,}")
-        print(f"   مقبولة                 : {_kept:,} "
-              f"({_kept/max(_tot,1)*100:.1f}%)")
-        print(f"   مرفوضة                 : {_rej:,} "
-              f"({_rej/max(_tot,1)*100:.1f}%)")
-        print(f"   ── الأصوات المُفعَّلة ──")
-        print(f"   action_bias            : "
-              f"{'ON' if CFG.FILTER_USE_ACTION_BIAS else 'OFF'}")
-        print(f"   ema_slope              : "
-              f"{'ON' if CFG.FILTER_USE_EMA_SLOPE else 'OFF'}")
-        print(f"   high_atr               : "
-              f"{'ON' if CFG.FILTER_USE_HIGH_ATR else 'OFF'}")
-        print(f"   friction_drag          : "
-              f"{'ON' if CFG.FILTER_USE_FRICTION_DRAG else 'OFF'}")
-        print(f"   عدد الأصوات المطلوبة    : {CFG.FILTER_MIN_VOTES}")
-        print(f"   ── أعلى أسباب الرفض ──")
-        _top = sorted(_FILTER_STATS['vote_counts'].items(),
-                       key=lambda x: -x[1])[:5]
-        for reason, cnt in _top:
-            print(f"   {reason:35s}: {cnt:6,}")
-        print(f"   ── الأصوات الفردية ──")
-        for vote, cnt in sorted(_FILTER_STATS['vote_singles'].items(),
-                                 key=lambda x: -x[1]):
-            print(f"   {vote:35s}: {cnt:6,}")
-
     print(f"\n{sep}\n")
     
 
@@ -5567,32 +4174,8 @@ def run_backtest(cfg):
     log.info(f"  أزواج مرتبطة (ρ>{cfg.CORRELATION_THRESHOLD}): {n_pairs//2}")
 
     log.info("§5  بناء الإشارات (①②④⑤ مُفعَّلة)...")
-    # ══ [FILTER] إعادة تعيين العدّاد قبل البناء ══
-    _filter_reset_stats()
     sigs = build_signals(assets)
     sigs = deduplicate_signals(sigs)
-
-
-    # ══ [SING-TIMING] تقرير حالة الرنين على الإشارات ══
-    if getattr(CFG, 'SING_TIMING_ENABLED', False):
-        _sng_stats = {"DORMANT": 0, "EMERGING": 0, "ACTIVE": 0,
-                       "DECAYING": 0, "INVALID": 0}
-        for _s in sigs:
-            _ad_s = assets.get(_s.symbol)
-            if _ad_s is None:
-                continue
-            try:
-                _st, _ = _resonance_state_for_direction(
-                    _ad_s, int(_s.feat_idx), _s.action, CFG
-                )
-                _sng_stats[_st] = _sng_stats.get(_st, 0) + 1
-            except Exception:
-                pass
-        _tot = sum(_sng_stats.values()) or 1
-        log.info(f"  [Sing-Timing] Distribution on signals:")
-        for _st_name, _cnt in _sng_stats.items():
-            log.info(f"    {_st_name:10s}: {_cnt:5d} "
-                     f"({_cnt/_tot*100:.1f}%)")
 
     # ══ [Rule Filter] ══
     if CFG.RULE_FILTER_ENABLED:
@@ -8015,7 +6598,7 @@ def _promote_pending_to_position(exchange, sym: str, rec: Dict,
 
     rr = orig_tp_dist / orig_sl_dist
     # Cap scales with widening so the loosened SL isn't re-clipped.
-    max_sl_frac = 0.015 * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
+    max_sl_frac = 0.15 * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
     if orig_sl_dist > entry_price * max_sl_frac:
         orig_sl_dist = entry_price * max_sl_frac
         orig_tp_dist = orig_sl_dist * rr
@@ -8107,8 +6690,7 @@ def _promote_pending_to_position(exchange, sym: str, rec: Dict,
 
 
 def monitor_pending_orders(exchange, open_pos_live: Dict,
-                           loop_iter: int = 0,
-                           assets: Optional[Dict] = None) -> None:
+                           loop_iter: int = 0) -> None:
     """
     Sweep all pending orders. Promote filled ones, drop canceled/expired,
     cancel timed-out ones. Bounded to PO_MAX_WAIT_S + grace.
@@ -8127,190 +6709,6 @@ def monitor_pending_orders(exchange, open_pos_live: Dict,
             rec = _PENDING_ORDERS.get(sym)
             if rec is None:
                 continue
-
-        status = str(rec.get('status') or 'open')
-
-        # ══ [SING-TIMING Layer 1 + Layer 2] فحص حالة الرنين الحالية ══
-        if getattr(CFG, 'SING_TIMING_ENABLED', False):
-            try:
-                _ad_curr = None
-                if assets is not None:
-                    _ad_curr = assets.get(sym)
-                if _ad_curr is None:
-                    _ad_curr = rec.get('ad_ref')
-
-                if _ad_curr is not None:
-                    # آخر شمعة مغلقة
-                    _cur_ci = max(0, len(_ad_curr.closes) - 2)
-                    _cur_fi = _cur_ci - _ad_curr.feat_start
-                    if 0 <= _cur_fi < len(_ad_curr.geodesic_accel):
-                        _st_now, _rho_now = _resonance_state_for_direction(
-                            _ad_curr, int(_cur_fi),
-                            str(rec.get('action', 'BUY')),
-                            CFG
-                        )
-
-                        # ══════════════════════════════════════════════
-                        # Layer 1: DECAYING → cancel + drop
-                        # ══════════════════════════════════════════════
-                        if _st_now == "DECAYING":
-                            _oid = rec.get('order_id')
-                            if _oid:
-                                try:
-                                    exchange.cancel_order(_oid, sym)
-                                except Exception:
-                                    pass
-                                time.sleep(0.2)
-                                _sweep_pending_once(exchange, sym)
-                                _rec_chk = _PENDING_ORDERS.get(sym)
-                                if (_rec_chk is not None
-                                        and float(_rec_chk.get(
-                                            'filled', 0.0) or 0.0) > 0.0):
-                                    pass  # promotion handles it
-                                else:
-                                    _PENDING_ORDERS.pop(sym, None)
-                                    log.info(
-                                        f"[Sing-Timing] {sym} DECAYING "
-                                        f"(rho={_rho_now:+.3f}) — pending "
-                                        f"cancelled"
-                                    )
-                                    continue
-                            else:
-                                _PENDING_ORDERS.pop(sym, None)
-                                continue
-
-                        # ══════════════════════════════════════════════
-                        # Layer 1: EMERGING/ACTIVE → تقصير المهلة
-                        # ══════════════════════════════════════════════
-                        if _st_now in ("EMERGING", "ACTIVE"):
-                            _bars_limit = int(getattr(
-                                CFG,
-                                'SING_PENDING_WAIT_EMERGING'
-                                if _st_now == "EMERGING"
-                                else 'SING_PENDING_WAIT_ACTIVE',
-                                2
-                            ))
-                            _tf_sec_u = (CFG.TF_SECONDS
-                                          if CFG.TF_SECONDS > 0 else 3600)
-                            _new_timeout = float(_bars_limit * _tf_sec_u)
-                            _old_timeout = float(rec.get(
-                                'timeout_s', 0.0) or 0.0
-                            )
-                            if (_old_timeout <= 0.0
-                                    or _new_timeout < _old_timeout):
-                                rec['timeout_s'] = _new_timeout
-                                rec['sing_state_current'] = _st_now
-                                rec['sing_rho_current'] = float(_rho_now)
-                                log.debug(
-                                    f"[Sing-Timing] {sym} {_st_now} — "
-                                    f"timeout shortened "
-                                    f"{_old_timeout:.0f}s → "
-                                    f"{_new_timeout:.0f}s"
-                                )
-
-                        # ══════════════════════════════════════════════
-                        # Layer 2: ترقية GTX إلى Marketable عند ACTIVE
-                        # ══════════════════════════════════════════════
-                        if (_st_now == "ACTIVE"
-                                and getattr(CFG, 'SING_ACTIVE_MARKETABLE',
-                                            False)
-                                and str(rec.get('execution_mode', 'gtx'))
-                                    != "marketable"
-                                and float(rec.get('filled', 0.0) or 0.0)
-                                    <= 0.0):
-                            _oid = rec.get('order_id')
-                            if _oid:
-                                # 1) cancel (with sweep)
-                                try:
-                                    exchange.cancel_order(_oid, sym)
-                                except Exception as _ce:
-                                    log.debug(
-                                        f"[Sing-Timing-L2] {sym} "
-                                        f"cancel for upgrade failed: {_ce}"
-                                    )
-                                time.sleep(0.2)
-                                _sweep_pending_once(exchange, sym)
-                                _rec_chk = _PENDING_ORDERS.get(sym)
-                                # 2) if partial fill arrived, let promotion
-                                if (_rec_chk is not None
-                                        and float(_rec_chk.get(
-                                            'filled', 0.0) or 0.0) > 0.0):
-                                    log.info(
-                                        f"[Sing-Timing-L2] {sym} "
-                                        f"partial fill during upgrade — "
-                                        f"keeping order"
-                                    )
-                                    continue
-
-                                # 3) place marketable
-                                try:
-                                    ob = exchange.fetch_order_book(
-                                        sym, limit=5
-                                    )
-                                    _bb = float(ob['bids'][0][0])
-                                    _ba = float(ob['asks'][0][0])
-                                    _pen_bps = float(getattr(
-                                        CFG,
-                                        'SING_ACTIVE_PENETRATION_BPS',
-                                        3.0
-                                    ))
-                                    _pen_frac = _pen_bps * 1e-4
-                                    _side = str(rec.get('side', 'buy'))
-
-                                    if _side == 'buy':
-                                        _mk_px = _ba * (1.0 + _pen_frac)
-                                    else:
-                                        _mk_px = _bb * (1.0 - _pen_frac)
-
-                                    # check slip vs original sig.price
-                                    _orig_px = float(rec.get(
-                                        'price', _mk_px) or _mk_px)
-                                    _slip_bps = (abs(_mk_px - _orig_px)
-                                                  / max(_orig_px, 1e-12)
-                                                  * 1e4)
-                                    _max_slip = float(getattr(
-                                        CFG,
-                                        'SING_ACTIVE_MAX_SLIP_BPS',
-                                        15.0
-                                    ))
-                                    if _slip_bps > _max_slip:
-                                        log.info(
-                                            f"[Sing-Timing-L2] {sym} "
-                                            f"upgrade skip: slip "
-                                            f"{_slip_bps:.1f}bps > "
-                                            f"{_max_slip:.1f}bps"
-                                        )
-                                    else:
-                                        _qty = float(rec.get('qty', 0.0)
-                                                     or 0.0)
-                                        _o2 = exchange.create_order(
-                                            sym, 'limit', _side, _qty,
-                                            _mk_px, params={}
-                                        )
-                                        rec['order_id'] = str(_o2['id'])
-                                        rec['price'] = float(_mk_px)
-                                        rec['execution_mode'] = "marketable"
-                                        rec['marketable_px'] = float(_mk_px)
-                                        rec['sing_state_current'] = "ACTIVE"
-                                        rec['sing_rho_current'] = float(
-                                            _rho_now
-                                        )
-                                        log.info(
-                                            f"[Sing-Timing-L2] {sym} "
-                                            f"upgraded GTX → marketable "
-                                            f"@ {_mk_px:.6f} "
-                                            f"(slip={_slip_bps:.1f}bps, "
-                                            f"rho={_rho_now:+.3f})"
-                                        )
-                                except Exception as _oe:
-                                    log.warning(
-                                        f"[Sing-Timing-L2] {sym} "
-                                        f"marketable upgrade failed: "
-                                        f"{_oe} — keeping previous order "
-                                        f"state"
-                                    )
-            except Exception as _e:
-                log.debug(f"[Sing-Timing] monitor hook failed: {_e}")
 
         status = str(rec.get('status') or 'open')
 
@@ -8412,223 +6810,10 @@ def monitor_pending_orders(exchange, open_pos_live: Dict,
                     # Fall through (don't continue) — timeout check below
                     # may still fire if we've passed stage 4.
 
-        # ── Timeout → Stage 2 (إن مُفعَّل) أو cancel + drop ──
+        # ── Timeout → cancel + drop ──
         timeout_s = float(rec.get('timeout_s') or CFG.PO_MAX_WAIT_S)
         elapsed = now - float(rec.get('placed_at') or now)
-
         if elapsed > timeout_s:
-            # ══ [UNIFIED STAGE 2] ══
-            _did_stage2 = False
-            if getattr(CFG, 'UNIFIED_ENTRY_ENABLED', True):
-                try:
-                    _ad = rec.get('ad_ref')
-                    _filled = float(rec.get('filled') or 0.0)
-                    if _ad is not None and _filled <= 0.0:
-                        _current_ci = len(_ad.closes) - 2  # آخر شمعة مغلقة
-                        _current_fi = _current_ci - _ad.feat_start
-                        if 0 <= _current_fi < len(_ad.score):
-                            _sig = rec.get('signal_ref')
-                            if _sig is None:
-                                # إعادة بناء الإشارة من القاموس
-                                from types import SimpleNamespace as _SNS
-                                _sig = _SNS(
-                                    symbol=sym,
-                                    action=rec.get('action'),
-                                    price=float(rec.get('price') or 0),
-                                    sl=float(rec.get('price') or 0)
-                                       - float(rec.get('orig_sl_dist') or 0)
-                                       if rec.get('action') == 'BUY'
-                                       else float(rec.get('price') or 0)
-                                       + float(rec.get('orig_sl_dist') or 0),
-                                    tp1=float(rec.get('price') or 0)
-                                        + float(rec.get('orig_tp_dist') or 0)
-                                        if rec.get('action') == 'BUY'
-                                        else float(rec.get('price') or 0)
-                                        - float(rec.get('orig_tp_dist') or 0),
-                                    score=float(rec.get('score_ref') or 0),
-                                    close_idx=int(rec.get('close_idx') or 0),
-                                    feat_idx=int(rec.get('entry_fi') or 0),
-                                )
-
-                            _ok, _reason, _p_cur = _check_unified_stage2(
-                                _sig, _ad, _current_ci, _current_fi, CFG
-                            )
-                            if _ok:
-                                _geom = _recompute_entry_geometry_at_market(
-                                    _sig, _ad, _current_ci, _current_fi, CFG
-                                )
-                                if _geom is not None:
-                                    # 1) ألغِ الأمر المعلّق
-                                    _oid = rec.get('order_id')
-                                    if _oid:
-                                        try:
-                                            exchange.cancel_order(_oid, sym)
-                                        except Exception:
-                                            pass
-                                        time.sleep(0.15)
-                                        _sweep_pending_once(exchange, sym)
-                                        # تحقق من عدم وجود fill جزئي
-                                        _rec_chk = _PENDING_ORDERS.get(sym)
-                                        if _rec_chk and \
-                                           float(_rec_chk.get('filled') or 0.0) > 0.0:
-                                            # fill جزئي وصل أثناء الإلغاء،
-                                            # اترك _promote_pending_to_position
-                                            # يتولى الأمر
-                                            _did_stage2 = True
-                                            continue
-
-                                    # 2) نفّذ market order
-                                    _qty_m = float(rec.get('qty') or 0)
-                                    _side_m = 'buy' if rec.get('action') == 'BUY' \
-                                              else 'sell'
-                                    try:
-                                        _mo = exchange.create_order(
-                                            sym, 'market', _side_m, _qty_m,
-                                            None,
-                                            params={'reduceOnly': False},
-                                        )
-                                        _fv = verify_fill(
-                                            exchange, _mo['id'], sym,
-                                            timeout_s=3.0
-                                        )
-                                        if not (_fv and _fv.get('filled')):
-                                            log.warning(
-                                                f"[Unified-S2] {sym} market "
-                                                f"order failed to fill"
-                                            )
-                                            _PENDING_ORDERS.pop(sym, None)
-                                            continue
-                                        _entry_px = float(_fv.get('avg_price')
-                                                          or _p_cur)
-                                        _actual_qty = float(_fv.get('qty')
-                                                            or _qty_m)
-                                    except Exception as _e:
-                                        log.error(
-                                            f"[Unified-S2] {sym} market "
-                                            f"order exception: {_e}"
-                                        )
-                                        _PENDING_ORDERS.pop(sym, None)
-                                        continue
-
-                                    # 3) احسب المخاطرة الفعلية
-                                    if rec.get('action') == 'BUY':
-                                        _actual_risk = _entry_px - _geom['sl']
-                                    else:
-                                        _actual_risk = _geom['sl'] - _entry_px
-                                    if _actual_risk <= 1e-12:
-                                        log.warning(
-                                            f"[Unified-S2] {sym} invalid "
-                                            f"actual_risk after fill"
-                                        )
-                                        # أغلق فوراً
-                                        try:
-                                            _side_close = 'sell' \
-                                                if rec.get('action') == 'BUY' \
-                                                else 'buy'
-                                            exchange.create_order(
-                                                sym, 'market', _side_close,
-                                                _actual_qty
-                                            )
-                                        except Exception:
-                                            pass
-                                        _PENDING_ORDERS.pop(sym, None)
-                                        continue
-
-                                    # 4) احسب الحجم مع مراعاة المخاطرة الفعلية
-                                    _risk_frac = float(rec.get('dyn_risk')
-                                                       or 0.01)
-                                    _cap_now = float(rec.get('capital_at_placement')
-                                                     or 0)
-                                    if _cap_now <= 0:
-                                        try:
-                                            _bal = exchange.fetch_balance()
-                                            _cap_now = float(
-                                                _bal['USDT']['free']
-                                            )
-                                        except Exception:
-                                            _cap_now = 0.0
-                                    if _cap_now > 0:
-                                        _equity_base = max(
-                                            _cap_now - CFG.CAPITAL_FLOOR, 0.0
-                                        )
-                                        _risk_amt = _equity_base * _risk_frac
-                                        _new_qty = min(
-                                            _risk_amt / _actual_risk,
-                                            _actual_qty
-                                        )
-                                        if _new_qty < _actual_qty * 0.95:
-                                            _excess = _actual_qty - _new_qty
-                                            try:
-                                                _side_close = 'sell' \
-                                                    if rec.get('action') == 'BUY' \
-                                                    else 'buy'
-                                                exchange.create_order(
-                                                    sym, 'market', _side_close,
-                                                    _excess
-                                                )
-                                                _actual_qty = _new_qty
-                                            except Exception:
-                                                pass
-
-                                    # 5) احفظ المركز الجديد
-                                    _trail_d, _trail_a = compute_trail_params(
-                                        _ad, _current_fi
-                                    )
-                                    open_pos_live[sym] = {
-                                        'action': rec.get('action'),
-                                        'entry': _entry_px,
-                                        'qty': _actual_qty,
-                                        'sl': float(_geom['sl']),
-                                        'tp1': float(_geom['tp1']),
-                                        'T_info': float(rec.get('T_info')
-                                                        or 0.0),
-                                        'dyn_risk': _risk_frac,
-                                        'entry_ts': time.time(),
-                                        'fill_ratio': 1.0,
-                                        'leverage': int(rec.get('leverage')
-                                                        or 1),
-                                        'trail_dist_frac': float(_trail_d),
-                                        'trail_activate_frac': float(_trail_a),
-                                        'sl_dist_initial': float(
-                                            abs(_entry_px - _geom['sl'])
-                                        ),
-                                        'stage': 'S2',
-                                    }
-
-                                    log.info(
-                                        f"✅ [Unified-S2] {sym} "
-                                        f"{rec.get('action')} @ {_entry_px:.6f} "
-                                        f"qty={_actual_qty:.6f} "
-                                        f"sl={_geom['sl']:.6f} "
-                                        f"tp={_geom['tp1']:.6f} "
-                                        f"reason={_reason}"
-                                    )
-
-                                    # 6) ضع أوامر واقية
-                                    try:
-                                        _place_protective_orders(
-                                            exchange, sym, open_pos_live[sym]
-                                        )
-                                        open_pos_live[sym]['_prot_last_sl'] \
-                                            = float(_geom['sl'])
-                                        open_pos_live[sym]['_prot_last_tp'] \
-                                            = float(_geom['tp1'])
-                                    except Exception as _e:
-                                        log.warning(
-                                            f"[Unified-S2] {sym} protective "
-                                            f"orders failed: {_e}"
-                                        )
-
-                                    _PENDING_ORDERS.pop(sym, None)
-                                    _did_stage2 = True
-                                    continue
-                except Exception as _e:
-                    log.debug(f"[Unified-S2] {sym} exception: {_e}")
-
-            if _did_stage2:
-                continue
-
-            # ── Cancel + drop (السلوك الأصلي) ──
             oid = rec.get('order_id')
             if oid:
                 try:
@@ -8636,12 +6821,13 @@ def monitor_pending_orders(exchange, open_pos_live: Dict,
                 except Exception:
                     pass
                 time.sleep(0.2)
+                # Final sweep
                 _sweep_pending_once(exchange, sym)
                 rec2 = _PENDING_ORDERS.get(sym)
                 if rec2 and str(rec2.get('status')) == 'closed':
                     _promote_pending_to_position(sym, rec2, open_pos_live)
             log.info(f"[Pending] {sym} {rec.get('action')} timeout "
-                     f"({elapsed:.0f}s > {timeout_s:.0f}s) — dropped")
+                     f"({elapsed:.0f}s > {timeout_s:.0f}s)")
             _PENDING_ORDERS.pop(sym, None)
             continue
 
@@ -8653,50 +6839,6 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
     Place a single Post-Only order and register it as pending (non-blocking).
     Returns the pending record or None on failure.
     """
-    # ══ [SING-TIMING] حساب حالة الرنين مرة واحدة، واستخدامها في
-    # كل من Layer 1 (timeout) و Layer 2 (marketable). ══
-    _sing_state = "DORMANT"
-    _sing_rho = 0.0
-    _sing_timeout_reason = "default"
-    try:
-        if (getattr(CFG, 'SING_TIMING_ENABLED', False)
-                and ad is not None):
-            _sing_state, _sing_rho = _resonance_state_for_direction(
-                ad, int(sig.feat_idx), sig.action, CFG
-            )
-    except Exception as _e:
-        log.debug(f"[Sing-Timing] pre-compute state failed: {_e}")
-
-    # ══ [SING-TIMING Layer 3A] Funding Guard ══
-    # الغرض: تجنّب الدخول في نافذة N دقيقة قبل موعد التمويل.
-    # السبب: الدخول قبل التمويل يعني دفع ~0.01% فوراً (لأن أول
-    # دورة تمويل تحسب على أي مركز مفتوح عند اللحظة).
-    # هذا يوفر على المدى الطويل ما يعادل ~5-10% من الرسوم.
-    if (getattr(CFG, 'SING_FUNDING_GUARD_ENABLED', False)
-            and _sing_state not in ("DECAYING", "INVALID")):
-        try:
-            _min_to_funding = _minutes_to_next_funding_utc(CFG)
-            _window = int(getattr(
-                CFG, 'SING_FUNDING_GUARD_MINUTES', 30
-            ))
-            if 0 <= _min_to_funding <= _window:
-                log.info(
-                    f"[Sing-Timing-L3A] {sym} {sig.action} "
-                    f"rejected: funding in {_min_to_funding} min "
-                    f"(≤ {_window})"
-                )
-                return None
-        except Exception as _e:
-            log.debug(f"[Sing-Timing-L3A] funding guard failed: {_e}")
-
-    # ══ إذا كانت الحالة DECAYING، لا نضع أي أمر إطلاقاً ══
-    if _sing_state == "DECAYING":
-        log.info(
-            f"[Sing-Timing] {sym} {sig.action} DECAYING "
-            f"(rho={_sing_rho:+.3f}) — refusing pending order at source"
-        )
-        return None
-
     # ══ [RateLimit] skip if soft cap reached ══
     if not _rate_can_place():
         _RATE_TRACKER['rejected_count'] += 1
@@ -8711,24 +6853,10 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
         target = float(sig.price)
     else:
         try:
-            # [PARITY-FIX] Use the SAME reference as backtest:
-            # close of the signal bar, not live bid/ask.
-            if ad is not None and hasattr(ad, 'closes'):
-                _ci = int(getattr(sig, 'close_idx', -1))
-                if 0 <= _ci < len(ad.closes):
-                    _close_ref = float(ad.closes[_ci])
-                else:
-                    _close_ref = None
-            else:
-                _close_ref = None
-
             ob = exchange.fetch_order_book(sym, limit=5)
             last_bid = float(ob['bids'][0][0])
             last_ask = float(ob['asks'][0][0])
-            if _close_ref is not None and _close_ref > 0:
-                _base = _close_ref
-            else:
-                _base = last_bid if side == 'buy' else last_ask
+            _base = last_bid if side == 'buy' else last_ask
 
             # ══ [ADAPTIVE FIX #3] tick-based penetration ══
             _tick = _get_tick_size(exchange, sym)
@@ -8758,79 +6886,14 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
                         f"falling back to sig.price")
             target = float(sig.price)
 
-    # ══ [SING-TIMING Layer 2] القرار: GTX أم Marketable ══
-    # المنطق:
-    #   - إذا SING_TIMING_ENABLED=False → GTX عادي (لا شيء يتغير).
-    #   - إذا SING_TIMING_ENABLED=True و SING_ACTIVE_MARKETABLE=False
-    #     → GTX عادي (Layer 1 فقط يعمل).
-    #   - إذا SING_TIMING_ENABLED=True و SING_ACTIVE_MARKETABLE=True
-    #     و _sing_state == "ACTIVE" → Marketable Limit.
-    #   - غير ذلك → GTX عادي.
-    _exec_mode = "gtx"
-    _marketable_px = None
-
-    if (getattr(CFG, 'SING_TIMING_ENABLED', False)
-            and getattr(CFG, 'SING_ACTIVE_MARKETABLE', False)
-            and _sing_state == "ACTIVE"):
-        try:
-            ob = exchange.fetch_order_book(sym, limit=5)
-            _best_bid = float(ob['bids'][0][0])
-            _best_ask = float(ob['asks'][0][0])
-            _mid = (_best_bid + _best_ask) / 2.0
-            _pen_bps = float(getattr(
-                CFG, 'SING_ACTIVE_PENETRATION_BPS', 3.0
-            ))
-            _pen_frac = _pen_bps * 1e-4
-
-            # BUY يقتحم ask صعوداً، SELL يقتحم bid هبوطاً
-            if side == 'buy':
-                _marketable_px = _best_ask * (1.0 + _pen_frac)
-            else:
-                _marketable_px = _best_bid * (1.0 - _pen_frac)
-
-            # فحص الانزلاق: كم يبعد الـ marketable عن sig.price؟
-            _slip_bps = (abs(_marketable_px - sig.price)
-                          / max(sig.price, 1e-12) * 1e4)
-            _max_slip = float(getattr(
-                CFG, 'SING_ACTIVE_MAX_SLIP_BPS', 15.0
-            ))
-
-            if _slip_bps > _max_slip:
-                log.info(
-                    f"[Sing-Timing-L2] {sym} {sig.action} ACTIVE "
-                    f"but slip {_slip_bps:.1f}bps > {_max_slip:.1f}bps "
-                    f"— fallback to GTX"
-                )
-            else:
-                o = exchange.create_order(
-                    sym, 'limit', side, qty, _marketable_px,
-                    params={}  # بدون GTX → يقطع السبريد كـ taker
-                )
-                _exec_mode = "marketable"
-                target = _marketable_px
-                log.info(
-                    f"[Sing-Timing-L2] {sym} {sig.action} ACTIVE "
-                    f"(rho={_sing_rho:+.3f}) → marketable @ "
-                    f"{_marketable_px:.6f} (slip={_slip_bps:.1f}bps, "
-                    f"mid={_mid:.6f})"
-                )
-        except Exception as _e:
-            log.warning(
-                f"[Sing-Timing-L2] {sym} marketable failed: {_e} "
-                f"— falling back to GTX"
-            )
-            _exec_mode = "gtx"
-
-    # ══ وضع الأمر النهائي ══
-    if _exec_mode == "gtx":
-        try:
-            o = exchange.create_order(
-                sym, 'limit', side, qty, target,
-                params={'timeInForce': 'GTX'}
-            )
-        except Exception as e:
-            log.debug(f"[Pending] {sym} GTX rejected @ {target:.6f}: {e}")
-            return None
+    try:
+        o = exchange.create_order(
+            sym, 'limit', side, qty, target,
+            params={'timeInForce': 'GTX'}
+        )
+    except Exception as e:
+        log.debug(f"[Pending] {sym} GTX rejected @ {target:.6f}: {e}")
+        return None
 
     entry_fi = 0
     try:
@@ -8838,93 +6901,6 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
             entry_fi = max(0, min(sig.feat_idx, len(ad.E_therm) - 1))
     except Exception:
         entry_fi = 0
-
-    # ══ [UNIFIED] اضبط المهلة على Stage 1 إن كان المنطق مفعّلاً ══
-    if getattr(CFG, 'UNIFIED_ENTRY_ENABLED', True):
-        _tf_sec_u = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
-        _stage1_bars_u = effective_bars(
-            int(getattr(CFG, 'UNIFIED_WAIT_BARS_1H', 8))
-        )
-        timeout_s = float(_stage1_bars_u * _tf_sec_u)
-
-    # ══ [SING-TIMING Layer 1] تعديل المهلة حسب الحالة ══
-    # (نستخدم _sing_state المحسوبة في بداية الدالة)
-    if getattr(CFG, 'SING_TIMING_ENABLED', False):
-        try:
-            _tf_sec_u = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
-            if _sing_state == "EMERGING":
-                _bars = int(getattr(
-                    CFG, 'SING_PENDING_WAIT_EMERGING', 2
-                ))
-                timeout_s = float(_bars * _tf_sec_u)
-                _sing_timeout_reason = f"emerging({_bars}bars)"
-                log.info(
-                    f"[Sing-Timing] {sym} {sig.action} EMERGING "
-                    f"(rho={_sing_rho:+.3f}) — timeout → "
-                    f"{_bars} bars ({timeout_s:.0f}s)"
-                )
-            elif _sing_state == "ACTIVE":
-                _bars = int(getattr(
-                    CFG, 'SING_PENDING_WAIT_ACTIVE', 1
-                ))
-                timeout_s = float(_bars * _tf_sec_u)
-                _sing_timeout_reason = f"active({_bars}bars)"
-                log.debug(
-                    f"[Sing-Timing] {sym} {sig.action} ACTIVE "
-                    f"(rho={_sing_rho:+.3f}) — timeout → "
-                    f"{_bars} bars ({timeout_s:.0f}s)"
-                )
-        except Exception as _e:
-            log.debug(f"[Sing-Timing] L1 timeout hook failed: {_e}")
-
-    # ══ [SING-TIMING Layer 1] فحص حالة الرنين عند وضع الأمر ══
-    # الغرض: تعديل المهلة ديناميكياً حسب حالة الرنين.
-    #   - DORMANT   → المهلة الافتراضية (8 شموع)
-    #   - EMERGING  → 2 شموع (تسريع الانتظار)
-    #   - ACTIVE    → 1 شمعة
-    #   - DECAYING  → رفض الأمر نهائياً
-    #   - INVALID   → المهلة الافتراضية
-    _sing_state = "DORMANT"
-    _sing_rho = 0.0
-    _sing_timeout_reason = "default"
-    try:
-        if getattr(CFG, 'SING_TIMING_ENABLED', False) and ad is not None:
-            _sing_state, _sing_rho = _resonance_state_for_direction(
-                ad, int(sig.feat_idx), sig.action, CFG
-            )
-            _tf_sec_u = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
-
-            if _sing_state == "DECAYING":
-                log.info(
-                    f"[Sing-Timing] {sym} {sig.action} DECAYING "
-                    f"(rho={_sing_rho:+.3f}) — refusing pending order"
-                )
-                return None
-
-            if _sing_state == "EMERGING":
-                _bars = int(getattr(
-                    CFG, 'SING_PENDING_WAIT_EMERGING', 2
-                ))
-                timeout_s = float(_bars * _tf_sec_u)
-                _sing_timeout_reason = f"emerging({_bars}bars)"
-                log.info(
-                    f"[Sing-Timing] {sym} {sig.action} EMERGING "
-                    f"(rho={_sing_rho:+.3f}) — timeout → "
-                    f"{_bars} bars ({timeout_s:.0f}s)"
-                )
-            elif _sing_state == "ACTIVE":
-                _bars = int(getattr(
-                    CFG, 'SING_PENDING_WAIT_ACTIVE', 1
-                ))
-                timeout_s = float(_bars * _tf_sec_u)
-                _sing_timeout_reason = f"active({_bars}bars)"
-                log.info(
-                    f"[Sing-Timing] {sym} {sig.action} ACTIVE "
-                    f"(rho={_sing_rho:+.3f}) — timeout → "
-                    f"{_bars} bars ({timeout_s:.0f}s)"
-                )
-    except Exception as _e:
-        log.debug(f"[Sing-Timing] place_pending hook failed: {_e}")
 
     rec = {
         'order_id': str(o['id']),
@@ -8944,9 +6920,6 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
         'status': 'open',
         'filled': 0.0,
         'avg_price': 0.0,
-        'signal_ref': sig,           # [UNIFIED-S2] مرجع الإشارة الأصلية
-        'score_ref': float(sig.score),
-        'capital_at_placement': 0.0, # يُملأ لاحقاً إن أردت
         'mmr_at_placement': float(
             _get_mmr_for_symbol(exchange, sym)
         ),
@@ -8957,14 +6930,6 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
                                  or abs(target - sig.price)),
         'decay_stage': 0,
         'ad_ref': ad,
-        # ══ [SING-TIMING Layer 1] لقطة حالة الرنين عند الوضع ══
-        'sing_state_at_placement': str(_sing_state),
-        'sing_rho_at_placement': float(_sing_rho),
-        'sing_timeout_reason': str(_sing_timeout_reason),
-        # ══ [SING-TIMING Layer 2] نمط التنفيذ ══
-        'execution_mode': str(_exec_mode),
-        'marketable_px': (float(_marketable_px)
-                           if _marketable_px is not None else 0.0),
     }
     _PENDING_ORDERS[sym] = rec
     log.info(f"[Pending] {sig.action} {sym} @ {target:.6f} qty={qty:.6f} "
@@ -9310,12 +7275,8 @@ def run_live(cfg, exchange):
             loop_iter += 1
 
             # ══ [Pending] Sweep pending orders every cycle ══
-            # [Sing-Timing] نمرّر assets ليتمكن الفحص من قراءة الرنين الحالي.
             try:
-                monitor_pending_orders(
-                    exchange, open_pos_live, loop_iter,
-                    assets=assets if 'assets' in dir() else None
-                )
+                monitor_pending_orders(exchange, open_pos_live, loop_iter)
             except Exception as _e:
                 log.warning(f"[Pending] monitor error: {_e}")
             
@@ -9507,11 +7468,9 @@ def run_live(cfg, exchange):
                 # ── Physics-based exits (require ad) ──
                 if ad is not None:
                     # Apex
-                    is_apex, apex_rsn = False, ""
-                    if getattr(CFG, 'APEX_ENABLED', True):
-                        is_apex, apex_rsn = check_thermodynamic_apex(
-                            sig.action, pos.entry_px, p, ad, fi
-                        )
+                    is_apex, apex_rsn = check_thermodynamic_apex(
+                        pos['action'], pos['entry'], price, ad, fi
+                    )
                     if is_apex:
                         ex = True; rsn = apex_rsn
 
@@ -9531,49 +7490,19 @@ def run_live(cfg, exchange):
                 if not ex:
                     entry_ts = pos.get('entry_ts', 0)
                     if entry_ts > 0:
+                        # ══ [TF-FIX] use TF_SECONDS instead of if-else on 1m/1h ══
                         tf_sec = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
                         bars_held = (time.time() - entry_ts) / tf_sec
                         if bars_held > effective_bars(cfg.MAX_HOLD_BARS):
                             ex = True
                             rsn = f"MaxHold({int(bars_held)}bars)"
 
-                # ── [FIX 3] Time-based kill ──
-                if (not ex
-                        and getattr(CFG, 'TIME_KILL_ENABLED', False)
-                        and entry_ts > 0):
-                    _tk_bars = effective_bars(int(getattr(CFG, 'TIME_KILL_BARS', 10)))
-                    _bars_now = (time.time() - entry_ts) / (
-                        CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600)
-                    if _bars_now >= _tk_bars:
-                        _entry_px = float(pos['entry'])
-                        _sl_d0 = float(pos.get('sl_dist_initial', 0) or 0)
-                        if _sl_d0 > 0 and _entry_px > 0:
-                            if pos['action'] == "BUY":
-                                _pnl_f = (price - _entry_px) / _entry_px
-                            else:
-                                _pnl_f = (_entry_px - price) / _entry_px
-                            _sl_f0 = _sl_d0 / _entry_px
-                            _r_now = _pnl_f / _sl_f0 if _sl_f0 > 0 else 0.0
-                            _min_r = float(getattr(CFG, 'TIME_KILL_MIN_R', 0.5))
-                            if _r_now < _min_r:
-                                ex = True
-                                rsn = f"TimeKill({_r_now:.2f}R)"
-
-                # ── Trailing SL (dynamic σ-scaled) ──
-                # [GATE] يُشغّل Trailing فقط إذا كان TRAIL_ENABLED=True.
-                # إذا كان False، لا يتحرك SL أبداً بعد الدخول (يبقى كما
-                # وُضع عند الدخول). هذا مطابق لسلوك الباكتيست.
-                if not ex and getattr(CFG, 'TRAIL_ENABLED', True):
+                # ── Trailing SL (legacy — proven formula, restored) ──
+                if not ex:
                     entry_px = float(pos['entry'])
                     _sl_before = float(pos['sl'])
                     _td = float(pos.get('trail_dist_frac', CFG.TRAIL_DISTANCE))
-                    # ══ [FIX 1] Activation at R-multiple of initial SL ══
-                    _sl_dist_init = float(pos.get('sl_dist_initial', 0) or 0)
-                    _sl_frac_init = (_sl_dist_init / entry_px
-                                     if entry_px > 0 and _sl_dist_init > 0
-                                     else 0.01)
-                    _act_at_r = float(getattr(CFG, 'TRAIL_ACTIVATE_AT_R', 1.0))
-                    _ta = _sl_frac_init * _act_at_r
+                    _ta = float(pos.get('trail_activate_frac', CFG.TRAIL_ACTIVATE_MFE))
 
                     # Update peak from live price and compute MFE
                     if pos['action'] == "BUY":
@@ -9606,49 +7535,6 @@ def run_live(cfg, exchange):
                             _sync_protective_orders(exchange, sym, pos)
                         except Exception as _e:
                             log.debug(f"[Prot] {sym} sync error: {_e}")
-
-                # ── [FIX 4] Partial TP ──
-                if (not ex
-                        and getattr(CFG, 'PARTIAL_TP_ENABLED', False)
-                        and not pos.get('_partial_taken', False)):
-                    _entry_px_p = float(pos['entry'])
-                    _sl_d0_p = float(pos.get('sl_dist_initial', 0) or 0)
-                    if _sl_d0_p > 0 and _entry_px_p > 0:
-                        _ptr = float(getattr(CFG, 'PARTIAL_TP_R', 1.0))
-                        _pct = float(getattr(CFG, 'PARTIAL_TP_PCT', 0.5))
-                        if pos['action'] == "BUY":
-                            _trig_p = _entry_px_p + _sl_d0_p * _ptr
-                            _hit_p = price >= _trig_p
-                        else:
-                            _trig_p = _entry_px_p - _sl_d0_p * _ptr
-                            _hit_p = price <= _trig_p
-                        if _hit_p:
-                            _qty_close = float(pos['qty']) * _pct
-                            try:
-                                _s_p = 'sell' if pos['action'] == 'BUY' else 'buy'
-                                _res_p = execute_post_only(
-                                    exchange, sym, _s_p, _qty_close,
-                                    max_wait_s=int(getattr(CFG, 'PO_EXIT_URGENT_WAIT_S', 4)),
-                                    fallback_market=True,
-                                    cross_spread=True,
-                                    reduce_only=True,
-                                )
-                                if (_res_p.get('filled_qty') or 0) > 0:
-                                    pos['qty'] = float(pos['qty']) - float(_res_p['filled_qty'])
-                                    pos['_partial_taken'] = True
-                                    pos['_partial_pnl'] = float(pos.get('_partial_pnl', 0.0))
-                                    log.info(f"[PartialTP] {sym} closed "
-                                             f"{_pct*100:.0f}% @ "
-                                             f"{_res_p['avg_price']:.6f} "
-                                             f"remaining={pos['qty']:.6f}")
-                                    # Persist state
-                                    try:
-                                        with open(state_file, 'w') as _f:
-                                            json.dump(open_pos_live, _f, indent=2)
-                                    except Exception:
-                                        pass
-                            except Exception as _e:
-                                log.warning(f"[PartialTP] {sym} failed: {_e}")
 
                 # ── SL / TP ──
                 if not ex:
@@ -9735,79 +7621,6 @@ def run_live(cfg, exchange):
                         _LIQ_EMERGENCY_STATS['triggers'] += 1
 
                 if not ex:
-
-                    # ══ [FIX-no_fill] تحقق من وجود المركز على البورصة قبل الخروج ══
-                    # السبب: عند فتح المركز، البوت يضع STOP_MARKET و
-                    # TAKE_PROFIT_MARKET بـ closePosition=True. عندما يُنفَّذ
-                    # أحدهما، تُغلق البورصة المركز تلقائياً. البوت يرى السعر
-                    # قد لمس SL/TP، يحاول الإغلاق بـ reduceOnly=True، لكن
-                    # المركز صفر → البورصة ترفض → no_fill متكرر لدقائق.
-                    # الحل: قبل الإغلاق، اسأل البورصة عن وجود المركز.
-                    try:
-                        _exch_pos_qty = 0.0
-                        _positions = exchange.fetch_positions([sym])
-                        for _p in _positions:
-                            _amt = float(_p['info'].get('positionAmt', 0) or 0)
-                            if abs(_amt) > 0:
-                                _exch_pos_qty = abs(_amt)
-                                break
-
-                        if _exch_pos_qty <= 0:
-                            # ── المركز غير موجود على البورصة ──
-                            # أُغلق بواسطة الأمر الواقي (أو يدوياً).
-                            # احذفه محلياً دون إرسال أي أمر خروج.
-                            _close_px = 0.0
-                            if 'SL' in rsn or 'Emergency' in rsn:
-                                _close_px = float(pos.get('sl') or 0)
-                            elif 'TP' in rsn or 'Hard' in rsn:
-                                _close_px = float(pos.get('tp1') or 0)
-                            if _close_px <= 0:
-                                try:
-                                    _tk2 = exchange.fetch_ticker(sym)
-                                    _close_px = float(_tk2.get('last') or 0)
-                                except Exception:
-                                    _close_px = float(pos.get('entry') or 0)
-
-                            log.info(
-                                f"[Exit-Cleanup] {sym} position already closed "
-                                f"on exchange (protective order) — removing "
-                                f"local. reason={rsn} px≈{_close_px:.6f}"
-                            )
-                            del open_pos_live[sym]
-                            last_exit_time[sym] = time.time()
-
-                            # نظّف أي أوامر واقية متبقية (دفاعي)
-                            try:
-                                _cancel_all_protective_orders(exchange, sym)
-                            except Exception:
-                                pass
-
-                            # احفظ الحالة فوراً
-                            try:
-                                with open(state_file, 'w') as _f:
-                                    json.dump(open_pos_live, _f, indent=2)
-                            except Exception:
-                                pass
-                            continue
-
-                        # ── المركز موجود على البورصة ──
-                        # زامن الكمية إذا اختلفت (مثلاً partial fill سابق)
-                        _local_qty = float(pos.get('qty') or 0)
-                        if (_local_qty > 0
-                                and abs(_exch_pos_qty - _local_qty) / _local_qty > 0.02):
-                            log.info(
-                                f"[Exit-Cleanup] {sym} qty sync: "
-                                f"local={_local_qty:.6f} → "
-                                f"exch={_exch_pos_qty:.6f}"
-                            )
-                            pos['qty'] = _exch_pos_qty
-
-                    except Exception as _e:
-                        # fail-safe: إذا فشل الفحص، نكمل بمحاولة الإغلاق
-                        log.debug(
-                            f"[Exit-Cleanup] {sym} position check failed: {_e}"
-                        )
-
                     continue
 
                 # ── Execute exit ──
@@ -9889,16 +7702,6 @@ def run_live(cfg, exchange):
                     except Exception as _e:
                         log.debug(f"[Prot] {sym} post-exit cleanup: {_e}")
 
-                    # ══ [TradeLog] سجّل الصفقة قبل الحذف ══
-                    try:
-                        _trade_log_from_live(
-                            pos, exec_price, exit_reason,
-                            ad=assets.get(sym),
-                            net_pnl=None,
-                        )
-                    except Exception as _tle:
-                        log.debug(f"[TradeLog] live hook failed: {_tle}")
-
                     del open_pos_live[sym]
                     last_exit_time[sym] = time.time()
                     log.info(f"⬛ [Exit] {sym} @ {exec_price:.6f} [{exit_reason}]")
@@ -9917,8 +7720,6 @@ def run_live(cfg, exchange):
 
             if len(open_pos_live) < effective_max:
                 # توليد الإشارة يمرر وضعية التداول اللحظية لكسر وهم الزمن
-                # [Filter] إعادة التعيين في كل دورة live (عدّاد دوري)
-                _filter_reset_stats()
                 sigs = deduplicate_signals(build_signals(assets, mode=cfg.mode))
 
                 # ══ [Rule Filter — Live] ══
@@ -10013,44 +7814,6 @@ def run_live(cfg, exchange):
                     if risk_frac <= 0.0:
                         log.debug(f"[Budget] {sym} skipped: no heat budget")
                         continue
-
-                    # ══ [SING-TIMING Layer 3B] Resonance Risk Boost ══
-                    # الغرض: رفع المخاطرة × N عندما تكون الإشارة في
-                    # حالة رنين ACTIVE (أقوى إشارة ممكنة). هذا يستغل
-                    # الـ Singularity لزيادة حجم المركز على أفضل الفرص.
-                    # تعمل فقط إذا SING_RISK_BOOST_ENABLED=True.
-                    if (getattr(CFG, 'SING_RISK_BOOST_ENABLED', False)
-                            and getattr(CFG, 'SING_TIMING_ENABLED', False)):
-                        try:
-                            _cur_ci_rb = max(0, len(ad.closes) - 2)
-                            _cur_fi_rb = _cur_ci_rb - ad.feat_start
-                            if 0 <= _cur_fi_rb < len(ad.geodesic_accel):
-                                _rb_state, _rb_rho = \
-                                    _resonance_state_for_direction(
-                                        ad, int(_cur_fi_rb),
-                                        sig.action, CFG
-                                    )
-                                _boost = 1.0
-                                if _rb_state == "ACTIVE":
-                                    _boost = float(getattr(
-                                        CFG, 'SING_RISK_BOOST_ACTIVE', 1.20
-                                    ))
-                                elif _rb_state == "EMERGING":
-                                    _boost = float(getattr(
-                                        CFG, 'SING_RISK_BOOST_EMERGING', 1.00
-                                    ))
-                                if _boost != 1.0:
-                                    risk_frac *= _boost
-                                    log.info(
-                                        f"[Sing-Timing-L3B] {sym} "
-                                        f"{sig.action} {_rb_state} "
-                                        f"(rho={_rb_rho:+.3f}) — risk "
-                                        f"boost ×{_boost:.2f}"
-                                    )
-                        except Exception as _e:
-                            log.debug(
-                                f"[Sing-Timing-L3B] boost failed: {_e}"
-                            )
 
                     risk_frac *= power_law_scale
                     risk_frac = float(np.clip(risk_frac,
@@ -10209,30 +7972,30 @@ def run_live(cfg, exchange):
                             log.warning(f"[Entry] {sym} setup failed — skip")
                             continue
 
-                        # ══ [SL-CLIP-LIVE] قصّ SL ليطابق الباكتيست ══
-                        # الباكتيست يقصّ SL إلى max_sl_frac قبل LiqGate.
-                        # اللايف يفعل نفس الشيء. فحص LiqGate يتم في STEP 3
-                        # بعد هذا القص (الترتيب مقصود: قصّ أولاً، ثم فحص).
-                        _max_sl_frac_live = 0.015 * float(
-                            getattr(CFG, 'SL_WIDEN_MULT', 1.0)
-                        )
-                        _sl_dist_now = abs(float(sig.price) - float(sig.sl))
-                        if _sl_dist_now > float(sig.price) * _max_sl_frac_live:
-                            _tp_dist_now = abs(float(sig.tp1) - float(sig.price))
-                            _rr_now = (_tp_dist_now / max(_sl_dist_now, 1e-12))
-                            _new_sl_dist = float(sig.price) * _max_sl_frac_live
-                            _new_tp_dist = _new_sl_dist * _rr_now
-                            if sig.action == "BUY":
-                                sig.sl = float(sig.price) - _new_sl_dist
-                                sig.tp1 = float(sig.price) + _new_tp_dist
-                            else:
-                                sig.sl = float(sig.price) + _new_sl_dist
-                                sig.tp1 = float(sig.price) - _new_tp_dist
-                            log.info(
-                                f"[SL-Clip-Live] {sym} SL clipped "
-                                f"{_sl_dist_now:.6f} → {_new_sl_dist:.6f} "
-                                f"({_max_sl_frac_live*100:.1f}% cap)"
+                        # ══════════════════════════════════════════════════
+                        # STEP 3 — LIQUIDATION GATE (uses confirmed leverage)
+                        # ══════════════════════════════════════════════════
+                        if getattr(CFG, 'LIQ_ENABLED', True) and _mmr_sig is not None:
+                            _confirmed_lev = int(
+                                _SYMBOL_META.get(sym, {}).get('leverage',
+                                                                dynamic_leverage)
                             )
+                            _liq_px = compute_liquidation_price(
+                                float(sig.price), sig.action,
+                                _confirmed_lev, _mmr_sig,
+                            )
+                            _liq_gap = abs(float(sig.price) - _liq_px)
+                            _sl_gap = abs(float(sig.price) - float(sig.sl))
+                            _safe_mult = float(getattr(CFG, 'LIQ_SAFETY_MULT', 1.5))
+                            if _liq_gap <= 1e-12 or _sl_gap * _safe_mult > _liq_gap:
+                                log.info(
+                                    f"[LiqGate] {sym} {sig.action} REJECT: "
+                                    f"SL gap={_sl_gap:.6f} × {_safe_mult} > "
+                                    f"Liq gap={_liq_gap:.6f} "
+                                    f"(L={_confirmed_lev}x, "
+                                    f"MMR={_mmr_sig*100:.3f}%)"
+                                )
+                                continue
 
                         # ══ 3. Entry — Non-Blocking Pending Order ══
                         if getattr(CFG, 'PENDING_ENABLED', True):
@@ -10329,11 +8092,7 @@ def run_live(cfg, exchange):
                             continue
 
                         rr_ratio = orig_tp_dist / orig_sl_dist
-                        # [SL-CLIP-CONSISTENCY] Scale with SL_WIDEN_MULT
-                        # so the widened SL isn't re-clipped back to 1.5%.
-                        max_sl_frac = 0.015 * float(
-                            getattr(CFG, 'SL_WIDEN_MULT', 1.0)
-                        )
+                        max_sl_frac = 0.015
                         if orig_sl_dist > entry_price * max_sl_frac:
                             orig_sl_dist = entry_price * max_sl_frac
                             orig_tp_dist = orig_sl_dist * rr_ratio
@@ -10545,10 +8304,6 @@ def main():
                    help="Absolute notional cap in USD (default 100000)")
     p.add_argument("--no-dynamic-trail", action="store_true",
                    help="Use fixed TRAIL_DISTANCE instead of σ-scaled trailing")
-    p.add_argument("--no-trailing", action="store_true",
-                   help="Disable Trailing Stop Loss entirely (SL stays fixed)")
-    p.add_argument("--trailing", action="store_true",
-                   help="Force-enable Trailing Stop Loss (overrides config)")
     p.add_argument("--trail-kappa", type=float, default=None,
                    help="Trail multiplier on σ (default 1.5)")
     p.add_argument("--reentry-cooldown", type=int, default=None,
@@ -10580,44 +8335,6 @@ def main():
     p.add_argument("--kill-secret", type=str,
                    default=os.environ.get("KILL_SWITCH_SECRET", ""),
                    help="HMAC secret for kill switch (or KILL_SWITCH_SECRET env)")
-    p.add_argument("--trade-log", type=str, default=None,
-                   help="Path to trade log file (JSONL). "
-                        "Default: trades_log_{mode}.jsonl")
-    # ══ [SINGULARITY TIMING] ══
-    p.add_argument("--sing-timing", action="store_true",
-                   help="Enable Singularity timing layer (Layer 1: "
-                        "EMERGING) — adjusts pending window dynamically")
-    p.add_argument("--sing-active", action="store_true",
-                   help="Enable Singularity timing Layer 2 (ACTIVE) — "
-                        "upgrades GTX to marketable limit when resonance "
-                        "is ACTIVE. Requires --sing-timing")
-    p.add_argument("--sing-funding-guard", action="store_true",
-                   help="Enable Singularity Layer 3A: skip entries within "
-                        "30 minutes before funding time. Requires "
-                        "--sing-timing")
-    p.add_argument("--sing-risk-boost", action="store_true",
-                   help="Enable Singularity Layer 3B: boost risk × 1.2 "
-                        "when resonance is ACTIVE. Requires --sing-timing")
-    # ══ [TRADE FILTER] ══
-    p.add_argument("--filter", action="store_true",
-                   help="Enable pre-entry trade filter (multi-signal)")
-    p.add_argument("--filter-action-bias", action="store_true",
-                   help="[CAUTION] Include action_buy as a rejection vote "
-                        "(regime-bias risk)")
-    p.add_argument("--filter-no-ema", action="store_true",
-                   help="Disable ema_slope vote")
-    p.add_argument("--filter-no-atr", action="store_true",
-                   help="Disable high_atr vote")
-    p.add_argument("--filter-no-friction", action="store_true",
-                   help="Disable friction_drag vote")
-    p.add_argument("--filter-min-votes", type=int, default=None,
-                   help="Minimum votes to reject (default 2)")
-    p.add_argument("--filter-atr-max", type=float, default=None,
-                   help="Max ATR fraction (default 0.024)")
-    p.add_argument("--filter-friction-max", type=float, default=None,
-                   help="Max friction_drag/sl_dist (default 2.5)")
-    p.add_argument("--filter-log", action="store_true",
-                   help="Log every rejection at DEBUG level")
     p.add_argument("--no-kill-switch", action="store_true",
                    help="Disable kill switch")
     args = p.parse_args()
@@ -10708,36 +8425,6 @@ def main():
              f"TF_SECONDS={CFG.TF_SECONDS} "
              f"TF_HOURS={CFG.TF_HOURS:.3f}")
 
-    # ══ [TF-UNIFIED WINDOWS] اشتقاق N/W/L/ADV_BARS من الساعات ══
-    # النوافذ المُعايَرة على 1h: N=24, W=20, L=10 شمعة = 24h, 20h, 10h.
-    # على الأُطر الأصغر، نزيد عدد الشموع للحفاظ على نفس المدة الحقيقية.
-    # على الأُطر الأكبر، نبقي العدد كما هو (لأن 24 شمعة على 4h = 96 ساعة
-    # وهو كافٍ إحصائياً).
-    _tf_h = max(float(CFG.TF_HOURS), 1e-6)
-    _tf_scale_u = 1.0 / _tf_h   # 1h → 1.0, 4h → 0.25, 5m → 12.0
-
-    # N/W/L: زد العدد فقط إذا كانت النافذة الحالية أقصر من المطلوب.
-    _n_min = int(np.ceil(float(getattr(CFG, 'N_HOURS', 24.0)) / _tf_h))
-    _w_min = int(np.ceil(float(getattr(CFG, 'W_HOURS', 20.0)) / _tf_h))
-    _l_min = int(np.ceil(float(getattr(CFG, 'L_HOURS', 10.0)) / _tf_h))
-
-    if CFG.N < _n_min:
-        log.info(f"[TF-Unified] N: {CFG.N} → {_n_min} "
-                 f"(لتغطية {CFG.N_HOURS:.1f}h على {CFG.timeframe})")
-        CFG.N = _n_min
-    if CFG.W < _w_min:
-        log.info(f"[TF-Unified] W: {CFG.W} → {_w_min}")
-        CFG.W = _w_min
-    if CFG.L < _l_min:
-        log.info(f"[TF-Unified] L: {CFG.L} → {_l_min}")
-        CFG.L = _l_min
-
-    # ADV_BARS: اضبطه على 24 ساعة بالضبط
-    _adv_h = float(getattr(CFG, 'ADV_HOURS', 24.0))
-    CFG.ADV_BARS = max(1, int(round(_adv_h / _tf_h)))
-    log.info(f"[TF-Unified] N={CFG.N} W={CFG.W} L={CFG.L} "
-             f"ADV_BARS={CFG.ADV_BARS} (σ≈{CFG.TF_SCALE:.2f}× 1h)")
-
     # ══ [SMART DATA AUTO-CONFIG] ══
     # Applies to BOTH backtest and live/testnet. Backtest prioritizes
     # statistical power (max history); live/testnet prioritize lightness.
@@ -10805,12 +8492,6 @@ def main():
         CFG.MAX_ABS_NOTIONAL = float(args.max_notional)
     if args.no_dynamic_trail:
         CFG.TRAIL_DYNAMIC = False
-    if args.no_trailing:
-        CFG.TRAIL_ENABLED = False
-        log.info("[Trail] Trailing Stop Loss DISABLED — SL is fixed")
-    elif args.trailing:
-        CFG.TRAIL_ENABLED = True
-        log.info("[Trail] Trailing Stop Loss FORCED ON")
     if args.trail_kappa is not None:
         CFG.TRAIL_KAPPA = float(args.trail_kappa)
     if args.reentry_cooldown is not None:
@@ -10845,85 +8526,6 @@ def main():
         CFG.KILL_SWITCH_SECRET = args.kill_secret
     if args.no_kill_switch:
         CFG.KILL_SWITCH_ENABLED = False
-    # ══ [TRADE FILTER] ══
-    if args.filter:
-        CFG.FILTER_ENABLED = True
-        log.info("[Filter] Trade filter ENABLED")
-    if args.filter_action_bias:
-        CFG.FILTER_USE_ACTION_BIAS = True
-        log.warning("[Filter] action_bias vote ENABLED — regime-bias risk!")
-    if args.filter_no_ema:
-        CFG.FILTER_USE_EMA_SLOPE = False
-    if args.filter_no_atr:
-        CFG.FILTER_USE_HIGH_ATR = False
-    if args.filter_no_friction:
-        CFG.FILTER_USE_FRICTION_DRAG = False
-    if args.filter_min_votes is not None:
-        CFG.FILTER_MIN_VOTES = int(args.filter_min_votes)
-    if args.filter_atr_max is not None:
-        CFG.FILTER_ATR_FRAC_MAX = float(args.filter_atr_max)
-    if args.filter_friction_max is not None:
-        CFG.FILTER_FRICTION_DRAG_MAX = float(args.filter_friction_max)
-    if args.filter_log:
-        CFG.FILTER_LOG_REJECTIONS = True
-    # ══ [SINGULARITY TIMING] ══
-    if args.sing_timing:
-        CFG.SING_TIMING_ENABLED = True
-        log.info("[Sing-Timing] Layer 1 (EMERGING) ENABLED")
-        log.info("[Sing-Timing] - DORMANT  → default timeout")
-        log.info("[Sing-Timing] - EMERGING → shortened timeout")
-        log.info("[Sing-Timing] - ACTIVE   → minimal timeout")
-        log.info("[Sing-Timing] - DECAYING → order cancelled")
-        # ══ [PARITY-CHECK] التحقق من أن الباكتيست والـ Live
-        # سيستخدمان نفس المنطق.
-        if CFG.mode == "backtest":
-            log.info("[Sing-Timing] Backtest simulation ENABLED "
-                     "(precompute_entry_fills + simulate_portfolio)")
-    if args.sing_active:
-        if not args.sing_timing:
-            log.warning(
-                "[Sing-Timing] --sing-active requires --sing-timing — "
-                "enabling both"
-            )
-            CFG.SING_TIMING_ENABLED = True
-        CFG.SING_ACTIVE_MARKETABLE = True
-        log.info("[Sing-Timing] Layer 2 (ACTIVE → Marketable) ENABLED")
-        log.info("[Sing-Timing] - ACTIVE + slip ≤ 15bps → marketable limit")
-        log.info("[Sing-Timing] - ACTIVE + slip > 15bps → fallback to GTX")
-        log.info("[Sing-Timing] - Taker fee applies to marketable fills")
-
-    if args.sing_funding_guard:
-        if not args.sing_timing:
-            log.warning(
-                "[Sing-Timing] --sing-funding-guard requires "
-                "--sing-timing — enabling it"
-            )
-            CFG.SING_TIMING_ENABLED = True
-        CFG.SING_FUNDING_GUARD_ENABLED = True
-        log.info("[Sing-Timing] Layer 3A (Funding Guard) ENABLED")
-        log.info(
-            f"[Sing-Timing] - Skip entries within "
-            f"{CFG.SING_FUNDING_GUARD_MINUTES} min of funding "
-            f"({CFG.SING_FUNDING_HOURS_UTC} UTC)"
-        )
-    if args.sing_risk_boost:
-        if not args.sing_timing:
-            log.warning(
-                "[Sing-Timing] --sing-risk-boost requires "
-                "--sing-timing — enabling it"
-            )
-            CFG.SING_TIMING_ENABLED = True
-        CFG.SING_RISK_BOOST_ENABLED = True
-        log.info("[Sing-Timing] Layer 3B (Resonance Risk Boost) ENABLED")
-        log.info(
-            f"[Sing-Timing] - ACTIVE → risk × "
-            f"{CFG.SING_RISK_BOOST_ACTIVE}"
-        )
-        log.info(
-            f"[Sing-Timing] - EMERGING → risk × "
-            f"{CFG.SING_RISK_BOOST_EMERGING}"
-        )
-
 
     print("╔"+"═"*70+"╗")
     print(f"  [Level-1] Parallel: {CFG.PARALLEL_PROCESSING}  "
@@ -10938,9 +8540,6 @@ def main():
     print(f"║  ④ Cosmological Λ:  {CFG.COSMOLOGICAL_CONSTANT}  (De Sitter drift)                  ║")
     print(f"║  ⑤ T_sync EMA-accel: فلتر التشابك عبر المقاييس                  ║")
     print("╚"+"═"*70+"╝\n")
-
-    # ══ [TradeLog] تهيئة تسجيل الصفقات ══
-    _trade_log_init(CFG.mode, args.trade_log)
 
     # 1. وضع الباك-تيست
     if CFG.mode == "backtest":

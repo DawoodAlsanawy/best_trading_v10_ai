@@ -1,0 +1,151 @@
+==============================================================================
+TRADE FILTER DIAGNOSTIC REPORT
+==============================================================================
+Bot: trading.py
+Timeframe: 4h
+History: 730 days
+No-fixed-price: True
+N assets: 15
+Min-train: 50
+Timestamp: 2026-09-26 14:21:47
+==============================================================================
+
+==============================================================================
+SECTION 1: OVERVIEW
+==============================================================================
+Total signals built: 8036
+Total trades executed: 2699
+Baseline E[ln(1+fR)]: +0.004117
+Baseline win rate: 49.65%
+Baseline profit factor: 7.687
+Baseline Sharpe: 2.116
+Baseline MaxDD: 14.08%
+Baseline total return: +6693765.41%
+
+Trades classified as LOSS: 1359 (50.4%)
+Trades classified as WIN:  1340 (49.6%)
+
+--- Exit reason distribution ---
+  Emergency SL                       :  1915  ( 71.0%)
+  Hard TP                            :   768  ( 28.5%)
+  MaxHold                            :    11  (  0.4%)
+  EndOfData                          :     5  (  0.2%)
+
+==============================================================================
+SECTION 2: UNIVARIATE FEATURE DISCRIMINATION
+==============================================================================
+AUC > 0.5 means the feature has predictive value for LOSING trades.
+Sorted by AUC descending. Only shows top features.
+
+Rank | Feature                      |    AUC |    p_value |     mean_win |    mean_loss | Direction
+----------------------------------------------------------------------------------------------------
+   1 | action_buy                   |  0.605 |   1.34e-27 |      0.38209 |      0.59161 | higher=win
+   2 | ema_slope_against            |  0.587 |   1.72e-19 |      0.40821 |      0.58205 | higher=win
+   3 | dist_from_ema_norm           |  0.571 |   2.13e-10 |     -2.65419 |     -4.44736 | lower=win
+   4 | atr_frac                     |  0.548 |   1.41e-05 |      0.02035 |      0.02236 | higher=win
+   5 | atr_percentile               |  0.533 |   3.02e-03 |      0.45521 |      0.49080 | higher=win
+   6 | T_info_val                   |  0.533 |   3.27e-03 |      3.66990 |      3.78236 | higher=win
+   7 | T_info                       |  0.533 |   3.27e-03 |      3.66990 |      3.78236 | higher=win
+   8 | dyn_sl_factor                |  0.533 |   3.31e-03 |      0.01335 |      0.01391 | higher=win
+   9 | E_therm                      |  0.533 |   3.31e-03 |      0.01335 |      0.01391 | higher=win
+  10 | sl_dist_frac                 |  0.533 |   3.31e-03 |      0.01335 |      0.01391 | higher=win
+  11 | recent_losses_portfolio_10   |  0.520 |   6.99e-02 |      4.94403 |      5.10155 | higher=win
+  12 | hour_cos                     |  0.519 |   7.17e-02 |      0.00746 |     -0.04930 | lower=win
+  13 | delta_gap                    |  0.514 |   1.99e-01 |      0.52379 |      0.51443 | lower=win
+  14 | friction                     |  0.512 |   2.95e-01 |      0.20190 |      0.20034 | lower=win
+  15 | H_over_Hmax                  |  0.512 |   2.96e-01 |      0.36482 |      0.37218 | higher=win
+  16 | hour_sin                     |  0.509 |   4.15e-01 |     -0.06980 |     -0.06755 | higher=win
+  17 | is_weekend                   |  0.508 |   3.61e-01 |      0.28881 |      0.27299 | lower=win
+  18 | tri_val                      |  0.506 |   5.34e-01 |      1.46940 |      1.47976 | higher=win
+  19 | dynamic_risk                 |  0.506 |   6.10e-01 |      0.02002 |      0.01997 | lower=win
+  20 | dow_cos                      |  0.505 |   6.67e-01 |     -0.00820 |     -0.02102 | lower=win
+  21 | recent_losses_symbol_5       |  0.504 |   6.75e-01 |      2.48284 |      2.47167 | lower=win
+  22 | C                            |  0.504 |   7.42e-01 |     -0.00094 |     -0.00082 | higher=win
+  23 | score                        |  0.503 |   7.60e-01 |      4.90314 |      4.90382 | lower=win
+  24 | dF                           |  0.503 |   8.16e-01 |      0.05897 |      0.06155 | lower=win
+  25 | dH                           |  0.502 |   8.34e-01 |     -0.05894 |     -0.06155 | higher=win
+
+==============================================================================
+SECTION 3: WALK-FORWARD LOGISTIC REGRESSION
+==============================================================================
+Number of OOS predictions: 2649
+OOS AUC of P(loss): 0.7677
+  (0.5=random, 0.6=weak, 0.7=moderate, 0.8=strong)
+
+Top 15 features by average |coefficient| (sign stability > 0.7):
+
+Rank | Feature                      |  mean_coef |   std_coef |  sign_stab |               effect
+----------------------------------------------------------------------------------------------------
+   1 | action_buy                   |    +3.1029 |     2.2610 |       1.00 |       increases loss
+   2 | dist_from_ema_norm           |    -0.1533 |     0.2589 |       0.70 |       decreases loss
+   3 | geodesic_accel               |    -0.1416 |     0.1862 |       0.57 |       decreases loss
+   4 | ema_slope_against            |    -0.0976 |     0.4056 |       0.23 |       decreases loss
+   5 | hour_cos                     |    -0.0938 |     0.0983 |       0.71 |       decreases loss
+   6 | atr_percentile               |    +0.0733 |     0.0750 |       0.62 |       increases loss
+   7 | dF                           |    -0.0633 |     0.1310 |       0.28 |       decreases loss
+   8 | gauge_force                  |    -0.0613 |     0.0540 |       0.70 |       decreases loss
+   9 | dynamic_risk                 |    -0.0609 |     0.1002 |       0.67 |       decreases loss
+  10 | dow_sin                      |    -0.0580 |     0.0606 |       0.68 |       decreases loss
+  11 | hour_sin                     |    +0.0502 |     0.0969 |       0.41 |       increases loss
+  12 | dH                           |    +0.0405 |     0.0868 |       0.24 |       increases loss
+  13 | recent_losses_portfolio_10   |    +0.0384 |     0.0552 |       0.63 |       increases loss
+  14 | friction                     |    -0.0356 |     0.0846 |       0.34 |       decreases loss
+  15 | is_weekend                   |    -0.0329 |     0.0846 |       0.45 |       decreases loss
+
+==============================================================================
+SECTION 4: THRESHOLD TRADE-OFF CURVE
+==============================================================================
+Threshold τ: keep trade if P(loss) < τ
+
+    τ |  n_kept |  n_win | n_loss |  R_loss |   R_win |   eff |     E_kept |         dE |  Sharpe
+---------------------------------------------------------------------------------------------------------
+ 0.05 |     574 |    537 |     37 |   97.2% |   59.2% |  1.64 |  +0.013756 |  +0.010973 |    4.97
+ 0.10 |     637 |    565 |     72 |   94.6% |   57.1% |  1.66 |  +0.012427 |  +0.009643 |    4.71
+ 0.15 |     745 |    617 |    128 |   90.4% |   53.1% |  1.70 |  +0.010668 |  +0.007884 |    4.34
+ 0.20 |     872 |    681 |    191 |   85.7% |   48.3% |  1.78 |  +0.009168 |  +0.006384 |    4.02
+ 0.25 |     970 |    714 |    256 |   80.8% |   45.7% |  1.77 |  +0.008256 |  +0.005472 |    3.81
+ 0.30 |    1072 |    736 |    336 |   74.8% |   44.1% |  1.70 |  +0.007466 |  +0.004682 |    3.61
+ 0.35 |    1159 |    747 |    412 |   69.1% |   43.2% |  1.60 |  +0.006900 |  +0.004116 |    3.46
+ 0.40 |    1230 |    756 |    474 |   64.4% |   42.6% |  1.51 |  +0.006494 |  +0.003710 |    3.35
+ 0.45 |    1303 |    774 |    529 |   60.3% |   41.2% |  1.46 |  +0.006123 |  +0.003339 |    3.25
+ 0.50 |    1379 |    818 |    561 |   57.9% |   37.8% |  1.53 |  +0.005787 |  +0.003003 |    3.15
+ 0.55 |    1445 |    854 |    591 |   55.7% |   35.1% |  1.59 |  +0.005525 |  +0.002741 |    3.08
+ 0.60 |    1506 |    901 |    605 |   54.6% |   31.5% |  1.73 |  +0.005312 |  +0.002528 |    3.02
+ 0.65 |    1564 |    955 |    609 |   54.3% |   27.4% |  1.98 |  +0.005142 |  +0.002358 |    2.98
+ 0.70 |    1644 |   1019 |    625 |   53.1% |   22.6% |  2.35 |  +0.004925 |  +0.002141 |    2.92
+ 0.75 |    1731 |   1086 |    645 |   51.6% |   17.5% |  2.95 |  +0.004707 |  +0.001923 |    2.86
+ 0.80 |    1821 |   1146 |    675 |   49.4% |   12.9% |  3.82 |  +0.004509 |  +0.001725 |    2.81
+ 0.85 |    1930 |   1202 |    728 |   45.4% |    8.7% |  5.24 |  +0.004279 |  +0.001495 |    2.75
+ 0.90 |    2010 |   1247 |    763 |   42.8% |    5.2% |  8.16 |  +0.004128 |  +0.001344 |    2.70
+ 0.95 |    2073 |   1279 |    794 |   40.4% |    2.8% | 14.38 |  +0.004013 |  +0.001229 |    2.67
+
+★ Best threshold by (dE × retention):
+  τ* = 0.05
+  Trades kept: 574 / 2699
+  Losses rejected: 97.2%
+  Winners lost:   59.2%
+  E[ln] before: +0.004117
+  E[ln] after:  +0.013756
+  ΔE[ln]:       +0.010973
+  Sharpe after: 4.970
+
+==============================================================================
+SECTION 5: RECOMMENDATIONS
+==============================================================================
+Top 5 features (by AUC):
+  1. action_buy                    AUC=0.605  p=1.34e-27  direction: 1
+  2. ema_slope_against             AUC=0.587  p=1.72e-19  direction: 1
+  3. dist_from_ema_norm            AUC=0.571  p=2.13e-10  direction: -1
+  4. atr_frac                      AUC=0.548  p=1.41e-05  direction: 1
+  5. atr_percentile                AUC=0.533  p=3.02e-03  direction: 1
+
+Simple rules (single-feature) that could help:
+  → See Section 2 for full details.
+
+Next steps:
+  1. Send the full report file to the assistant.
+  2. The assistant will propose a specific filter configuration.
+
+==============================================================================
+END OF REPORT
+==============================================================================
