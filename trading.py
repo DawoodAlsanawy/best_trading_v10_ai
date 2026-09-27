@@ -506,7 +506,7 @@ class Config:
     # often BELOW the SL distance. So SL moved above entry on tiny moves
     # and killed 52% of trades with a "profitable SL" that capped gains.
     # New design: trailing only activates after N × sl_dist_initial of MFE.
-    TRAIL_ACTIVATE_AT_R: float = 1.0    # activate at +1R of profit
+    TRAIL_ACTIVATE_AT_R: float = 2.5    # activate at +1R of profit
 
     # ══ [FIX 2 — REGIME FILTER] ══
     # Skip signals when EMA200 slope (over lookback) is too steep
@@ -525,7 +525,7 @@ class Config:
     # Close PARTIAL_TP_PCT of the position at +PARTIAL_TP_R, let the
     # rest ride with trailing.
     PARTIAL_TP_ENABLED: bool = True
-    PARTIAL_TP_R: float = 1.0           # take profit at +1R
+    PARTIAL_TP_R: float = 3.0           # take profit at +1R
     PARTIAL_TP_PCT: float = 0.5         # close 50% at that level
     TP_MULT: float = 5    # كان 2.0 → الآن 1.5 (R:R = 1.5)
     APEX_ENABLED: bool = False    # عطّله مؤقتاً حتى نضبط عتباته
@@ -912,17 +912,17 @@ def _resolve_data_params(cfg, mode: str, tf_hours: float,
 #            "DOGE/USDT","AVAX/USDT","LINK/USDT","DOT/USDT",
 #            "LTC/USDT","UNI/USDT","ATOM/USDT","ETC/USDT","POL/USDT"]
 
-def _default_assets():
-    return ["BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT","XRP/USDT",
-            "DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT","DOT/USDT",
-            "LTC/USDT","UNI/USDT","ATOM/USDT","ETC/USDT","POL/USDT",
-            "TRX/USDT","TON/USDT","BCH/USDT","NEAR/USDT",
-            "APT/USDT","HBAR/USDT","VET/USDT",
-            "AAVE/USDT","ARB/USDT",
-            "OP/USDT","INJ/USDT","SUI/USDT","TIA/USDT","SEI/USDT",
-            "ALGO/USDT","GRT/USDT","FET/USDT","RENDER/USDT",
-            "LDO/USDT","KAS/USDT","WIF/USDT","THETA/USDT","EGLD/USDT",
-            "SAND/USDT","MANA/USDT","AXS/USDT","XLM/USDT","CHZ/USDT"]
+#def _default_assets():
+#    return ["BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT","XRP/USDT",
+#            "DOGE/USDT","ADA/USDT","AVAX/USDT","LINK/USDT","DOT/USDT",
+#            "LTC/USDT","UNI/USDT","ATOM/USDT","ETC/USDT","POL/USDT",
+#            "TRX/USDT","TON/USDT","BCH/USDT","NEAR/USDT",
+#            "APT/USDT","HBAR/USDT","VET/USDT",
+#            "AAVE/USDT","ARB/USDT",
+#            "OP/USDT","INJ/USDT","SUI/USDT","TIA/USDT","SEI/USDT",
+#            "ALGO/USDT","GRT/USDT","FET/USDT","RENDER/USDT",
+#            "LDO/USDT","KAS/USDT","WIF/USDT","THETA/USDT","EGLD/USDT",
+#            "SAND/USDT","MANA/USDT","AXS/USDT","XLM/USDT","CHZ/USDT"]
 #def _default_assets():
 #    # أعلى 50 عملة من حيث القيمة السوقية مع قبول رافعة 50x على Binance Futures
 #    return [
@@ -979,6 +979,134 @@ def _default_assets():
 #    ]
 
 # "ADA/USDT"
+
+def _default_assets():
+    # 100 أصل: أعلى القيمة السوقية + دعم رافعة 50x+ على Binance Futures
+    return [
+        # --- الطبقة الأولى: أعلى سيولة ورافعة (75x-125x) ---
+        "BTC/USDT",    # بيتكوين - رافعة 125x
+        "ETH/USDT",    # إيثيريوم - رافعة 100x
+        "BNB/USDT",    # بيнанс كوين - رافعة 75x
+        "SOL/USDT",    # سولانا - رافعة 50x
+#        "XRP/USDT",    # ريبل - رافعة 50x
+#        "DOGE/USDT",   # دوجكوين - رافعة 50x
+        "ADA/USDT",    # كاردانو - رافعة 50x
+        "AVAX/USDT",   # أفالانش - رافعة 50x
+        "LINK/USDT",   # تشين لينك - رافعة 50x
+        "DOT/USDT",    # بولكادوت - رافعة 50x
+        "LTC/USDT",    # لايتكوين - رافعة 50x
+        "UNI/USDT",    # يونيسواب - رافعة 50x
+        "ATOM/USDT",   # كوزموس - رافعة 50x
+        "ETC/USDT",    # إيثيريوم كلاسيك - رافعة 50x
+        "TRX/USDT",    # ترون - رافعة 50x
+        "TON/USDT",    # تون كوين - رافعة 50x
+        "BCH/USDT",    # بيتكوين كاش - رافعة 50x
+        "NEAR/USDT",   # نير بروتوكول - رافعة 50x
+        "APT/USDT",    # أبتوس - رافعة 50x
+        "HBAR/USDT",   # هيدرا - رافعة 50x
+        "VET/USDT",    # في تشين - رافعة 50x
+        "STX/USDT",    # ستاكس - رافعة 50x
+        "AAVE/USDT",   # آفي - رافعة 50x
+        "ARB/USDT",    # أربيتروم - رافعة 50x
+        "OP/USDT",     # أوبتيميزم - رافعة 50x
+        "INJ/USDT",    # إنجكتيف - رافعة 50x
+        "SUI/USDT",    # سوي - رافعة 50x
+        "TIA/USDT",    # سيليستيا - رافعة 50x
+        "SEI/USDT",    # ساي - رافعة 50x
+        "ALGO/USDT",   # ألجوراند - رافعة 50x
+        "GRT/USDT",    # ذا غراف - رافعة 50x
+        "FET/USDT",    # فيتشد أيه آي - رافعة 50x
+        "RENDER/USDT", # ريندر - رافعة 50x
+        "LDO/USDT",    # ليدو داو - رافعة 50x
+        "KAS/USDT",    # كاسبا - رافعة 50x
+        "WIF/USDT",    # دوج ويف هات - رافعة 50x
+        "THETA/USDT",  # ثيتا - رافعة 50x
+        "SAND/USDT",   # ذا ساندبوكس - رافعة 50x
+        "MANA/USDT",   # ديسنترالاند - رافعة 50x
+        "AXS/USDT",    # أكسي إنفينيتي - رافعة 50x
+        "XLM/USDT",    # ستيلر - رافعة 50x
+        "CHZ/USDT",    # تشيليز - رافعة 50x
+        "POL/USDT",    # بوليجون - رافعة 50x
+        "FIL/USDT",    # فيل كوين - رافعة 50x
+        "QNT/USDT",    # كوانت - رافعة 50x
+        "DASH/USDT",   # داش - رافعة 50x
+#        "EOS/USDT",    # إيوس - رافعة 50x
+        "FTM/USDT",    # فانتوم - رافعة 50x
+        "FLOW/USDT",   # فلو - رافعة 50x
+        "CAKE/USDT",   # بانكيك سواب - رافعة 50x
+        "ROSE/USDT",   # أوايسيس نتوورك - رافعة 50x
+        "ZIL/USDT",    # زيلكا - رافعة 50x
+#        "ONE/USDT",    # هارموني - رافعة 50x
+        "IOTA/USDT",   # أيوتا - رافعة 50x
+        "NEO/USDT",    # نيو - رافعة 50x
+        "KAVA/USDT",   # كافا - رافعة 50x
+        "CRV/USDT",    # كورف - رافعة 50x
+        "SNX/USDT",    # سينثيتيكس - رافعة 50x
+        "COMP/USDT",   # كومباووند - رافعة 50x
+        "MKR/USDT",    # ميكر - رافعة 50x
+        "SUSHI/USDT",  # سوشي سواب - رافعة 50x
+        "YFI/USDT",    # يرن فايننس - رافعة 50x
+        "ZRX/USDT",    # زيرو إكس - رافعة 50x
+        "BAT/USDT",    # باسيك أتنشن توكن - رافعة 50x
+        "ENJ/USDT",    # إنجين - رافعة 50x
+        "ANKR/USDT",   # أنكر - رافعة 50x
+#        "OCEAN/USDT",  # أوشن بروتوكول - رافعة 50x
+        "BAND/USDT",   # باند بروتوكول - رافعة 50x
+        "NMR/USDT",    # نوميرا - رافعة 50x
+        "STORJ/USDT",  # ستورج - رافعة 50x
+        "KSM/USDT",    # كوساما - رافعة 50x
+#        "WAVES/USDT",  # ويفز - رافعة 50x
+        "ZEN/USDT",    # هوريزن - رافعة 50x
+#        "ICP/USDT",    # إنترنت كمبيوتر - رافعة 50x
+        "CELO/USDT",   # سيلو - رافعة 50x
+#        "AR/USDT",     # أرويف - رافعة 50x
+        "MASK/USDT",   # ماسك نتوورك - رافعة 50x
+        "DYDX/USDT",   # دي واي دي إكس - رافعة 50x
+        "ENS/USDT",    # إيثيريوم نيم سيرفس - رافعة 50x
+        "GMX/USDT",    # جي إم إكس - رافعة 50x
+        "MAGIC/USDT",  # ماجيك - رافعة 50x
+        "HIGH/USDT",   # هاي - رافعة 50x
+        "PENDLE/USDT", # بيندل - رافعة 50x
+        "JOE/USDT",    # ترايدر جو - رافعة 50x
+        "CYBER/USDT",  # سايبر كونكت - رافعة 50x
+        "ARKM/USDT",   # أركهام - رافعة 50x
+        "WLD/USDT",    # وورلد كوين - رافعة 50x
+        "BLUR/USDT",   # بلور - رافعة 50x
+        "ID/USDT",     # سبيس آي دي - رافعة 50x
+        "EDU/USDT",    # إيدي - رافعة 50x
+#        "PEPE/USDT",   # بيبي - رافعة 50x
+#        "FLOKI/USDT",  # فلوكي - رافعة 50x
+#        "BONK/USDT",   # بونك - رافعة 50x
+#        "MEME/USDT",   # ميم كوين - رافعة 50x
+        "ORDI/USDT",   # أوردينالز - رافعة 50x
+#        "1000SATS/USDT", # ساتس - رافعة 50x
+        "JUP/USDT",    # جوبيتر - رافعة 50x
+        "PYTH/USDT",   # بايث - رافعة 50x
+        "JTO/USDT",    # جيتو - رافعة 50x
+        "DYM/USDT",    # دايمنشن - رافعة 50x
+        "STRK/USDT",   # ستارك نت - رافعة 50x
+        "MANTA/USDT",  # مانتا - رافعة 50x
+        "ALT/USDT",    # ألت لاير - رافعة 50x
+        "AEVO/USDT",   # أفيفو - رافعة 50x
+        "ETHFI/USDT",  # إيثير فاي - رافعة 50x
+#        "BOME/USDT",   # بوك أوف ميم - رافعة 50x
+        "W/USDT",      # ورم هول - رافعة 50x
+        "SAGA/USDT",   # ساغا - رافعة 50x
+        "OMNI/USDT",   # أومني - رافعة 50x
+#        "REZ/USDT",    # رينزو - رافعة 50x
+        "BB/USDT",     # باونس بيت - رافعة 50x
+        "IO/USDT",     # آي أو نت - رافعة 50x
+        "ZK/USDT",     # zkSync - رافعة 50x
+        "LISTA/USDT",  # ليستا - رافعة 50x
+        "TAIKO/USDT",  # تايكو - رافعة 50x
+        "ZRO/USDT",    # لاير زيرو - رافعة 50x
+        "G/USDT",      # جي - رافعة 50x
+        "RARE/USDT",   # رير - رافعة 50x
+        "SYN/USDT",    # سينابس - رافعة 50x
+        "MEW/USDT",    # ميو - رافعة 50x
+        "MERL/USDT",   # ميرلين - رافعة 50x
+        "BANANA/USDT", # بانانا - رافعة 50x
+    ]
 
 def _robust_center_scale(x):
     """
