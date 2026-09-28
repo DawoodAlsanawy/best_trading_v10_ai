@@ -85,7 +85,7 @@ class Config:
     EMA_SPAN: int = 200; ATR_PERIOD: int = 14
 
     W_CURV: float=1.0; W_VOL: float=1.0; W_ENTROPY: float=2.0
-    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=3
+    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=4
 
     CURV_THRESHOLD: float=0.01; DH_ENTROPY_THRESHOLD: float=0.005
     DH_HMM_UPPER: float=0.01;  DH_HMM_LOWER: float=-0.01
@@ -113,7 +113,7 @@ class Config:
     # separately in _close().
     MAKER_FEE: float = 0.0002
     TAKER_FEE: float = 0.0005
-    MAX_CHUNK_USD: float = 1000.0 # أقصى حجم للحزمة الكمومية الواحدة بالدولار لتجنب صدمة دفتر الأوامر
+    MAX_CHUNK_USD: float = 10000.0 # أقصى حجم للحزمة الكمومية الواحدة بالدولار لتجنب صدمة دفتر الأوامر
     MIN_NOTIONAL: float = 5.0
     SL_FACTOR: float = 0.5
     TP_BETAS: Tuple = (1.5,)
@@ -253,7 +253,7 @@ class Config:
     TF_SECONDS: int = 3600        # seconds per bar
     TF_HOURS: float = 1.0         # hours per bar
     # ══ [NOTIONAL CAP — anti-compounding] ══
-    MAX_ABS_NOTIONAL: float = 20_000.0     # tuned for alt liquidity
+    MAX_ABS_NOTIONAL: float = 10000.0     # tuned for alt liquidity
     # ══ [DYNAMIC TRAILING — volatility-scaled] ══
     TRAIL_DYNAMIC: bool = True
     TRAIL_KAPPA: float = 0.30                # tuned to 1h timeframe
@@ -366,7 +366,7 @@ class Config:
     #   1.5 → moderate widening
     #   2.0 → recommended starting point
     #   2.5 → aggressive widening (fewer SL hits, larger drawdowns)
-    SL_WIDEN_MULT: float = 1.5
+    SL_WIDEN_MULT: float = 1.0
 
     # ══ [ADAPTIVE FIX #3] Tick-based penetration ══
     # WIF has 0.254 ticks/bps → 1 bps < 1 tick → orders can't fill properly.
@@ -525,9 +525,9 @@ class Config:
     # Close PARTIAL_TP_PCT of the position at +PARTIAL_TP_R, let the
     # rest ride with trailing.
     PARTIAL_TP_ENABLED: bool = True
-    PARTIAL_TP_R: float = 4.5           # take profit at +1R
+    PARTIAL_TP_R: float = 3.0           # take profit at +1R
     PARTIAL_TP_PCT: float = 0.5         # close 50% at that level
-    TP_MULT: float = 5.0    # كان 2.0 → الآن 1.5 (R:R = 1.5)
+    TP_MULT: float = 1.5    # كان 2.0 → الآن 1.5 (R:R = 1.5)
     APEX_ENABLED: bool = False    # عطّله مؤقتاً حتى نضبط عتباته
 
     # ══ [SINGULARITY TIMING LAYER 1 — EMERGING] ══
@@ -612,7 +612,7 @@ def _trade_log_init(mode: str, explicit_path: Optional[str] = None):
     if explicit_path:
         _TRADE_LOG_PATH = explicit_path
     else:
-        _TRADE_LOG_PATH = f"trades_log_{mode}.jsonl"
+        _TRADE_LOG_PATH = f"bot_trades_log_{mode}.jsonl"
     try:
         with open(_TRADE_LOG_PATH, 'w', encoding='utf-8') as f:
             f.write(json.dumps({
@@ -1009,7 +1009,7 @@ def _default_assets():
         "AAVE/USDT",   # آفي - رافعة 50x
         "ARB/USDT",    # أربيتروم - رافعة 50x
         "OP/USDT",     # أوبتيميزم - رافعة 50x
-#        "INJ/USDT",    # إنجكتيف - رافعة 50x
+        "INJ/USDT",    # إنجكتيف - رافعة 50x
         "SUI/USDT",    # سوي - رافعة 50x
         "TIA/USDT",    # سيليستيا - رافعة 50x
         "SEI/USDT",    # ساي - رافعة 50x
@@ -1031,11 +1031,11 @@ def _default_assets():
         "QNT/USDT",    # كوانت - رافعة 50x
         "DASH/USDT",   # داش - رافعة 50x
 #        "EOS/USDT",    # إيوس - رافعة 50x
-#        "FTM/USDT",    # فانتوم - رافعة 50x
+        "FTM/USDT",    # فانتوم - رافعة 50x
         "FLOW/USDT",   # فلو - رافعة 50x
         "CAKE/USDT",   # بانكيك سواب - رافعة 50x
         "ROSE/USDT",   # أوايسيس نتوورك - رافعة 50x
-#        "ZIL/USDT",    # زيلكا - رافعة 50x
+        "ZIL/USDT",    # زيلكا - رافعة 50x
 #        "ONE/USDT",    # هارموني - رافعة 50x
         "IOTA/USDT",   # أيوتا - رافعة 50x
         "NEO/USDT",    # نيو - رافعة 50x
@@ -1048,7 +1048,7 @@ def _default_assets():
         "YFI/USDT",    # يرن فايننس - رافعة 50x
         "ZRX/USDT",    # زيرو إكس - رافعة 50x
         "BAT/USDT",    # باسيك أتنشن توكن - رافعة 50x
-#        "ENJ/USDT",    # إنجين - رافعة 50x
+        "ENJ/USDT",    # إنجين - رافعة 50x
         "ANKR/USDT",   # أنكر - رافعة 50x
 #        "OCEAN/USDT",  # أوشن بروتوكول - رافعة 50x
         "BAND/USDT",   # باند بروتوكول - رافعة 50x
@@ -1670,16 +1670,6 @@ def _load_cached(symbol, exchange, timeframe, days):
 
     # الحالة C: لا توجد بيانات
     return None
-
-
-def _fetch_one(args):
-    sym, exchange, tf, days = args
-    try:
-        df = _load_cached(sym, exchange, tf, days)
-        if df is None or len(df) < CFG.N+CFG.W+100: return sym, None
-        return sym, df
-    except Exception as e:
-        log.warning(f"{sym}: {e}"); return sym, None
 
 
 def _fetch_one(args):
@@ -5701,6 +5691,12 @@ def run_backtest(cfg):
             futures = [ex.submit(_process_asset_worker, t) for t in tasks]
             crashed_syms: List[str] = []
 
+            # ══ [CLEANUP] Removed dead placeholder loop ══
+            # The previous code re-submitted tasks (bug); removed.
+            # NOTE: we already submitted above; reconstruct the mapping is unnecessary
+            # since we track via as_completed. Instead: use a dict keyed by future.
+
+            # The original submission above already exists; here we re-iterate results:
             for fut in as_completed(futures):
                 sym_guess = None
                 try:
@@ -5714,6 +5710,26 @@ def run_backtest(cfg):
                     # We can't recover the symbol here; record failure for serial retry pass
                     crashed_syms.append(None)
                     continue
+
+                if err:
+                    log.warning(f"  ✗ {sym}: {err.splitlines()[0]}")
+                    n_errors += 1
+                    continue
+                if ad is None:
+                    log.warning(f"  ✗ {sym}: process_asset returned None")
+                    n_errors += 1
+                    continue
+
+                assets[sym] = ad
+                if source == 'cache':
+                    n_cache_hits += 1
+                else:
+                    n_computed += 1
+
+                nt = int(np.sum(ad.score[ad.train_end:] >= cfg.MIN_SCORE))
+                log.info(f"  ✓ {sym:14s} | K={ad.dynamic_k} | "
+                         f"اختبار={nt:5,} | tri_μ={np.mean(ad.tri):.2f} "
+                         f"| [{source}]")
 
                 if err:
                     log.warning(f"  ✗ {sym}: {err.splitlines()[0]}")
@@ -5751,6 +5767,10 @@ def run_backtest(cfg):
                 ad = process_asset(sym, df,
                                     current_capital=cfg.INITIAL_CAPITAL,
                                     sub_df=_sb)
+                source = 'computed'
+
+            if ad is None:
+                ad = process_asset(sym, df, current_capital=cfg.INITIAL_CAPITAL)
                 source = 'computed'
                 if ad is not None:
                     _save_asset_cache(sym, cfg.timeframe, df, ad, cfg)
@@ -10786,7 +10806,7 @@ def main():
                    help="HMAC secret for kill switch (or KILL_SWITCH_SECRET env)")
     p.add_argument("--trade-log", type=str, default=None,
                    help="Path to trade log file (JSONL). "
-                        "Default: trades_log_{mode}.jsonl")
+                        "Default: bot_trades_log_{mode}.jsonl")
     # ══ [SINGULARITY TIMING] ══
     p.add_argument("--sing-timing", action="store_true",
                    help="Enable Singularity timing layer (Layer 1: "
