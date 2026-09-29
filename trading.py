@@ -617,6 +617,20 @@ class Config:
     OPP_TP_MIN_DELTA_R: float = 0.3          # تحسّن أدنى لنقل TP
     OPP_TP_MAX_AGE_BARS: int = 4             # عمر الإشارة المعاكسة
     OPP_TP_RESPECT_PARTIAL: bool = True      # لا تنقل TP تحت trigger partial
+    # ══ [WATCH ENTRY OFFSET — dynamic, fills on touch] ══
+    # الأمر يُوضع في اتجاه يواجه السعر الهابط/الصاعد، ليملأ عند أول تلامس.
+    # BUY : order = tunnel + offset  (above)
+    # SELL: order = tunnel − offset  (below)
+    WATCH_OFFSET_VOL_KAPPA: float = 0.02   # جزء من σ_bar
+    WATCH_OFFSET_ADV_TIERS: Tuple = (
+        (1e10, 1.0),   # ADV ≥ 10B → ×1.0
+        (1e9,  1.3),   # ADV ≥ 1B  → ×1.3
+        (1e8,  1.8),   # ADV ≥ 100M → ×1.8
+        (1e7,  3.0),   # ADV ≥ 10M → ×3.0
+        (0.0,  5.0),   # ADV < 10M → ×5.0
+    )
+    WATCH_OFFSET_MAX_BPS: float = 30.0
+    WATCH_OFFSET_MIN_BPS: float = 1.0
 
 CFG = Config()
 
@@ -3999,6 +4013,186 @@ def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps,
 
     return result
 
+# ════════════════════════════════════════════════════════════════
+# § 14.55  Watch-Mode Backtest Fill Precompute (Parity with Live)
+# ════════════════════════════════════════════════════════════════
+#
+# يحاكي في الـ backtest نفس ما يفعله monitor_watch_signals في الـ live:
+#   1. WATCH: ينتظر أن يقترب السعر من tunnel_entry_p
+#   2. TRIGGER: عندما يقترب + SL محمي ببنية، يحسب offset ديناميكي
+#      ويضع "أمراً" عند tunnel ± offset
+#   3. PENDING: ينتظر أن يلمس السعر الأمر (low ≤ order لـ BUY،
+#      high ≥ order لـ SELL)، أو ينتهي timeout
+#
+# Returns: dict {sig_i: ('S1', fill_ci, fill_px) | None}
+# ════════════════════════════════════════════════════════════════
+
+def _precompute_watch_fills(assets, signals):
+    """
+    Backtest parity for WATCH_MODE_ENABLED live behavior.
+    """
+    by_symbol = defaultdict(list)
+    for i, s in enumerate(signals):
+        by_symbol[s.symbol].append((i, s))
+
+    result = {}
+
+    _prox_kappa = float(getattr(CFG, 'WATCH_PROX_KAPPA', 0.5))
+    _phase1_timeout = max(3, effective_bars(
+        int(getattr(CFG, 'WATCH_PHASE1_TIMEOUT_BARS_1H', 16))
+    ))
+    _max_age = max(3, effective_bars(
+        int(getattr(CFG, 'UNIFIED_MAX_AGE_BARS_1H', 12))
+    ))
+    _s1_timeout = max(2, effective_bars(
+        int(getattr(CFG, 'UNIFIED_WAIT_BARS_1H', 8))
+    ))
+
+    for sym, sig_list in by_symbol.items():
+        if sym not in assets:
+            for idx, _ in sig_list:
+                result[idx] = None
+            continue
+        ad = assets[sym]
+        n_bars = len(ad.closes)
+
+        for j, (sig_i, sig) in enumerate(sig_list):
+            # Next signal on same symbol caps this signal's window
+            _next_ci = (sig_list[j+1][1].close_idx
+                        if j+1 < len(sig_list) else n_bars)
+
+            tunnel_p = float(sig.price)
+            sl_orig = float(sig.sl)
+            sl_dist_orig = abs(sl_orig - tunnel_p)
+            if tunnel_p <= 0 or sl_dist_orig <= 0:
+                result[sig_i] = None
+                continue
+
+            # ── Bar range for watching ──
+            first_bar = int(sig.close_idx) + 1
+            watch_last = min(first_bar + _phase1_timeout, _next_ci, n_bars)
+            if watch_last <= first_bar:
+                result[sig_i] = None
+                continue
+
+            triggered = False
+            order_px = 0.0
+            placed_bar = -1
+
+            # ══════ WATCH PHASE ══════
+            for bar in range(first_bar, watch_last):
+                fi = bar - ad.feat_start
+                if fi < 0 or fi >= len(ad.score):
+                    continue
+
+                # Physics collapse → drop
+                sc_now = float(ad.score[fi])
+                if sc_now < float(getattr(CFG, 'WATCH_PHASE1_ABORT_SCORE', 0.5)) * float(sig.score):
+                    break
+
+                try:
+                    geo_a = float(ad.geodesic_accel[fi])
+                    fric = float(ad.friction[fi]) + 1e-6
+                    T_info = float(ad.T_info[fi])
+                    P_act = float(np.exp(-fric / ((abs(geo_a) + 1e-9) * T_info)))
+                except Exception:
+                    P_act = 1.0
+                if P_act < float(getattr(CFG, 'WATCH_PHASE1_ABORT_P_ACT', 0.30)):
+                    break
+
+                # σ_bar at this bar
+                try:
+                    sigma_bar = float(ad.E_therm[fi]) if fi < len(ad.E_therm) else 0.01
+                    if not np.isfinite(sigma_bar) or sigma_bar <= 1e-6:
+                        sigma_bar = 0.01
+                except Exception:
+                    sigma_bar = 0.01
+
+                # ADV at this bar
+                try:
+                    adv_now = float(ad.adv_usd[bar]) if bar < len(ad.adv_usd) else 1e8
+                except Exception:
+                    adv_now = 1e8
+
+                # Proximity (condition a)
+                p_now = float(ad.closes[bar])
+                if abs(p_now - tunnel_p) > _prox_kappa * sigma_bar * tunnel_p:
+                    continue
+
+                # Dynamic offset (no exchange → tick fallback = 0.1 bps)
+                offset = _watch_compute_entry_offset(
+                    tunnel_p=tunnel_p,
+                    sigma_bar=sigma_bar,
+                    adv_usd=adv_now,
+                    exchange=None,
+                    symbol=None,
+                    qty=0.0,
+                )
+
+                if sig.action == "BUY":
+                    expected_entry = tunnel_p + offset
+                    effective_sl = expected_entry - sl_dist_orig
+                else:
+                    expected_entry = tunnel_p - offset
+                    effective_sl = expected_entry + sl_dist_orig
+
+                # Structure (condition b)
+                if not _watch_sl_structure_ok(
+                        ad, sig, effective_sl, tunnel_p, bar):
+                    continue
+
+                # ═══ TRIGGER ═══
+                triggered = True
+                order_px = float(expected_entry)
+                placed_bar = bar
+                break
+
+            if not triggered:
+                result[sig_i] = None
+                continue
+
+            # ══════ PENDING PHASE ══════
+            fill_ci = -1
+            fill_px = 0.0
+            pending_last = min(placed_bar + _s1_timeout + 1, _next_ci, n_bars)
+
+            # Check the trigger bar itself (price may have been touched
+            # intrabar before we "placed" the order — pessimistic: we
+            # require the NEXT bar to touch it).
+            for bar in range(placed_bar + 1, pending_last):
+                lo = float(ad.lows[bar])
+                hi = float(ad.highs[bar])
+                if sig.action == "BUY":
+                    if lo <= order_px:
+                        fill_ci = bar
+                        fill_px = order_px
+                        break
+                else:
+                    if hi >= order_px:
+                        fill_ci = bar
+                        fill_px = order_px
+                        break
+
+            if fill_ci < 0:
+                # Check the trigger bar's own extremes as last resort
+                # (order placed mid-bar; touch may have happened after)
+                _tb_lo = float(ad.lows[placed_bar])
+                _tb_hi = float(ad.highs[placed_bar])
+                if sig.action == "BUY" and _tb_lo <= order_px:
+                    fill_ci = placed_bar
+                    fill_px = order_px
+                elif sig.action == "SELL" and _tb_hi >= order_px:
+                    fill_ci = placed_bar
+                    fill_px = order_px
+
+            if fill_ci < 0:
+                result[sig_i] = None
+                continue
+
+            result[sig_i] = ('S1', int(fill_ci), float(fill_px))
+
+    return result
+
 def _ts_to_ci(ad, ts):
     idx = int(np.searchsorted(ad.timestamps.asi8, ts.value, side='right') - 1)
     return max(0, min(idx, len(ad.closes)-1))
@@ -4515,19 +4709,25 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
     # Time-decay: only applied if live-mode is on
     _td_enabled = _sim_live and bool(getattr(CFG, 'ENTRY_TIME_DECAY', False))
 
-    fill_map = precompute_entry_fills(
-        assets, signals,
-        max_wait_bars=_effective_wait_bars,
-        pen_bps=CFG.FILL_PENETRATION_BPS,
-        time_decay_enabled=_td_enabled,
-        time_decay_bars=(CFG.ENTRY_TIME_DECAY_BARS_1,
-                         CFG.ENTRY_TIME_DECAY_BARS_2,
-                         CFG.ENTRY_TIME_DECAY_BARS_3),
-        time_decay_mults=(CFG.ENTRY_TIME_DECAY_MULT_1,
-                          CFG.ENTRY_TIME_DECAY_MULT_2,
-                          CFG.ENTRY_TIME_DECAY_MULT_3),
-        use_time_decay_price=_td_enabled,
-    )
+    # ══ [PARITY] Watch mode → use _precompute_watch_fills ══
+    if getattr(CFG, 'WATCH_MODE_ENABLED', True):
+        fill_map = _precompute_watch_fills(assets, signals)
+        log.info("  [Backtest Watch] using watch-then-trigger parity "
+                 "logic (proximity + structure + dynamic offset)")
+    else:
+        fill_map = precompute_entry_fills(
+            assets, signals,
+            max_wait_bars=_effective_wait_bars,
+            pen_bps=CFG.FILL_PENETRATION_BPS,
+            time_decay_enabled=_td_enabled,
+            time_decay_bars=(CFG.ENTRY_TIME_DECAY_BARS_1,
+                             CFG.ENTRY_TIME_DECAY_BARS_2,
+                             CFG.ENTRY_TIME_DECAY_BARS_3),
+            time_decay_mults=(CFG.ENTRY_TIME_DECAY_MULT_1,
+                              CFG.ENTRY_TIME_DECAY_MULT_2,
+                              CFG.ENTRY_TIME_DECAY_MULT_3),
+            use_time_decay_price=_td_enabled,
+        )
     n_total_sigs = len(signals)
     n_would_fill = sum(1 for v in fill_map.values() if v is not None)
     log.info(f"  [Backtest Realism] Entry fills: "
@@ -8389,6 +8589,65 @@ def _watch_proximity_ok(p_now: float, tunnel_p: float,
     kappa = float(getattr(CFG, 'WATCH_PROX_KAPPA', 0.5))
     return dist <= kappa * sigma_bar * tunnel_p
 
+def _watch_compute_entry_offset(tunnel_p: float, sigma_bar: float,
+                                 adv_usd: float,
+                                 exchange=None,
+                                 symbol: Optional[str] = None,
+                                 qty: float = 0.0) -> float:
+    """
+    Returns the price offset to place beyond tunnel_entry_p,
+    in the direction that guarantees fill on touch.
+
+      BUY : order = tunnel + offset
+      SELL: order = tunnel − offset
+
+    The offset is:
+      max( tick_size,
+           κ_vol × σ_bar × tunnel × adv_mult,
+           order_size_impact,
+           min_bps × tunnel )
+      capped at max_bps × tunnel.
+    """
+    # ── Floor 1: tick size ──
+    tick = 0.0
+    if exchange is not None and symbol is not None:
+        try:
+            tick = _get_tick_size(exchange, symbol) or 0.0
+        except Exception:
+            tick = 0.0
+    if tick <= 0:
+        tick = tunnel_p * 1e-6   # 0.1 bps fallback
+
+    # ── Floor 2: σ_bar × κ × ADV multiplier ──
+    sig = max(float(sigma_bar), 1e-6)
+    vol_off = float(CFG.WATCH_OFFSET_VOL_KAPPA) * sig * tunnel_p
+
+    try:
+        _adv = float(adv_usd)
+    except Exception:
+        _adv = 1e8
+    adv_mult = 5.0
+    for thresh, mult in getattr(CFG, 'WATCH_OFFSET_ADV_TIERS',
+                                 ((1e10, 1.0), (1e9, 1.3), (1e8, 1.8),
+                                  (1e7, 3.0), (0.0, 5.0))):
+        if _adv >= thresh:
+            adv_mult = float(mult)
+            break
+    vol_off *= adv_mult
+
+    # ── Floor 3: order-size impact ──
+    size_off = 0.0
+    if qty > 0 and _adv > 0:
+        hourly_adv = _adv / 24.0
+        participation = (qty * tunnel_p) / max(hourly_adv, 1.0)
+        size_off = tunnel_p * min(0.0005, participation * 0.005)
+
+    # ── Combine & clamp ──
+    min_abs = tunnel_p * float(CFG.WATCH_OFFSET_MIN_BPS) * 1e-4
+    max_abs = tunnel_p * float(CFG.WATCH_OFFSET_MAX_BPS) * 1e-4
+    off = max(tick, vol_off, size_off, min_abs)
+    off = min(off, max_abs)
+    return float(off)
 
 def _find_swing_in_window(ad, end_ci: int, lookback: int, kind: str):
     """Most recent swing low/high within [end_ci-lookback, end_ci)."""
@@ -8412,12 +8671,13 @@ def _find_swing_in_window(ad, end_ci: int, lookback: int, kind: str):
     return None, -1
 
 
-def _watch_sl_structure_ok(ad, sig, sl_designed: float,
+def _watch_sl_structure_ok(ad, sig, sl_to_check: float,
                             tunnel_p: float, current_ci: int) -> bool:
     """
-    Condition (b): SL is protected by a recent swing.
-      BUY : sl < swing_low − buffer·ATR < tunnel_p
-      SELL: tunnel_p < swing_high + buffer·ATR < sl
+    Condition (b): the SL that will actually be used must be protected
+    by a recent swing.
+      BUY : sl_to_check < swing_low − buffer < tunnel_p
+      SELL: tunnel_p < swing_high + buffer < sl_to_check
     """
     try:
         lookback = int(getattr(CFG, 'WATCH_SWING_LOOKBACK', 60))
@@ -8425,19 +8685,19 @@ def _watch_sl_structure_ok(ad, sig, sl_designed: float,
         atr = (float(ad.atr14[current_ci])
                if 0 <= current_ci < len(ad.atr14) else 0.0)
         if atr <= 0:
-            atr = max(abs(tunnel_p - sl_designed) * 0.1, 1e-9)
+            atr = max(abs(tunnel_p - sl_to_check) * 0.1, 1e-9)
         buffer = buf_mult * atr
 
         if sig.action == "BUY":
             sw, _ = _find_swing_in_window(ad, current_ci, lookback, "low")
             if sw is None:
                 return False
-            return (sl_designed < sw - buffer) and (sw - buffer < tunnel_p)
+            return (sl_to_check < sw - buffer) and (sw - buffer < tunnel_p)
         else:
             sw, _ = _find_swing_in_window(ad, current_ci, lookback, "high")
             if sw is None:
                 return False
-            return (sl_designed > sw + buffer) and (sw + buffer > tunnel_p)
+            return (sl_to_check > sw + buffer) and (sw + buffer > tunnel_p)
     except Exception as e:
         log.debug(f"[Watch] sl_structure_ok failed: {e}")
         return False
@@ -8648,11 +8908,44 @@ def monitor_watch_signals(exchange, open_pos_live: Dict,
         if not _watch_proximity_ok(p_now, tunnel_p, sigma_bar):
             continue
 
-        # ── Condition (b): SL structure ──
-        if not _watch_sl_structure_ok(ad, sig, float(rec['sl']),
-                                       tunnel_p, cur_ci):
-            log.debug(f"[Watch] {sym} proximity OK but SL not "
-                      f"protected — keep watching")
+        # ══ [ENTRY-OFFSET] Compute dynamic offset FIRST ══
+        # الإزاحة ديناميكية: tick size, σ_bar, ADV, حجم الأمر.
+        _qty_tmp = float(rec.get('qty', 0.0) or 0.0)
+        _adv_now = 1e8
+        try:
+            if cur_ci < len(ad.adv_usd):
+                _adv_now = float(ad.adv_usd[cur_ci])
+        except Exception:
+            pass
+
+        _offset = _watch_compute_entry_offset(
+            tunnel_p=tunnel_p,
+            sigma_bar=sigma_bar,
+            adv_usd=_adv_now,
+            exchange=exchange,
+            symbol=sym,
+            qty=_qty_tmp,
+        )
+
+        # أمرنا يواجه السعر الهابط/الصاعد ليملأ عند أول تلامس
+        if sig.action == "BUY":
+            _expected_entry = tunnel_p + _offset
+            _effective_sl = _expected_entry - abs(
+                float(rec['sl']) - tunnel_p
+            )
+        else:
+            _expected_entry = tunnel_p - _offset
+            _effective_sl = _expected_entry + abs(
+                float(rec['sl']) - tunnel_p
+            )
+
+        # ── Condition (b): SL structure (using effective SL) ──
+        if not _watch_sl_structure_ok(
+                ad, sig, _effective_sl, tunnel_p, cur_ci):
+            log.debug(
+                f"[Watch] {sym} proximity OK but effective SL "
+                f"{_effective_sl:.6f} not protected — keep watching"
+            )
             continue
 
         # ══════════════════════════════════════════════════════
@@ -8698,12 +8991,23 @@ def monitor_watch_signals(exchange, open_pos_live: Dict,
             save_watched_signals()
             continue
 
+        # ══ [WATCH-ENTRY-PRICE] استخدم explicit_target ══
+        _order_price = (_expected_entry
+                        if sig.action == "BUY"
+                        else _expected_entry)
+        log.info(f"[Watch] {sym} trigger: tunnel={tunnel_p:.6f} "
+                 f"offset={_offset:.6f} "
+                 f"({_offset/tunnel_p*1e4:.2f}bps) "
+                 f"order_px={_order_price:.6f} "
+                 f"effective_sl={_effective_sl:.6f}")
+
         try:
             ok = place_pending_entry(
                 exchange, sym, _side, _qty, sig,
                 timeout_s=_timeout_s,
                 leverage=_leverage,
                 ad=ad,
+                explicit_target=float(_order_price),
             )
             if ok is not None:
                 _triggers_this_cycle += 1
@@ -9606,7 +9910,9 @@ def monitor_pending_orders(exchange, open_pos_live: Dict,
 
 def place_pending_entry(exchange, sym: str, side: str, qty: float,
                         sig, timeout_s: float, leverage: int,
-                        ad=None) -> Optional[Dict]:
+                        ad=None,
+                        explicit_target: Optional[float] = None
+                        ) -> Optional[Dict]:
     """
     Place a single Post-Only order and register it as pending (non-blocking).
     Returns the pending record or None on failure.
@@ -9662,10 +9968,11 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
         return None
 
     # ══ [PARITY-FIX] Honor PO_FIXED_PRICE exactly as v10 did ══
-    # True  → use sig.price (fixed, no chasing) — matches v10's fixed_target
-    # False → quote from LIVE book at PO_PENETRATION_BPS from best bid/ask
+    # explicit_target (from watch) overrides both modes.
     pen = float(CFG.PO_PENETRATION_BPS) * 1e-4
-    if getattr(CFG, 'PO_FIXED_PRICE', True):
+    if explicit_target is not None and explicit_target > 0:
+        target = float(explicit_target)
+    elif getattr(CFG, 'PO_FIXED_PRICE', True):
         target = float(sig.price)
     else:
         try:
