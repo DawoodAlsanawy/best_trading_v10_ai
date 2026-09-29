@@ -1419,16 +1419,21 @@ def _load_cached_sub(symbol, exchange, sub_tf, days):
         except Exception as e:
             log.warning(f"[SubBars] {symbol} backfill: {e}")
 
-    # ═══ 4. الاقتطاع (sub-bars تحتاج فقط 500) ═══
+    # ═══ 4. الاقتطاع الصارم للـ sub-bars ═══
+    # [STRICT-WINDOW-SUB] نطبق نفس المنطق: نحترم --history-days
+    # بدقة للفريم الأصغر أيضاً، حتى لا يدخل الكاش القديم في
+    # معالجة الشموع الرئيسية للنافذة المطلوبة فقط.
     df_window = df[df.index >= since_full_dt]
 
     if len(df_window) >= min_rows:
+        log.debug(f"[StrictWindow-Sub] {symbol} {sub_tf}: "
+                  f"using {len(df_window)} sub-bars ({days}d)")
         return df_window
 
-    # Fallback: النافذة صغيرة → الكاش الكامل
-    if len(df) >= min_rows:
-        return df
-
+    # النافذة صغيرة جداً → لا نرجع للكاش الكامل
+    log.debug(f"[StrictWindow-Sub] {symbol} {sub_tf}: window has "
+              f"{len(df_window)} sub-bars (< {min_rows}) — "
+              f"sub-bar refinement skipped for this symbol")
     return None
 
 
@@ -1656,19 +1661,23 @@ def _load_cached(symbol, exchange, timeframe, days):
         except Exception as e:
             log.warning(f"{symbol} backfill: {e}")
 
-    # ═══ 4. الاقتطاع مع الحماية ═══
+    # ═══ 4. الاقتطاع الصارم — نحترم --history-days بدقة ═══
+    # [STRICT-WINDOW] لا نعود أبداً للكاش الكامل بعد الآن.
+    # إذا طلب المستخدم نافذة معينة، نحترمها. إذا كانت النافذة
+    # غير كافية رياضياً → يُرفض الأصل بدل تضخيم البيانات بصمت.
     df_window = df[df.index >= since_full_dt]
 
-    # الحالة A: النافذة المطلوبة كافية لـ KMeans → استخدمها
-    if len(df_window) >= _strict_min:
+    # نتحقق فقط أن النافذة قابلة للمعالجة (N+W+100)
+    if len(df_window) >= min_rows:
+        log.debug(f"[StrictWindow] {symbol} {timeframe}: "
+                  f"using {len(df_window)} bars "
+                  f"({days}d requested)")
         return df_window
 
-    # الحالة B: النافذة صغيرة جداً → ارجع للكاش الكامل
-    # (مطابق للأصل — لا خسارة في Win Rate)
-    if len(df) >= min_rows:
-        return df
-
-    # الحالة C: لا توجد بيانات
+    # النافذة المطلوبة أصغر من الحد الأدنى للمعالجة → ارفض الأصل
+    log.debug(f"[StrictWindow] {symbol} {timeframe}: window has "
+              f"{len(df_window)} bars (< {min_rows} required) — "
+              f"asset skipped")
     return None
 
 
