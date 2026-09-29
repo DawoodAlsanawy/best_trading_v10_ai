@@ -54,6 +54,16 @@ os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
 CACHE_DIR = "market_data_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
+# ══ [Cache-Health] إحصائيات عامة للجلسة ══
+_CACHE_HEALTH: Dict = {
+    'files_scanned': 0,
+    'issues_fixed_local': 0,
+    'gaps_found': 0,
+    'bars_refetched': 0,
+    'files_saved': 0,
+}
+os.makedirs(CACHE_DIR, exist_ok=True)
+
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s",
                     datefmt="%H:%M:%S")
@@ -595,7 +605,7 @@ class Config:
     # التسجيل والتحليل
     FILTER_LOG_REJECTIONS: bool = False     # سجّل كل رفض في LOG
     # ══ [WATCH-THEN-TRIGGER — proximity + structure gate] ══
-    WATCH_MODE_ENABLED: bool = True
+    WATCH_MODE_ENABLED: bool = False
     WATCH_PROX_KAPPA: float = 0.5
     WATCH_SWING_LOOKBACK: int = 60
     WATCH_SWING_BUFFER_MULT: float = 0.3
@@ -1306,6 +1316,228 @@ def _sub_per_main(main_tf: str, sub_tf: str) -> int:
         return max(1, m // s)
 
 
+# ════════════════════════════════════════════════════════════════
+# § 2.01  Cache Health — Validation & Local Repair
+# ════════════════════════════════════════════════════════════════
+
+_REQUIRED_OHLCV = ('Open', 'High', 'Low', 'Close', 'Volume')
+_TS_COL_CANDIDATES = ('ts', 'timestamp', 'time', 'date', 'datetime')
+
+
+def _validate_cache_local(df, symbol: str, timeframe: str, tf_sec: int):
+    """
+    مرحلة الإصلاح المحلي (بدون شبكة).
+    Returns: (cleaned_df | None, gap_ranges: list[(start_ts, end_ts)], issues: dict)
+    """
+    issues = {
+        'naive_tz': 0, 'wrong_index_type': 0, 'unsorted': 0,
+        'duplicates': 0, 'dtype_fixed': 0, 'nan_ohlc_dropped': 0,
+        'volume_nan_filled': 0, 'invalid_dropped': 0,
+        'hl_clamped': 0, 'gaps': 0,
+    }
+    if df is None or len(df) == 0:
+        return None, [], issues
+
+    # ── 1. Index: DateTimeIndex, tz-aware UTC ──
+    if not isinstance(df.index, pd.DatetimeIndex):
+        _ts_col = None
+        for cand in _TS_COL_CANDIDATES:
+            if cand in df.columns:
+                _ts_col = cand
+                break
+            for c in df.columns:
+                if str(c).lower() == cand:
+                    _ts_col = c
+                    break
+            if _ts_col:
+                break
+        if _ts_col is not None:
+            try:
+                df = df.set_index(_ts_col)
+                issues['wrong_index_type'] = 1
+            except Exception:
+                return None, [], issues
+        else:
+            return None, [], issues
+
+    try:
+        if df.index.tz is None:
+            df.index = df.index.tz_localize('UTC')
+            issues['naive_tz'] = 1
+        else:
+            df.index = df.index.tz_convert('UTC')
+    except Exception:
+        return None, [], issues
+
+    # ── 2. Columns: ensure OHLCV exist (case-insensitive) ──
+    _col_map = {}
+    for req in _REQUIRED_OHLCV:
+        if req in df.columns:
+            continue
+        for c in df.columns:
+            if str(c).lower() == req.lower():
+                _col_map[c] = req
+                break
+    if _col_map:
+        df = df.rename(columns=_col_map)
+
+    for req in _REQUIRED_OHLCV:
+        if req not in df.columns:
+            return None, [], issues
+
+    # ── 3. Coerce numeric ──
+    for col in _REQUIRED_OHLCV:
+        if not pd.api.types.is_float_dtype(df[col]):
+            try:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+                issues['dtype_fixed'] += 1
+            except Exception:
+                return None, [], issues
+
+    # ── 4. Sort ──
+    if not df.index.is_monotonic_increasing:
+        df = df.sort_index()
+        issues['unsorted'] = 1
+
+    # ── 5. Drop duplicates ──
+    n_before = len(df)
+    df = df[~df.index.duplicated(keep='last')]
+    issues['duplicates'] = n_before - len(df)
+
+    # ── 6. Drop NaN in OHLC ──
+    n_before = len(df)
+    df = df.dropna(subset=['Open', 'High', 'Low', 'Close'])
+    issues['nan_ohlc_dropped'] = n_before - len(df)
+
+    # ── 7. Fill NaN in Volume with 0 ──
+    vol_na = int(df['Volume'].isna().sum())
+    if vol_na > 0:
+        df['Volume'] = df['Volume'].fillna(0.0)
+        issues['volume_nan_filled'] = vol_na
+
+    # ── 8. Drop impossible rows ──
+    n_before = len(df)
+    _invalid = (
+        (df['High'] < df['Low']) |
+        (df['Open'] <= 0) | (df['Close'] <= 0) |
+        (df['High'] <= 0) | (df['Low'] <= 0) |
+        (df['Volume'] < 0)
+    )
+    df = df[~_invalid]
+    issues['invalid_dropped'] = n_before - len(df)
+
+    if len(df) == 0:
+        return None, [], issues
+
+    # ── 9. Clamp High/Low vs Open/Close ──
+    _hi_min = df[['Open', 'Close']].max(axis=1)
+    _lo_max = df[['Open', 'Close']].min(axis=1)
+    _hi_bad = df['High'] < _hi_min
+    _lo_bad = df['Low'] > _lo_max
+    if _hi_bad.any():
+        df.loc[_hi_bad, 'High'] = _hi_min[_hi_bad]
+        issues['hl_clamped'] += int(_hi_bad.sum())
+    if _lo_bad.any():
+        df.loc[_lo_bad, 'Low'] = _lo_max[_lo_bad]
+        issues['hl_clamped'] += int(_lo_bad.sum())
+
+    # ── 10. Detect internal gaps ──
+    gap_ranges = []
+    if len(df) >= 2 and tf_sec > 0:
+        expected = pd.Timedelta(seconds=tf_sec)
+        diffs = df.index.to_series().diff()
+        gap_mask = diffs > expected * 1.5
+        gap_idx = np.where(gap_mask.values)[0]
+        for gi in gap_idx:
+            if gi == 0:
+                continue
+            start_ts = df.index[gi - 1] + expected
+            end_ts = df.index[gi] - expected
+            if start_ts <= end_ts:
+                gap_ranges.append((start_ts, end_ts))
+        issues['gaps'] = len(gap_ranges)
+
+    return df, gap_ranges, issues
+
+
+def _fetch_ranges(exchange, symbol: str, timeframe: str,
+                   ranges: list, tf_sec: int):
+    """
+    جلب فترات محددة فقط من البورصة. لا يعيد تنزيل ما هو موجود.
+    ranges: قائمة (start_ts, end_ts) حيث كلا العنصرين pandas Timestamp.
+    """
+    if not ranges:
+        return None
+    all_rows = []
+    tf_ms = int(tf_sec) * 1000
+
+    for (start_ts, end_ts) in ranges:
+        since_ms = int(start_ts.timestamp() * 1000)
+        end_ms = int(end_ts.timestamp() * 1000)
+        cursor = since_ms
+        _pages = 0
+        while cursor <= end_ms and _pages < 500:
+            try:
+                chunk = exchange.fetch_ohlcv(
+                    symbol, timeframe, since=cursor, limit=1000
+                )
+            except Exception as e:
+                log.warning(f"[Cache-Health] {symbol} fetch @ {cursor} "
+                            f"failed: {e}")
+                break
+            if not chunk:
+                break
+            for c in chunk:
+                if since_ms <= c[0] <= end_ms:
+                    all_rows.append(c)
+            last_ts = chunk[-1][0]
+            if last_ts >= end_ms:
+                break
+            new_cursor = last_ts + tf_ms
+            if new_cursor <= cursor:
+                break
+            cursor = new_cursor
+            _pages += 1
+            time.sleep(0.06)
+
+    if not all_rows:
+        return None
+    df = pd.DataFrame(
+        all_rows,
+        columns=['ts', 'Open', 'High', 'Low', 'Close', 'Volume']
+    )
+    df['ts'] = pd.to_datetime(df['ts'], unit='ms', utc=True)
+    df = (df.set_index('ts')
+            .drop_duplicates()
+            .astype(float)
+            .sort_index())
+    return df
+
+
+def _log_cache_health(symbol: str, timeframe: str,
+                       issues: dict, gaps_filled: int = 0,
+                       bars_fetched: int = 0):
+    """يسجّل ملخصاً موجزاً فقط عند وجود مشاكل."""
+    _issues = {k: v for k, v in issues.items() if v > 0}
+    if not _issues and gaps_filled == 0:
+        return
+    _fixes = ", ".join(f"{k}={v}" for k, v in _issues.items()
+                        if k != 'gaps')
+    if _fixes:
+        log.info(f"[Cache-Health] {symbol} {timeframe}: "
+                 f"local repair [{_fixes}]")
+    if gaps_filled > 0:
+        log.info(f"[Cache-Health] {symbol} {timeframe}: "
+                 f"filled {bars_fetched} bar(s) across "
+                 f"{gaps_filled} gap(s) — network fetch")
+
+    _CACHE_HEALTH['files_scanned'] += 1
+    _CACHE_HEALTH['issues_fixed_local'] += sum(
+        v for k, v in issues.items() if k != 'gaps'
+    )
+    _CACHE_HEALTH['gaps_found'] += gaps_filled
+    _CACHE_HEALTH['bars_refetched'] += bars_fetched
+
 def _load_cached_sub(symbol, exchange, sub_tf, days):
     """
     [SAFE HISTORY-DAYS SUB-BARS CACHE]
@@ -1455,8 +1687,48 @@ def _load_cached_sub(symbol, exchange, sub_tf, days):
                     pass
         except Exception as e:
             log.warning(f"[SubBars] {symbol} backfill: {e}")
+    # ═══ 3.5 التحقق والإصلاح المحلي (sub-bars) ═══
+    df, gap_ranges, issues = _validate_cache_local(
+        df, symbol, sub_tf, _sub_sec
+    )
+    if df is None or len(df) < min_rows:
+        return None
+
+    # ═══ 3.6 جلب فراغات sub-bars فقط ═══
+    _gaps_filled = 0
+    _bars_fetched = 0
+    if issues.get('gaps', 0) > 0 and gap_ranges:
+        _relevant = [(s, e) for (s, e) in gap_ranges
+                     if e >= since_full_dt]
+        if _relevant:
+            _n_before = len(df)
+            try:
+                df_gap = _fetch_ranges(
+                    exchange, symbol, sub_tf, _relevant, _sub_sec
+                )
+            except Exception as e:
+                log.warning(f"[Cache-Health-Sub] {symbol} gap fetch "
+                            f"failed: {e}")
+                df_gap = None
+            if df_gap is not None and len(df_gap) > 0:
+                df = pd.concat([df, df_gap])
+                df = (df[~df.index.duplicated(keep='last')]
+                        .sort_index())
+                _gaps_filled = len(_relevant)
+                _bars_fetched = len(df) - _n_before
+                try:
+                    df.to_parquet(fp)
+                    _CACHE_HEALTH['files_saved'] += 1
+                except Exception as e:
+                    log.debug(f"[Cache-Health-Sub] {symbol} save "
+                              f"failed: {e}")
+
+    _log_cache_health(f"{symbol}({sub_tf})", "sub", issues,
+                       gaps_filled=_gaps_filled,
+                       bars_fetched=_bars_fetched)
 
     # ═══ 4. الاقتطاع الصارم للـ sub-bars ═══
+
     # [STRICT-WINDOW-SUB] نطبق نفس المنطق: نحترم --history-days
     # بدقة للفريم الأصغر أيضاً، حتى لا يدخل الكاش القديم في
     # معالجة الشموع الرئيسية للنافذة المطلوبة فقط.
@@ -1697,6 +1969,47 @@ def _load_cached(symbol, exchange, timeframe, days):
                     pass
         except Exception as e:
             log.warning(f"{symbol} backfill: {e}")
+
+    # ═══ 3.5 التحقق والإصلاح المحلي ═══
+    df, gap_ranges, issues = _validate_cache_local(
+        df, symbol, timeframe, _tf_sec
+    )
+    if df is None or len(df) < min_rows:
+        return None
+
+    # ═══ 3.6 جلب الفراغات فقط (إن وُجدت) ═══
+    _gaps_filled = 0
+    _bars_fetched = 0
+    if issues.get('gaps', 0) > 0 and gap_ranges:
+        _relevant = [(s, e) for (s, e) in gap_ranges
+                     if e >= since_full_dt]
+        if _relevant:
+            _n_before = len(df)
+            try:
+                df_gap = _fetch_ranges(
+                    exchange, symbol, timeframe, _relevant, _tf_sec
+                )
+            except Exception as e:
+                log.warning(f"[Cache-Health] {symbol} gap fetch "
+                            f"failed: {e}")
+                df_gap = None
+
+            if df_gap is not None and len(df_gap) > 0:
+                df = pd.concat([df, df_gap])
+                df = (df[~df.index.duplicated(keep='last')]
+                        .sort_index())
+                _gaps_filled = len(_relevant)
+                _bars_fetched = len(df) - _n_before
+                try:
+                    df.to_parquet(fp)
+                    _CACHE_HEALTH['files_saved'] += 1
+                except Exception as e:
+                    log.debug(f"[Cache-Health] {symbol} save failed: {e}")
+
+    # سجّل الملخص
+    _log_cache_health(symbol, timeframe, issues,
+                       gaps_filled=_gaps_filled,
+                       bars_fetched=_bars_fetched)
 
     # ═══ 4. الاقتطاع الصارم — نحترم --history-days بدقة ═══
     # [STRICT-WINDOW] لا نعود أبداً للكاش الكامل بعد الآن.
@@ -6187,6 +6500,18 @@ def run_backtest(cfg):
 
     print_report(m, "backtest")
     plot_results(trades, equity, m)
+
+    # ══ [Cache-Health] تقرير نهائي ══
+    if _CACHE_HEALTH['files_scanned'] > 0:
+        log.info(
+            f"[Cache-Health] Session summary: "
+            f"scanned={_CACHE_HEALTH['files_scanned']} files, "
+            f"local_fixes={_CACHE_HEALTH['issues_fixed_local']} issues, "
+            f"gaps={_CACHE_HEALTH['gaps_found']}, "
+            f"bars_refetched={_CACHE_HEALTH['bars_refetched']}, "
+            f"files_rewritten={_CACHE_HEALTH['files_saved']}"
+        )
+
     log.info("✅ اكتمل.")
     log.info(f"   E[ln(1+fR)] = {m.get('mean_log_return',0):+.6f}")
     log.info(f"   MaxDrawdown  = {m.get('max_drawdown_pct',0):.2f}%")
@@ -12422,6 +12747,13 @@ def main():
     print(f"║  ④ Cosmological Λ:  {CFG.COSMOLOGICAL_CONSTANT}  (De Sitter drift)                  ║")
     print(f"║  ⑤ T_sync EMA-accel: فلتر التشابك عبر المقاييس                  ║")
     print("╚"+"═"*70+"╝\n")
+
+    # ══ [Cache-Health] Reset stats ══
+    _CACHE_HEALTH['files_scanned'] = 0
+    _CACHE_HEALTH['issues_fixed_local'] = 0
+    _CACHE_HEALTH['gaps_found'] = 0
+    _CACHE_HEALTH['bars_refetched'] = 0
+    _CACHE_HEALTH['files_saved'] = 0
 
     # ══ [TradeLog] تهيئة تسجيل الصفقات ══
     _trade_log_init(CFG.mode, args.trade_log)
