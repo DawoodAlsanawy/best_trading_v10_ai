@@ -114,7 +114,7 @@ class Config:
     MAKER_FEE: float = 0.0002
     TAKER_FEE: float = 0.0005
     MAX_CHUNK_USD: float = 1000.0 # أقصى حجم للحزمة الكمومية الواحدة بالدولار لتجنب صدمة دفتر الأوامر
-    MIN_NOTIONAL: float = 20.0
+    MIN_NOTIONAL: float = 6.0
     SL_FACTOR: float = 0.5
     TP_BETAS: Tuple = (1.5,)
 
@@ -984,14 +984,14 @@ def _default_assets():
     # 100 أصل: أعلى القيمة السوقية + دعم رافعة 50x+ على Binance Futures
     return [
         # --- الطبقة الأولى: أعلى سيولة ورافعة (75x-125x) ---
-        "BTC/USDT",    # بيتكوين - رافعة 125x
-        "ETH/USDT",    # إيثيريوم - رافعة 100x
-        "BNB/USDT",    # بيнанс كوين - رافعة 75x
-        "SOL/USDT",    # سولانا - رافعة 50x
+#        "BTC/USDT",    # بيتكوين - رافعة 125x
+#        "ETH/USDT",    # إيثيريوم - رافعة 100x
+#        "BNB/USDT",    # بيнанс كوين - رافعة 75x
+#        "SOL/USDT",    # سولانا - رافعة 50x
 #        "XRP/USDT",    # ريبل - رافعة 50x
-#        "DOGE/USDT",   # دوجكوين - رافعة 50x
-        "ADA/USDT",    # كاردانو - رافعة 50x
-        "AVAX/USDT",   # أفالانش - رافعة 50x
+##        "DOGE/USDT",   # دوجكوين - رافعة 50x
+#        "ADA/USDT",    # كاردانو - رافعة 50x
+#        "AVAX/USDT",   # أفالانش - رافعة 50x
         "LINK/USDT",   # تشين لينك - رافعة 50x
         "DOT/USDT",    # بولكادوت - رافعة 50x
         "LTC/USDT",    # لايتكوين - رافعة 50x

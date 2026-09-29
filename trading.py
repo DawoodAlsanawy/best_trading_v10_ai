@@ -85,7 +85,7 @@ class Config:
     EMA_SPAN: int = 200; ATR_PERIOD: int = 14
 
     W_CURV: float=1.0; W_VOL: float=1.0; W_ENTROPY: float=2.0
-    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=4
+    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=3
 
     CURV_THRESHOLD: float=0.01; DH_ENTROPY_THRESHOLD: float=0.005
     DH_HMM_UPPER: float=0.01;  DH_HMM_LOWER: float=-0.01
@@ -527,7 +527,7 @@ class Config:
     PARTIAL_TP_ENABLED: bool = True
     PARTIAL_TP_R: float = 4.5           # take profit at +1R
     PARTIAL_TP_PCT: float = 0.5         # close 50% at that level
-    TP_MULT: float = 5.0    # كان 2.0 → الآن 1.5 (R:R = 1.5)
+    TP_MULT: float = 6.0    # كان 2.0 → الآن 1.5 (R:R = 1.5)
     APEX_ENABLED: bool = False    # عطّله مؤقتاً حتى نضبط عتباته
 
     # ══ [SINGULARITY TIMING LAYER 1 — EMERGING] ══
