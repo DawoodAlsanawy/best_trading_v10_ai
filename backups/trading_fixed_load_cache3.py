@@ -85,7 +85,7 @@ class Config:
     EMA_SPAN: int = 200; ATR_PERIOD: int = 14
 
     W_CURV: float=1.0; W_VOL: float=1.0; W_ENTROPY: float=2.0
-    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=4
+    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=3
 
     CURV_THRESHOLD: float=0.01; DH_ENTROPY_THRESHOLD: float=0.005
     DH_HMM_UPPER: float=0.01;  DH_HMM_LOWER: float=-0.01
@@ -366,7 +366,7 @@ class Config:
     #   1.5 → moderate widening
     #   2.0 → recommended starting point
     #   2.5 → aggressive widening (fewer SL hits, larger drawdowns)
-    SL_WIDEN_MULT: float = 1.0
+    SL_WIDEN_MULT: float = 1.5
 
     # ══ [ADAPTIVE FIX #3] Tick-based penetration ══
     # WIF has 0.254 ticks/bps → 1 bps < 1 tick → orders can't fill properly.
@@ -11180,5 +11180,4 @@ def main():
 if __name__=="__main__":
     main()
 
-# to run the project use the command 
-# python trading.py--mode testnet --api-key $BINANCE_API_KEY --api-secret $BINANCE_API_SECRET --capital 55 --nassets 50 --maxcon 5 --rule-filter --rule-min-score 2 --po-wait-s 500 --no-fixed-price
+# running options --capital 100 --nassets 100 --maxcon 3 --timeframe 4h --no-fixed-price --rule-filter --rule-min-score 3 --no-trailing
