@@ -6928,15 +6928,9 @@ def _maybe_adapt_tp_live(pos: Dict, sig_opp, ad, exchange) -> bool:
         if _cur_ci <= _entry_ci:
             return False
 
-        sc_e = 0.0
-        try:
-            _orig_sig = pos.get('_orig_signal_ref')
-            sc_e = float(getattr(_orig_sig, 'score', 0.0)) if _orig_sig else 0.0
-        except Exception:
-            sc_e = 0.0
+        # ══ [_orig_score] رقم صافٍ، آمن عبر JSON ══
+        sc_e = float(pos.get('_orig_score', 0.0) or 0.0)
         sc_o = float(getattr(sig_opp, 'score', 0.0) or 0.0)
-        if sc_e > 0 and sc_o < float(CFG.OPP_TP_SCORE_MULT) * sc_e:
-            return False
 
         _tp_old = float(pos.get('tp1', 0.0))
         if _tp_old <= 0:
@@ -9028,7 +9022,23 @@ def load_pending_orders(mode: str) -> Dict[str, Dict]:
         try:
             with open(_PENDING_ORDERS_PATH) as f:
                 _PENDING_ORDERS = json.load(f)
-            log.info(f"[Pending] Restored {len(_PENDING_ORDERS)} pending orders")
+
+            # ══ [DESERIALIZE-GUARD] إسقاط الحقول التي كانت كائنات ══
+            # قد تكون نصوصاً من إصدار قديم، أو مفقودة.
+            _cleaned = 0
+            for _sym in list(_PENDING_ORDERS.keys()):
+                _rec = _PENDING_ORDERS[_sym]
+                for _k in ('ad_ref', 'signal_ref', '_orig_signal_ref'):
+                    if _k in _rec and isinstance(_rec[_k], str):
+                        _rec.pop(_k, None)
+                        _cleaned += 1
+                    elif _k in _rec and not isinstance(_rec[_k], str):
+                        # كائن حقيقي غير قابل للبقاء عبر JSON
+                        _rec.pop(_k, None)
+                        _cleaned += 1
+
+            log.info(f"[Pending] Restored {len(_PENDING_ORDERS)} "
+                     f"pending orders (cleaned {_cleaned} stale refs)")
         except Exception as e:
             log.warning(f"[Pending] load failed: {e}")
             _PENDING_ORDERS = {}
@@ -9043,8 +9053,24 @@ def save_pending_orders() -> None:
         return
     try:
         tmp = _PENDING_ORDERS_PATH + ".tmp"
+
+        # ══ [SERIALIZATION-GUARD] استبعاد الكائنات غير القابلة للتسلسل ══
+        serializable = {}
+        for sym, rec in _PENDING_ORDERS.items():
+            _r = {}
+            for k, v in rec.items():
+                if k in ('ad_ref', 'signal_ref',
+                         '_orig_signal_ref'):
+                    continue
+                if isinstance(v, (np.floating, np.integer)):
+                    v = v.item()
+                elif isinstance(v, np.ndarray):
+                    continue
+                _r[k] = v
+            serializable[sym] = _r
+
         with open(tmp, 'w') as f:
-            json.dump(_PENDING_ORDERS, f, indent=2, default=str)
+            json.dump(serializable, f, indent=2, default=str)
         os.replace(tmp, _PENDING_ORDERS_PATH)
     except Exception as e:
         log.warning(f"[Pending] save failed: {e}")
@@ -9207,7 +9233,8 @@ def _promote_pending_to_position(exchange, sym: str, rec: Dict,
         '_trail_peak_R': 0.0,
         '_trail_last_update_ts': 0.0,
         '_sym': sym,
-        '_orig_signal_ref': rec.get('_orig_signal_ref') or rec.get('signal_ref'),
+        '_orig_score': float(rec.get('_orig_score', 0.0)
+                             or getattr(rec.get('signal_ref'), 'score', 0.0)),
     }
 
     # ══ [LAYER 7] Place protective orders on the exchange ══
@@ -9968,7 +9995,8 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
         return None
 
     # ══ [PARITY-FIX] Honor PO_FIXED_PRICE exactly as v10 did ══
-    # explicit_target (from watch) overrides both modes.
+    # True  → use sig.price (fixed, no chasing) — matches v10's fixed_target
+    # False → quote from LIVE book at PO_PENETRATION_BPS from best bid/ask
     pen = float(CFG.PO_PENETRATION_BPS) * 1e-4
     if explicit_target is not None and explicit_target > 0:
         target = float(explicit_target)
@@ -10209,8 +10237,8 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
         'status': 'open',
         'filled': 0.0,
         'avg_price': 0.0,
-        'signal_ref': sig,           # [UNIFIED-S2] مرجع الإشارة الأصلية
-        '_orig_signal_ref': sig,
+        'signal_ref': sig,
+        '_orig_score': float(getattr(sig, 'score', 0.0)),
         'score_ref': float(sig.score),
         'capital_at_placement': 0.0, # يُملأ لاحقاً إن أردت
         'mmr_at_placement': float(
@@ -10368,7 +10396,7 @@ def _kill_switch_trigger(reason: str, exchange,
     # Persist state
     try:
         with open(state_file, 'w') as f:
-            json.dump(open_pos_live, f, indent=2)
+            json.dump(open_pos_live, f, indent=2, default=str)
     except Exception:
         pass
     save_pending_orders()
@@ -10927,7 +10955,8 @@ def run_live(cfg, exchange):
                                     # Persist state
                                     try:
                                         with open(state_file, 'w') as _f:
-                                            json.dump(open_pos_live, _f, indent=2)
+                                            json.dump(open_pos_live, _f,
+                                                      indent=2, default=str)
                                     except Exception:
                                         pass
                             except Exception as _e:
@@ -11069,7 +11098,8 @@ def run_live(cfg, exchange):
                             # احفظ الحالة فوراً
                             try:
                                 with open(state_file, 'w') as _f:
-                                    json.dump(open_pos_live, _f, indent=2)
+                                    json.dump(open_pos_live, _f,
+                                              indent=2, default=str)
                             except Exception:
                                 pass
                             continue
@@ -11753,7 +11783,7 @@ def run_live(cfg, exchange):
                             '_trail_peak_R': 0.0,
                             '_trail_last_update_ts': 0.0,
                             '_sym': sym,
-                            '_orig_signal_ref': sig,
+                            '_orig_score': float(sig.score),
                         }
 
                         log.info(f"✅ [Entry] {sig.action} {sym} @ {entry_price:.6f} "
@@ -11807,7 +11837,7 @@ def run_live(cfg, exchange):
             # ══ Persist state ══
             try:
                 with open(state_file, 'w') as f:
-                    json.dump(open_pos_live, f, indent=2)
+                    json.dump(open_pos_live, f, indent=2, default=str)
             except Exception as e:
                 log.warning(f"[State] end-of-cycle save failed: {e}")
             save_pending_orders()
