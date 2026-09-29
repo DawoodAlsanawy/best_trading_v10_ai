@@ -6488,21 +6488,28 @@ def compute_liquidation_price(entry: float, side: str,
         return float(entry * (1.0 + 1.0 / L) / max(1.0 + m, 1e-6))
 
 
+# Binance USDT-M valid leverage tiers
+_BINANCE_LEVERAGE_TIERS = (1, 2, 3, 5, 10, 20, 25, 50, 75, 100, 125)
+
+
 def compute_max_leverage_by_liq(sl_frac_max: float, mmr: float,
                                   safety_mult: float = 1.5) -> int:
     """
-    Max leverage such that: sl_gap × safety_mult < liq_gap  (relative to Entry).
+    Max leverage such that: sl_gap × safety_mult < liq_gap.
 
-    Derivation:
-        sl_frac × safety_mult < 1 - (1 - 1/L)/(1 - MMR)
-        L < 1 / (1 - (1 - MMR) × (1 - sl_frac × safety_mult))
+    [TIER-SNAP] يُعاد الرقم من قائمة الرافعات الصالحة على Binance،
+    وليس قيمة تعسفية. هذا يمنع set_leverage من الرفض بـ -4028.
     """
     s = max(sl_frac_max * safety_mult, 1e-6)
     m = max(float(mmr), 0.0)
     denom = 1.0 - (1.0 - m) * (1.0 - s)
     if denom <= 1e-9:
         return 1
-    return max(1, int(np.floor(1.0 / denom)))
+    _raw = int(np.floor(1.0 / denom))
+    _candidates = [t for t in _BINANCE_LEVERAGE_TIERS if t <= _raw]
+    if not _candidates:
+        return 1
+    return int(_candidates[-1])
 
 
 def _estimate_liq_for_position(pos: dict, default_leverage: int = 10) -> Optional[float]:
@@ -8675,6 +8682,22 @@ def monitor_watch_signals(exchange, open_pos_live: Dict,
         )
         _timeout_s = float(_stage1_bars * _tf_sec)
 
+        # ══ [SETUP-AT-TRIGGER] ══
+        # ضبط الرافعة/الهامش يحدث الآن فقط، بعد تحقق الشرطين.
+        # لو فشل، نُسقط الإشارة بدل إعادة المحاولة كل دورة.
+        try:
+            if not ensure_symbol_setup(exchange, sym, _leverage,
+                                        margin_mode='isolated'):
+                log.warning(f"[Watch] {sym} setup failed — dropping")
+                _WATCHED_SIGNALS.pop(sym, None)
+                save_watched_signals()
+                continue
+        except Exception as _e:
+            log.warning(f"[Watch] {sym} setup exception: {_e} — dropping")
+            _WATCHED_SIGNALS.pop(sym, None)
+            save_watched_signals()
+            continue
+
         try:
             ok = place_pending_entry(
                 exchange, sym, _side, _qty, sig,
@@ -10362,6 +10385,7 @@ def run_live(cfg, exchange):
                         continue
 
                     new_candles = exchange.fetch_ohlcv(sym, cfg.timeframe, limit=3)
+                    _rate_record(1.0)
                     _ohlcv_fetched += 1
                     df_new = pd.DataFrame(new_candles, columns=['ts','Open','High','Low','Close','Volume'])
                     df_new['ts'] = pd.to_datetime(df_new['ts'], unit='ms', utc=True)
@@ -10638,6 +10662,7 @@ def run_live(cfg, exchange):
                     if (_progress > _refresh_thr
                             and (_now_ts - _last_refresh) > _cooldown):
                         try:
+                            _rate_record(5.0)
                             _pos_list = exchange.fetch_positions([sym])
                             for _p in _pos_list:
                                 _amt = float(_p['info'].get(
@@ -10929,18 +10954,28 @@ def run_live(cfg, exchange):
                 for sig in reversed(sigs):
                     sym = sig.symbol
                     if sym in open_pos_live: continue
-                    # ══ [PARTIAL-FILL-FIX] ══
-                    # منع تراكم الأجزاء المنفذة:
-                    # - إذا كان للأصل أمر معلّق نشط، لا تعالجه مرة أخرى
-                    # - Anti-stacking كان يلغي الأمر المعلّق بعد أن نُفّذ جزئياً
-                    # - ثم يعيد الوضع بـ qty كامل → المركز النهائي = مضاعف
+
+                    # ══ [EARLY-SKIP] قبل أي حساب فيزيائي ══
+                    # هذا الفحص يمنع تكرار LevCap / SL-Clip / setup في كل دورة.
+                    # بعد الدورة الأولى، الرمز يكون في إحدى هذه الحالات
+                    # فنتخطاه فوراً بدون أي API call.
+                    if sym in _WATCHED_SIGNALS:
+                        log.debug(f"[Watch] {sym} already watched — skip")
+                        continue
                     if sym in _PENDING_ORDERS:
                         log.debug(f"[Pending] {sym} already has active "
                                   f"pending — skip signal")
                         continue
-                    # احتساب التعرّض الإجمالي (مراكز + معلّقات) ضد maxcon
-                    _total_exposure = len(open_pos_live) + len(_PENDING_ORDERS)
+
+                    # احتساب التعرّض الإجمالي (مراكز + معلّقات + مُراقَبة)
+                    _total_exposure = (len(open_pos_live)
+                                       + len(_PENDING_ORDERS)
+                                       + len(_WATCHED_SIGNALS))
                     if _total_exposure >= int(cfg.MAX_CONCURRENT_ASSETS):
+                        log.debug(f"[Watch] exposure cap reached "
+                                  f"({_total_exposure}≥"
+                                  f"{cfg.MAX_CONCURRENT_ASSETS}) — "
+                                  f"stopping scan")
                         break
 
                     # ══ [RE-ENTRY COOLDOWN] Block re-entry too soon after exit ══
@@ -11102,7 +11137,29 @@ def run_live(cfg, exchange):
 
                     # Store effective risk for heat tracking
                     sig.dynamic_risk = float(risk_frac)
-                    
+
+                    # ══ [WATCH-REGISTRATION-EARLY] ══
+                    # التسجيل يحدث قبل STEP 1/STEP 2/Entry.
+                    # السبب: STEP 1 قد يفشل (fetch_positions glitch) ويُخرجنا
+                    # من الحلقة قبل التسجيل → إعادة معالجة كاملة كل دورة.
+                    # التسجيل المبكّر يضمن التقاط الإشارة من أول مرة.
+                    if (getattr(CFG, 'WATCH_MODE_ENABLED', True)
+                            and getattr(CFG, 'PENDING_ENABLED', True)):
+                        _ad_w = assets.get(sym)
+                        if _ad_w is None:
+                            continue
+                        if register_watch_signal(sym, sig, _ad_w):
+                            _WATCHED_SIGNALS[sym]['qty'] = float(qty)
+                            _WATCHED_SIGNALS[sym]['leverage'] = int(
+                                dynamic_leverage
+                            )
+                            _WATCHED_SIGNALS[sym]['mmr'] = float(
+                                _mmr_sig or
+                                getattr(CFG, 'LIQ_FALLBACK_MMR', 0.02)
+                            )
+                            save_watched_signals()
+                        continue
+
                     try:
                         sd = 'buy' if sig.action == 'BUY' else 'sell'
 
@@ -11124,6 +11181,7 @@ def run_live(cfg, exchange):
                         #     (fail-safe, not fail-open).
                         _has_exch_pos = False
                         try:
+                            _rate_record(5.0)
                             for _p in exchange.fetch_positions([sym]):
                                 _amt = float(
                                     _p['info'].get('positionAmt', 0) or 0
