@@ -9994,62 +9994,98 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
         log.debug(f"[RateLimit] {sym} placement skipped — usage high")
         return None
 
-    # ══ [PARITY-FIX] Honor PO_FIXED_PRICE exactly as v10 did ══
-    # True  → use sig.price (fixed, no chasing) — matches v10's fixed_target
-    # False → quote from LIVE book at PO_PENETRATION_BPS from best bid/ask
+    # ══ [DYNAMIC-OFFSET-ALWAYS] ══
+    # حساب offset ديناميكي (tick, σ_bar, ADV, order size) في كل المسارات.
+    # الاتجاه: BUY → فوق المرجع، SELL → تحت المرجع.
+    # هذا يضمن الملء عند أول تلامس، بغض النظر عن Watch mode.
     pen = float(CFG.PO_PENETRATION_BPS) * 1e-4
+
+    # احسب ADV و σ_bar مرة واحدة
+    _adv_for_off = 1e8
+    try:
+        if ad is not None and hasattr(ad, 'adv_usd'):
+            _ci_a = int(getattr(sig, 'close_idx', -1))
+            if 0 <= _ci_a < len(ad.adv_usd):
+                _adv_for_off = float(ad.adv_usd[_ci_a])
+    except Exception:
+        pass
+
+    _sig_for_off = 0.01
+    try:
+        _fi_o = int(getattr(sig, 'feat_idx', -1))
+        if ad is not None and 0 <= _fi_o < len(ad.E_therm):
+            _s = float(ad.E_therm[_fi_o])
+            if np.isfinite(_s) and _s > 1e-6:
+                _sig_for_off = _s
+    except Exception:
+        pass
+
+    _dyn_offset = _watch_compute_entry_offset(
+        tunnel_p=float(sig.price),
+        sigma_bar=_sig_for_off,
+        adv_usd=_adv_for_off,
+        exchange=exchange,
+        symbol=sym,
+        qty=qty,
+    )
+
+    # ══ تحديد الـ target ══
     if explicit_target is not None and explicit_target > 0:
+        # Watch mode: يُمرَّر جاهزاً
         target = float(explicit_target)
     elif getattr(CFG, 'PO_FIXED_PRICE', True):
-        target = float(sig.price)
+        # Base = tunnel، offset outward
+        if side == 'buy':
+            target = float(sig.price) + _dyn_offset
+        else:
+            target = float(sig.price) - _dyn_offset
     else:
+        # --no-fixed-price: Base = close[sig.close_idx]، offset outward
         try:
-            # [PARITY-FIX] Use the SAME reference as backtest:
-            # close of the signal bar, not live bid/ask.
+            _base = float(sig.price)
             if ad is not None and hasattr(ad, 'closes'):
                 _ci = int(getattr(sig, 'close_idx', -1))
                 if 0 <= _ci < len(ad.closes):
-                    _close_ref = float(ad.closes[_ci])
-                else:
-                    _close_ref = None
-            else:
-                _close_ref = None
+                    _base = float(ad.closes[_ci])
 
-            ob = exchange.fetch_order_book(sym, limit=5)
-            last_bid = float(ob['bids'][0][0])
-            last_ask = float(ob['asks'][0][0])
-            if _close_ref is not None and _close_ref > 0:
-                _base = _close_ref
+            if side == 'buy':
+                target = _base + _dyn_offset
             else:
-                _base = last_bid if side == 'buy' else last_ask
+                target = _base - _dyn_offset
 
-            # ══ [ADAPTIVE FIX #3] tick-based penetration ══
-            _tick = _get_tick_size(exchange, sym)
-            if (getattr(CFG, 'PO_USE_TICK_PENETRATION', True)
-                    and _tick and _tick > 0 and _base > 0):
-                _pen_abs = max(pen * _base, _tick)
-                _pen_ticks = int(np.ceil(_pen_abs / _tick))
-                _pen_abs = _pen_ticks * _tick
-                target = (_base - _pen_abs if side == 'buy'
-                          else _base + _pen_abs)
-            else:
-                target = (_base * (1.0 - pen) if side == 'buy'
-                          else _base * (1.0 + pen))
-
-            # Sanity gate: refuse if target drifts too far from mid
-            _mid = (last_bid + last_ask) / 2.0
-            if _mid > 0:
-                _gap_bps = abs(target - _mid) / _mid * 1e4
-                _max_gap = float(getattr(CFG, 'PO_MAX_DRIFT_BPS', 5.0)) * 4.0
-                if _gap_bps > _max_gap:
-                    log.info(f"[Pending] {sym} target {target:.6f} "
-                             f"is {_gap_bps:.1f}bps from mid "
-                             f"(> {_max_gap:.1f}) — skip")
-                    return None
+            # Sanity gate
+            try:
+                ob = exchange.fetch_order_book(sym, limit=5)
+                _mid = (float(ob['bids'][0][0])
+                        + float(ob['asks'][0][0])) / 2.0
+                if _mid > 0:
+                    _gap_bps = abs(target - _mid) / _mid * 1e4
+                    _max_gap = float(
+                        getattr(CFG, 'PO_MAX_DRIFT_BPS', 5.0)
+                    ) * 4.0
+                    if _gap_bps > _max_gap:
+                        log.info(
+                            f"[Pending] {sym} target {target:.6f} "
+                            f"is {_gap_bps:.1f}bps from mid "
+                            f"(> {_max_gap:.1f}) — skip"
+                        )
+                        return None
+            except Exception:
+                pass
         except Exception as e:
-            log.warning(f"[Pending] book fetch failed for {sym}: {e} — "
-                        f"falling back to sig.price")
-            target = float(sig.price)
+            log.warning(
+                f"[Pending] {sym} offset computation failed: {e} — "
+                f"falling back to sig.price ± fixed pen"
+            )
+            _fallback_pen = max(pen, 1e-5)
+            target = (float(sig.price) * (1.0 - _fallback_pen)
+                      if side == 'buy'
+                      else float(sig.price) * (1.0 + _fallback_pen))
+
+    # ══ Log القرار ══
+    log.debug(f"[Pending] {sym} base={'tunnel' if explicit_target is None else 'watch'} "
+              f"offset={_dyn_offset:.6f} ({_dyn_offset/max(float(sig.price),1e-12)*1e4:.2f}bps) "
+              f"target={target:.6f}")
 
     # ══ [SING-TIMING Layer 2] القرار: GTX أم Marketable ══
     # المنطق:
