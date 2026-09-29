@@ -607,6 +607,16 @@ class Config:
     WATCH_PHASE1_ABORT_P_ACT: float = 0.30
     WATCH_FILE_PREFIX: str = "watch_signals"
     WATCH_MAX_PER_CYCLE: int = 5          # cap triggers per loop iteration
+    # ══ [OPPOSITE-SIGNAL ADAPTIVE TP] ══
+    # عندما تظهر إشارة معاكسة على نفس الأصل لمركز مفتوح،
+    # يُنقل TP للمركز إلى موقع tunnel_entry_p للإشارة المعاكسة،
+    # بشرط أن يكون ذلك أقرب إلى الدخول (monotonic) وأعلى من حد ربح أدنى.
+    OPP_TP_ENABLED: bool = False
+    OPP_TP_SCORE_MULT: float = 1.20          # score_opp ≥ 1.2 × score_entry
+    OPP_TP_MIN_PROFIT_R: float = 0.5         # ربح أدنى مضمون بوحدات R
+    OPP_TP_MIN_DELTA_R: float = 0.3          # تحسّن أدنى لنقل TP
+    OPP_TP_MAX_AGE_BARS: int = 4             # عمر الإشارة المعاكسة
+    OPP_TP_RESPECT_PARTIAL: bool = True      # لا تنقل TP تحت trigger partial
 
 CFG = Config()
 
@@ -1017,7 +1027,7 @@ def _default_assets():
         "NEAR/USDT",   # نير بروتوكول - رافعة 50x
         "APT/USDT",    # أبتوس - رافعة 50x
         "HBAR/USDT",   # هيدرا - رافعة 50x
-        "VET/USDT",    # في تشين - رافعة 50x
+#        "VET/USDT",    # في تشين - رافعة 50x
         "STX/USDT",    # ستاكس - رافعة 50x
         "AAVE/USDT",   # آفي - رافعة 50x
         "ARB/USDT",    # أربيتروم - رافعة 50x
@@ -1056,7 +1066,7 @@ def _default_assets():
         "CRV/USDT",    # كورف - رافعة 50x
         "SNX/USDT",    # سينثيتيكس - رافعة 50x
         "COMP/USDT",   # كومباووند - رافعة 50x
-        "MKR/USDT",    # ميكر - رافعة 50x
+#        "MKR/USDT",    # ميكر - رافعة 50x
         "SUSHI/USDT",  # سوشي سواب - رافعة 50x
         "YFI/USDT",    # يرن فايننس - رافعة 50x
         "ZRX/USDT",    # زيرو إكس - رافعة 50x
@@ -1105,7 +1115,7 @@ def _default_assets():
 #        "BOME/USDT",   # بوك أوف ميم - رافعة 50x
         "W/USDT",      # ورم هول - رافعة 50x
         "SAGA/USDT",   # ساغا - رافعة 50x
-        "OMNI/USDT",   # أومني - رافعة 50x
+#        "OMNI/USDT",   # أومني - رافعة 50x
 #        "REZ/USDT",    # رينزو - رافعة 50x
         "BB/USDT",     # باونس بيت - رافعة 50x
         "IO/USDT",     # آي أو نت - رافعة 50x
@@ -4268,6 +4278,117 @@ def _advance(pos, ad, to_ci, partial_cb=None):
     pos.current_ci = max(end, pos.current_ci)
     return 0., "", -1
 
+# ════════════════════════════════════════════════════════════════
+# § 14.35  Opposite-Signal Adaptive TP
+# ════════════════════════════════════════════════════════════════
+#
+# الفكرة: عندما تظهر إشارة معاكسة على نفس الأصل، نستخدم موقع
+# tunnel_entry_p الخاص بها كهدف ربح جديد للمركز الحالي.
+#
+# القيود:
+#   1. الإشارة المعاكسة "قوية" (score ≥ mult × score_entry)
+#   2. حديثة (age ≤ max_age_bars)
+#   3. TP أحادي الاتجاه (monotonic) — لا يعود للخلف
+#   4. لا ينزل تحت حد ربح أدنى (min_profit_R)
+#   5. لا يعود بتغيير تافه (min_delta_R)
+#   6. لا يتخطى trigger partial TP (إن لم يُفعَّل بعد)
+# ════════════════════════════════════════════════════════════════
+
+def _opp_tp_decide(action_pos: str, entry: float, sl_dist0: float,
+                   tp_old: float, partial_taken: bool,
+                   entry_ci: int,
+                   sig_opp, current_ci: int):
+    """
+    Pure decision function. Returns (new_tp: float | None, reason: str).
+    None → no change.
+    """
+    if not getattr(CFG, 'OPP_TP_ENABLED', False):
+        return None, "disabled"
+
+    if action_pos == sig_opp.action:
+        return None, "same_direction"
+
+    sc_o = float(getattr(sig_opp, 'score', 0.0) or 0.0)
+    age = current_ci - int(getattr(sig_opp, 'close_idx', current_ci))
+    if age < 0 or age > int(CFG.OPP_TP_MAX_AGE_BARS):
+        return None, f"stale_opp(age={age})"
+
+    if entry <= 0 or sl_dist0 <= 0:
+        return None, "invalid_geom"
+
+    p_opp = float(getattr(sig_opp, 'price', 0.0) or 0.0)
+    if p_opp <= 0:
+        return None, "invalid_opp_price"
+
+    min_gain = float(CFG.OPP_TP_MIN_PROFIT_R) * sl_dist0
+    min_delta = float(CFG.OPP_TP_MIN_DELTA_R) * sl_dist0
+
+    if action_pos == "BUY":
+        tp_new = min(tp_old, p_opp)
+        if tp_new < entry + min_gain:
+            return None, f"below_min_gain({tp_new:.6f}<{entry+min_gain:.6f})"
+        if tp_old - tp_new < min_delta:
+            return None, f"delta_too_small({tp_old-tp_new:.6f}<{min_delta:.6f})"
+        if (getattr(CFG, 'PARTIAL_TP_ENABLED', False)
+                and not partial_taken
+                and getattr(CFG, 'OPP_TP_RESPECT_PARTIAL', True)):
+            _p_trig = entry + float(CFG.PARTIAL_TP_R) * sl_dist0
+            if tp_new <= _p_trig:
+                return None, f"would_skip_partial(trig={_p_trig:.6f})"
+    else:  # SELL
+        tp_new = max(tp_old, p_opp)
+        if tp_new > entry - min_gain:
+            return None, f"below_min_gain({tp_new:.6f}>{entry-min_gain:.6f})"
+        if tp_new - tp_old < min_delta:
+            return None, f"delta_too_small({tp_new-tp_old:.6f}<{min_delta:.6f})"
+        if (getattr(CFG, 'PARTIAL_TP_ENABLED', False)
+                and not partial_taken
+                and getattr(CFG, 'OPP_TP_RESPECT_PARTIAL', True)):
+            _p_trig = entry - float(CFG.PARTIAL_TP_R) * sl_dist0
+            if tp_new >= _p_trig:
+                return None, f"would_skip_partial(trig={_p_trig:.6f})"
+
+    return float(tp_new), "ok"
+
+
+def _maybe_adapt_tp_backtest(pos, sig_opp, ad, current_ci: int) -> bool:
+    """
+    Backtest wrapper for OpenPosition dataclass.
+    Modifies pos.signal.tp1 in place.
+    """
+    try:
+        if getattr(pos, 'signal', None) is sig_opp:
+            return False
+        if int(current_ci) <= int(pos.entry_ci):
+            return False
+
+        sc_e = float(pos.signal.score)
+        sc_o = float(sig_opp.score)
+        if sc_e > 0 and sc_o < float(CFG.OPP_TP_SCORE_MULT) * sc_e:
+            return False
+
+        tp_new, reason = _opp_tp_decide(
+            action_pos=str(pos.signal.action),
+            entry=float(pos.entry_px),
+            sl_dist0=float(pos.sl_dist_initial),
+            tp_old=float(pos.signal.tp1),
+            partial_taken=bool(getattr(pos, 'partial_taken', False)),
+            entry_ci=int(pos.entry_ci),
+            sig_opp=sig_opp,
+            current_ci=int(current_ci),
+        )
+        if tp_new is None:
+            return False
+
+        tp_old = float(pos.signal.tp1)
+        pos.signal.tp1 = float(tp_new)
+        log.info(f"[OppTP] {pos.symbol} {pos.signal.action} "
+                 f"TP {tp_old:.6f} → {tp_new:.6f} "
+                 f"(opp score={float(sig_opp.score):.2f} vs {sc_e:.2f})")
+        return True
+    except Exception as e:
+        log.debug(f"[OppTP] backtest adapter failed: {e}")
+        return False
 
 # ════════════════════════════════════════════════════════════════
 # § 14.7  Portfolio Risk Budget
@@ -4518,6 +4639,13 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
                 last_exit_ci[sym] = int(ec)
         for sym in to_close:
             del open_pos[sym]
+
+        # ══ [OppTP] نقل TP لمركز مفتوح عند ظهور إشارة معاكسة ══
+        if getattr(CFG, 'OPP_TP_ENABLED', False) and sig.symbol in open_pos:
+            _maybe_adapt_tp_backtest(
+                open_pos[sig.symbol], sig, assets[sig.symbol],
+                int(sig.close_idx)
+            )
 
         sym = sig.symbol
         if sym in open_pos: continue
@@ -6569,6 +6697,73 @@ def _sync_protective_orders(exchange, sym: str, pos: Dict) -> bool:
         log.warning(f"[Prot] {sym} sync fatal: {e}")
         return False
 
+def _maybe_adapt_tp_live(pos: Dict, sig_opp, ad, exchange) -> bool:
+    """
+    Live wrapper for dict-based positions. Syncs protective orders.
+    """
+    try:
+        _act = str(pos.get('action', '?'))
+        if _act not in ('BUY', 'SELL'):
+            return False
+        if _act == sig_opp.action:
+            return False
+
+        _entry = float(pos.get('entry', 0.0))
+        _sl_d0 = float(pos.get('sl_dist_initial', 0.0) or 0.0)
+        if _entry <= 0 or _sl_d0 <= 0:
+            return False
+
+        _cur_ci = max(0, len(ad.closes) - 2) if ad is not None else int(
+            getattr(sig_opp, 'close_idx', 0)
+        )
+
+        _entry_ci = int(pos.get('_entry_ci', 0) or 0)
+        if _cur_ci <= _entry_ci:
+            return False
+
+        sc_e = 0.0
+        try:
+            _orig_sig = pos.get('_orig_signal_ref')
+            sc_e = float(getattr(_orig_sig, 'score', 0.0)) if _orig_sig else 0.0
+        except Exception:
+            sc_e = 0.0
+        sc_o = float(getattr(sig_opp, 'score', 0.0) or 0.0)
+        if sc_e > 0 and sc_o < float(CFG.OPP_TP_SCORE_MULT) * sc_e:
+            return False
+
+        _tp_old = float(pos.get('tp1', 0.0))
+        if _tp_old <= 0:
+            return False
+
+        tp_new, reason = _opp_tp_decide(
+            action_pos=_act,
+            entry=_entry,
+            sl_dist0=_sl_d0,
+            tp_old=_tp_old,
+            partial_taken=bool(pos.get('_partial_taken', False)),
+            entry_ci=_entry_ci,
+            sig_opp=sig_opp,
+            current_ci=_cur_ci,
+        )
+        if tp_new is None:
+            log.debug(f"[OppTP] {pos.get('_sym','?')} skip: {reason}")
+            return False
+
+        pos['tp1'] = float(tp_new)
+        log.info(f"[OppTP] {pos.get('_sym','?')} {_act} "
+                 f"TP {_tp_old:.6f} → {tp_new:.6f} "
+                 f"(opp score={sc_o:.2f} vs {sc_e:.2f})")
+
+        if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
+            try:
+                _sync_protective_orders(exchange, pos['_sym'], pos)
+            except Exception as _e:
+                log.warning(f"[OppTP] {pos.get('_sym','?')} "
+                            f"prot sync failed: {_e}")
+        return True
+    except Exception as e:
+        log.debug(f"[OppTP] live adapter failed: {e}")
+        return False
 
 # ════════════════════════════════════════════════════════════════
 # [ADVANCED TRAILING] — 5-layer SL optimizer
@@ -8685,6 +8880,7 @@ def _promote_pending_to_position(exchange, sym: str, rec: Dict,
         '_trail_peak_R': 0.0,
         '_trail_last_update_ts': 0.0,
         '_sym': sym,
+        '_orig_signal_ref': rec.get('_orig_signal_ref') or rec.get('signal_ref'),
     }
 
     # ══ [LAYER 7] Place protective orders on the exchange ══
@@ -9684,6 +9880,7 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
         'filled': 0.0,
         'avg_price': 0.0,
         'signal_ref': sig,           # [UNIFIED-S2] مرجع الإشارة الأصلية
+        '_orig_signal_ref': sig,
         'score_ref': float(sig.score),
         'capital_at_placement': 0.0, # يُملأ لاحقاً إن أردت
         'mmr_at_placement': float(
@@ -10660,6 +10857,32 @@ def run_live(cfg, exchange):
                 except Exception as e:
                     log.error(f"خطأ أثناء الإغلاق لـ {sym}: {e}")
 
+            # ══ [OppTP] Always-on: adapt existing positions' TP ══
+            # يُستدعى حتى لو كان open_pos_live ممتلئًا، لأن الهدف
+            # هو إدارة المراكز القائمة لا فتح جديدة.
+            if (getattr(CFG, 'OPP_TP_ENABLED', False)
+                    and open_pos_live
+                    and 'assets' in dir()
+                    and assets):
+                try:
+                    _opp_sigs = deduplicate_signals(
+                        build_signals(assets, mode=cfg.mode)
+                    )
+                    for _sig_o in _opp_sigs:
+                        if _sig_o.symbol not in open_pos_live:
+                            continue
+                        _pos_o = open_pos_live[_sig_o.symbol]
+                        if _pos_o.get('action') == _sig_o.action:
+                            continue
+                        _ad_o = assets.get(_sig_o.symbol)
+                        if _ad_o is None:
+                            continue
+                        _maybe_adapt_tp_live(
+                            _pos_o, _sig_o, _ad_o, exchange
+                        )
+                except Exception as _e:
+                    log.debug(f"[OppTP] cycle hook error: {_e}")
+
             # 2. اقتناص ودخول صفقات جديدة
             # ══ [SAFETY] Dynamic concurrent limit based on drawdown ══
             dd_live = (peak_cap_live - cap_live) / (peak_cap_live + 1e-12)
@@ -10686,6 +10909,22 @@ def run_live(cfg, exchange):
                 if CFG.ML_FILTER_ENABLED:
                     sigs = filter_signals_ml_live(sigs, assets)
                     log_ml_live_stats()
+
+                # ══ [OppTP] Adapt open positions' TP to opposite signals ══
+                # يعمل على open_pos_live فقط. لا يتفاعل مع _WATCHED_SIGNALS
+                # ولا مع _PENDING_ORDERS — لأن OPP-TP مفهوم يخص المراكز
+                # الفعلية، لا الإشارات المُراقبة أو الأوامر المعلّقة.
+                if getattr(CFG, 'OPP_TP_ENABLED', False) and open_pos_live:
+                    for _sig_o in sigs:
+                        if _sig_o.symbol not in open_pos_live:
+                            continue
+                        _pos_o = open_pos_live[_sig_o.symbol]
+                        if _pos_o.get('action') == _sig_o.action:
+                            continue
+                        _ad_o = assets.get(_sig_o.symbol)
+                        if _ad_o is None:
+                            continue
+                        _maybe_adapt_tp_live(_pos_o, _sig_o, _ad_o, exchange)
 
                 for sig in reversed(sigs):
                     sym = sig.symbol
@@ -11149,6 +11388,7 @@ def run_live(cfg, exchange):
                             '_trail_peak_R': 0.0,
                             '_trail_last_update_ts': 0.0,
                             '_sym': sym,
+                            '_orig_signal_ref': sig,
                         }
 
                         log.info(f"✅ [Entry] {sig.action} {sym} @ {entry_price:.6f} "
@@ -11392,6 +11632,21 @@ def main():
     p.add_argument("--no-watch", action="store_true",
                    help="Disable watch-then-trigger mode "
                         "(place orders immediately, legacy behavior)")
+    p.add_argument("--opp-tp", action="store_true",
+                   help="Enable adaptive TP: when an opposite signal "
+                        "appears on the same symbol, move the open "
+                        "position's TP to the opposite's tunnel entry")
+    p.add_argument("--opp-tp-score-mult", type=float, default=None,
+                   help="Min score ratio (opp/entry) to trigger TP move "
+                        "(default 1.20)")
+    p.add_argument("--opp-tp-min-profit-r", type=float, default=None,
+                   help="Minimum guaranteed profit in R units "
+                        "(default 0.5)")
+    p.add_argument("--opp-tp-min-delta-r", type=float, default=None,
+                   help="Minimum TP improvement in R units to fire "
+                        "(default 0.3)")
+    p.add_argument("--opp-tp-max-age-bars", type=int, default=None,
+                   help="Max age of opposite signal in bars (default 4)")
     args = p.parse_args()
 
     CFG.mode = args.mode
@@ -11625,6 +11880,24 @@ def main():
                  f"(κ_prox={CFG.WATCH_PROX_KAPPA}, "
                  f"swing_lookback={CFG.WATCH_SWING_LOOKBACK}, "
                  f"phase1_timeout={CFG.WATCH_PHASE1_TIMEOUT_BARS_1H}h)")
+    # ══ [OppTP] Opposite-Signal Adaptive TP ══
+    if args.opp_tp:
+        CFG.OPP_TP_ENABLED = True
+        if args.opp_tp_score_mult is not None:
+            CFG.OPP_TP_SCORE_MULT = float(args.opp_tp_score_mult)
+        if args.opp_tp_min_profit_r is not None:
+            CFG.OPP_TP_MIN_PROFIT_R = float(args.opp_tp_min_profit_r)
+        if args.opp_tp_min_delta_r is not None:
+            CFG.OPP_TP_MIN_DELTA_R = float(args.opp_tp_min_delta_r)
+        if args.opp_tp_max_age_bars is not None:
+            CFG.OPP_TP_MAX_AGE_BARS = int(args.opp_tp_max_age_bars)
+        log.info("[OppTP] Opposite-Signal Adaptive TP ENABLED")
+        log.info(f"[OppTP]  score_mult={CFG.OPP_TP_SCORE_MULT}, "
+                 f"min_profit_R={CFG.OPP_TP_MIN_PROFIT_R}, "
+                 f"min_delta_R={CFG.OPP_TP_MIN_DELTA_R}, "
+                 f"max_age={CFG.OPP_TP_MAX_AGE_BARS}")
+    else:
+        log.info("[OppTP] Opposite-Signal Adaptive TP DISABLED")
     # ══ [TRADE FILTER] ══
     if args.filter:
         CFG.FILTER_ENABLED = True
@@ -11757,4 +12030,4 @@ if __name__=="__main__":
     main()
 
 # to run the project use the command 
-# python trading.py--mode testnet --api-key $BINANCE_API_KEY --api-secret $BINANCE_API_SECRET --capital 55 --nassets 50 --maxcon 5 --rule-filter --rule-min-score 2 --po-wait-s 500 --no-fixed-price
+# python trading.py --mode backtest --capital 100 --nassets 100 --maxcon 5 --timeframe 4h --no-trailing  --no-fixed-price  --reentry-cooldown 0
