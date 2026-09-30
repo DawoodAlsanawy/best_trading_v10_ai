@@ -38,10 +38,19 @@ except ImportError:
             return f
         return deco
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.gridspec as gridspec
-import matplotlib.pyplot as plt
+os.makedirs("/tmp/matplotlib", exist_ok=True)
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.gridspec as gridspec
+    import matplotlib.pyplot as plt
+    _MPL_AVAILABLE = True
+except Exception:
+    _MPL_AVAILABLE = False
+    matplotlib = None
+    gridspec = None
+    plt = None
 
 warnings.filterwarnings("ignore")
 os.environ["LOKY_MAX_CPU_COUNT"] = "4"
@@ -296,12 +305,9 @@ class Config:
     # كل المسافات بوحدة σ_price = E_therm[fi] × price.
     # كل النوافذ بالساعات الحقيقية (تُحوَّل إلى شموع عند الإقلاع).
     FRICTION_DIP_KAPPA: float = 4.0       # friction_drag = κ × σ_price
-#    SL_REF_KAPPA: float = 2.0             # SL/σ = κ × uncertainty / (1 + fric×5)
-#    SL_MIN_SIGMA: float = 1.0             # أدنى SL بوحدة σ
-#    SL_MAX_SIGMA: float = 5.0             # أقصى SL بوحدة σ
-    SL_REF_KAPPA: float = 4.0     # كان 2.0
-    SL_MIN_SIGMA: float = 3.0     # كان 1.0
-    SL_MAX_SIGMA: float = 8.0     # كان 5.0
+    SL_REF_KAPPA: float = 2.0             # SL/σ = κ × uncertainty / (1 + fric×5)
+    SL_MIN_SIGMA: float = 1.0             # أدنى SL بوحدة σ
+    SL_MAX_SIGMA: float = 5.0             # أقصى SL بوحدة σ
     N_HOURS: float = 24.0                 # نافذة الميزات (ساعات)
     W_HOURS: float = 20.0                 # نافذة الإنتروبيا
     L_HOURS: float = 10.0                 # نافذة الهندسة
@@ -644,6 +650,16 @@ class Config:
     )
     WATCH_OFFSET_MAX_BPS: float = 30.0
     WATCH_OFFSET_MIN_BPS: float = 1.0
+
+    # ══ [SMART QUANTUM HYBRID FILTER] ══
+    SMART_FILTER_ENABLED: bool = False
+    SMART_FILTER_MAX_E_THERM: float = 0.028
+    SMART_FILTER_MAX_H_RATIO: float = 0.68
+    SMART_FILTER_MAX_COUNTER_EMA_DIST: float = 22.0
+    SMART_FILTER_EXCLUDE_LOW_EFFICIENCY: bool = True
+    SMART_FILTER_EXCLUDED_ASSETS: List[str] = field(default_factory=lambda: [
+        "BTC/USDT", "CRV/USDT", "ATOM/USDT", "CHZ/USDT", "CAKE/USDT"
+    ])
 
 CFG = Config()
 
@@ -3738,20 +3754,71 @@ def _filter_reset_stats() -> None:
     _FILTER_STATS['vote_singles'].clear()
 
 
+def _smart_quantum_filter_check(sig, ad, fi, ci) -> Tuple[bool, str]:
+    """
+    الفلتر الهجين الذكي المطور (Smart Quantum Hybrid Filter):
+    1. فلتر جودة وكفاءة الأصل (Asset Quality Gate)
+    2. فلتر سقف الطاقة الحرارية والانزلاق (Thermal Volatility Gate)
+    3. فلتر التشتت الإنتروبي (Crystalline Entropy Gate)
+    4. فلتر الانحراف الحاد المعاكس للاتجاه (Macro-Trend Counter-Stretch Gate)
+    """
+    sym = getattr(sig, 'symbol', '?')
+    action = getattr(sig, 'action', '?')
+    price = float(getattr(sig, 'price', 0.0))
+
+    if price <= 0:
+        return False, ""
+
+    # Gate 1: Asset Quality
+    if getattr(CFG, 'SMART_FILTER_EXCLUDE_LOW_EFFICIENCY', True):
+        excluded = getattr(CFG, 'SMART_FILTER_EXCLUDED_ASSETS', [])
+        if sym in excluded:
+            return True, f"low_efficiency_asset({sym})"
+
+    if ad is not None and 0 <= fi < len(ad.E_therm):
+        # Gate 2: Thermal Volatility Cap
+        e_therm = float(ad.E_therm[fi])
+        max_e_therm = float(getattr(CFG, 'SMART_FILTER_MAX_E_THERM', 0.028))
+        if np.isfinite(e_therm) and e_therm > max_e_therm:
+            return True, f"extreme_thermal_volatility({e_therm:.4f}>{max_e_therm})"
+
+        # Gate 3: Entropy Disorder Cap
+        _dyn_k = max(int(getattr(ad, 'dynamic_k', 8)), 2)
+        h_max = np.log2(_dyn_k) + 1e-12
+        h_ratio = float(ad.H[fi]) / h_max
+        max_h_ratio = float(getattr(CFG, 'SMART_FILTER_MAX_H_RATIO', 0.68))
+        if np.isfinite(h_ratio) and h_ratio > max_h_ratio:
+            return True, f"high_entropy_disorder({h_ratio:.3f}>{max_h_ratio})"
+
+        # Gate 4: Counter-Trend Extreme Stretch
+        if 0 <= ci < len(ad.ema200) and ci >= 50:
+            ema_now = float(ad.ema200[ci])
+            ema_prev = float(ad.ema200[ci - 50])
+            slope = (ema_now - ema_prev) / 50.0
+            is_against = (action == 'BUY' and slope < 0) or (action == 'SELL' and slope > 0)
+            
+            sigma_p = max(e_therm * price, 1e-6) if np.isfinite(e_therm) else 0.01 * price
+            dist_norm = abs(price - ema_now) / sigma_p
+            max_dist_norm = float(getattr(CFG, 'SMART_FILTER_MAX_COUNTER_EMA_DIST', 22.0))
+            if is_against and dist_norm > max_dist_norm:
+                return True, f"extreme_counter_trend_stretch({dist_norm:.1f}s>{max_dist_norm}s)"
+
+    return False, ""
+
+
 def _trade_filter_check(sig, ad, fi, ci) -> Tuple[bool, str]:
     """
-    فحص فلتر الدخول. يعيد (reject, reason).
-
-    المنطق:
-      - يحسب "أصوات الرفض" من إشارات مستقلة.
-      - يرفض الإشارة إذا كان عدد الأصوات >= FILTER_MIN_VOTES.
-
-    الأصوات:
-      1. action_bias  : action == 'BUY' (معطّل افتراضياً)
-      2. ema_slope    : ميل EMA200 ضد الإشارة
-      3. high_atr     : atr_frac > FILTER_ATR_FRAC_MAX
-      4. friction     : friction_drag/sl_dist > FILTER_FRICTION_DRAG_MAX
+    فحص فلتر الدخول الشامل (Trade Filter & Smart Quantum Filter).
+    يعيد (reject, reason).
     """
+    # ── 1. فحص الفلتر الهجين الذكي المطور (إذا كان مفعّلاً) ──
+    if getattr(CFG, 'SMART_FILTER_ENABLED', False):
+        rej_smart, smart_rsn = _smart_quantum_filter_check(sig, ad, fi, ci)
+        if rej_smart:
+            _FILTER_STATS['vote_counts'][smart_rsn] += 1
+            return True, smart_rsn
+
+    # ── 2. فحص الفلتر التراثي بالتصويت (إذا كان مفعّلاً) ──
     if not getattr(CFG, 'FILTER_ENABLED', False):
         return False, ""
 
@@ -5564,6 +5631,9 @@ def print_report(m, mode):
 
 
 def plot_results(trades, equity, m, out="quantum_v6_results.png"):
+    if not _MPL_AVAILABLE or plt is None or gridspec is None:
+        log.info("[Plot] matplotlib not available — skipping plot generation")
+        return
     if not trades or m.get('n_trades', 0) == 0:
         log.info("[Plot] no trades — skipping plot generation")
         return
@@ -11610,46 +11680,14 @@ def run_live(cfg, exchange):
                     log.debug(f"[OppTP] cycle hook error: {_e}")
 
             # 2. اقتناص ودخول صفقات جديدة
-            # ══ [SAFETY-FIX] Continuous concurrency scaling + recovery floor ══
-            # السبب: العتبات الثابتة السابقة (0.05/0.10) أنشأت حلقة مغلقة:
-            # عند dd>10% تصبح effective_max=2. إذا كان مركزان مفتوحان،
-            # لا يُستدعى build_signals → لا إشارات جديدة → لا تعافٍ.
-            #
-            # المنهجية الجديدة:
-            #   1. تحويل العتبات الحادة إلى منحنى متصل.
-            #   2. ضمان أنه إذا كان n_open < MAX، يبقى هناك دائماً
-            #      مقعد واحد متاح على الأقل (للتعافي التدريجي).
-            _n_open = len(open_pos_live)
+            # ══ [SAFETY] Dynamic concurrent limit based on drawdown ══
             dd_live = (peak_cap_live - cap_live) / (peak_cap_live + 1e-12)
-
-            # منحنى متصل: 1.0 عند dd≤5% → 0.20 عند dd≥50%
-            if dd_live <= 0.05:
-                _soft_scale = 1.0
+            if dd_live > 0.10:
+                effective_max = max(1, cfg.MAX_CONCURRENT_ASSETS // 2)
+            elif dd_live > 0.05:
+                effective_max = max(2, cfg.MAX_CONCURRENT_ASSETS - 1)
             else:
-                _soft_scale = 1.0 - (dd_live - 0.05) * (0.80 / 0.45)
-                _soft_scale = max(0.20, min(1.0, _soft_scale))
-
-            _soft_cap = int(cfg.MAX_CONCURRENT_ASSETS * _soft_scale + 0.5)
-            _soft_cap = max(2, _soft_cap)   # أدنى ناعم: مقعدان
-
-            # ══ ضمان فتحة تعافٍ واحدة على الأقل ══
-            # إذا كان n_open < MAX، يبقى دائماً مقعد واحد متاح على الأقل،
-            # بغض النظر عن شدة الـ drawdown.
-            effective_max = min(
-                cfg.MAX_CONCURRENT_ASSETS,
-                max(_soft_cap, _n_open + 1)
-            )
-
-            # سجل تشخيص كل 5 دقائق (لمعرفة السبب فوراً في المرة القادمة)
-            _now_ts_eff = time.time()
-            if _now_ts_eff - getattr(run_live, '_last_eff_max_log', 0.0) > 300:
-                run_live._last_eff_max_log = _now_ts_eff
-                log.info(
-                    f"[Concurrency] dd={dd_live*100:.1f}% "
-                    f"cap=${cap_live:.2f} peak=${peak_cap_live:.2f} "
-                    f"n_open={_n_open} soft_cap={_soft_cap} "
-                    f"effective_max={effective_max}"
-                )
+                effective_max = cfg.MAX_CONCURRENT_ASSETS
 
             if len(open_pos_live) < effective_max:
                 # توليد الإشارة يمرر وضعية التداول اللحظية لكسر وهم الزمن
@@ -12438,6 +12476,19 @@ def main():
                         "(default 0.3)")
     p.add_argument("--opp-tp-max-age-bars", type=int, default=None,
                    help="Max age of opposite signal in bars (default 4)")
+    # ══ [SMART QUANTUM HYBRID FILTER] ══
+    p.add_argument("--smart-filter", action="store_true",
+                   help="Enable Smart Quantum Hybrid Filter (Thermal, Entropy, Macro-Trend & Asset Quality)")
+    p.add_argument("--no-smart-filter", action="store_true",
+                   help="Disable Smart Quantum Hybrid Filter")
+    p.add_argument("--smart-max-e-therm", type=float, default=None,
+                   help="Max thermal volatility cap E_therm (default 0.028)")
+    p.add_argument("--smart-max-h-ratio", type=float, default=None,
+                   help="Max entropy disorder ratio H/H_max (default 0.68)")
+    p.add_argument("--smart-max-counter-dist", type=float, default=None,
+                   help="Max counter-trend stretch in sigma units (default 22.0)")
+    p.add_argument("--smart-no-asset-filter", action="store_true",
+                   help="Disable asset quality exclusion gate inside smart filter")
     args = p.parse_args()
 
     CFG.mode = args.mode
@@ -12710,6 +12761,26 @@ def main():
         CFG.FILTER_FRICTION_DRAG_MAX = float(args.filter_friction_max)
     if args.filter_log:
         CFG.FILTER_LOG_REJECTIONS = True
+    # ══ [SMART QUANTUM HYBRID FILTER] ══
+    if args.smart_filter:
+        CFG.SMART_FILTER_ENABLED = True
+        log.info("[SmartFilter] Smart Quantum Hybrid Filter ENABLED")
+        log.info(f"[SmartFilter] - E_therm cap: {CFG.SMART_FILTER_MAX_E_THERM}")
+        log.info(f"[SmartFilter] - H/H_max cap: {CFG.SMART_FILTER_MAX_H_RATIO}")
+        log.info(f"[SmartFilter] - Counter-EMA max dist: {CFG.SMART_FILTER_MAX_COUNTER_EMA_DIST}σ")
+        log.info(f"[SmartFilter] - Exclude Low Efficiency Assets: {CFG.SMART_FILTER_EXCLUDE_LOW_EFFICIENCY}")
+    if args.no_smart_filter:
+        CFG.SMART_FILTER_ENABLED = False
+        log.info("[SmartFilter] Smart Quantum Hybrid Filter DISABLED")
+    if args.smart_max_e_therm is not None:
+        CFG.SMART_FILTER_MAX_E_THERM = float(args.smart_max_e_therm)
+    if args.smart_max_h_ratio is not None:
+        CFG.SMART_FILTER_MAX_H_RATIO = float(args.smart_max_h_ratio)
+    if args.smart_max_counter_dist is not None:
+        CFG.SMART_FILTER_MAX_COUNTER_EMA_DIST = float(args.smart_max_counter_dist)
+    if args.smart_no_asset_filter:
+        CFG.SMART_FILTER_EXCLUDE_LOW_EFFICIENCY = False
+        log.info("[SmartFilter] Asset Quality Gate DISABLED")
     # ══ [SINGULARITY TIMING] ══
     if args.sing_timing:
         CFG.SING_TIMING_ENABLED = True
