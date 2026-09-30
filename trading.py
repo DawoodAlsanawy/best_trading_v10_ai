@@ -12267,7 +12267,7 @@ def main():
     p.add_argument("--k-max",       type=int,   default=None)
     p.add_argument("--timeframe",
                    choices=["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
-                   default="1h")
+                   default="4h")
     p.add_argument("--history-days",       type=int,   default=None)
     p.add_argument("--no-numba", action="store_true",
                    help="Disable Numba kernels and use pure-Python fallback")
