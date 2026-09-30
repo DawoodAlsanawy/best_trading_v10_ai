@@ -12793,4 +12793,14 @@ if __name__=="__main__":
     main()
 
 # to run the project use the command 
-# python trading.py --mode backtest --capital 100 --nassets 100 --maxcon 5 --timeframe 4h --no-trailing  --no-fixed-price  --reentry-cooldown 0
+# python trading.py --mode backtest
+#  --capital 1 \
+#  --nassets 30 \
+#  --maxcon 1 \
+#  --timeframe 4h \
+#  --no-trailing \
+#  --no-fixed-price \
+#  --reentry-cooldown 8 \
+#  --sing-timing --sing-funding-guard \
+#  --rule-filter --rule-min-score 3 \
+#  --opp-tp
