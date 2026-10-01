@@ -299,7 +299,7 @@ class Config:
 #    SL_REF_KAPPA: float = 2.0             # SL/σ = κ × uncertainty / (1 + fric×5)
 #    SL_MIN_SIGMA: float = 1.0             # أدنى SL بوحدة σ
 #    SL_MAX_SIGMA: float = 5.0             # أقصى SL بوحدة σ
-    SL_REF_KAPPA: float = 4.0     # كان 2.0
+    SL_REF_KAPPA: float = 0.8     # كان 2.0
     SL_MIN_SIGMA: float = 3.0     # كان 1.0
     SL_MAX_SIGMA: float = 8.0     # كان 5.0
     N_HOURS: float = 24.0                 # نافذة الميزات (ساعات)
@@ -379,7 +379,7 @@ class Config:
     #   1.5 → moderate widening
     #   2.0 → recommended starting point
     #   2.5 → aggressive widening (fewer SL hits, larger drawdowns)
-    SL_WIDEN_MULT: float = 1.0
+    SL_WIDEN_MULT: float = 0.8
 
     # ══ [ADAPTIVE FIX #3] Tick-based penetration ══
     # WIF has 0.254 ticks/bps → 1 bps < 1 tick → orders can't fill properly.
@@ -540,7 +540,7 @@ class Config:
     PARTIAL_TP_ENABLED: bool = True
     PARTIAL_TP_R: float = 4.5           # take profit at +1R
     PARTIAL_TP_PCT: float = 0.5         # close 50% at that level
-    TP_MULT: float = 6.0    # كان 2.0 → الآن 1.5 (R:R = 1.5)
+    TP_MULT: float = 7.0    # كان 2.0 → الآن 1.5 (R:R = 1.5)
     APEX_ENABLED: bool = False    # عطّله مؤقتاً حتى نضبط عتباته
 
     # ══ [SINGULARITY TIMING LAYER 1 — EMERGING] ══
