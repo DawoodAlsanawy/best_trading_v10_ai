@@ -1,0 +1,534 @@
+██████████████████████████████████████████████████████████████████████████████
+  COMPREHENSIVE BOT ANALYSIS
+  2026-10-01 14:20:28
+██████████████████████████████████████████████████████████████████████████████
+
+✅ Extracted 345 Config fields
+
+✅ Loaded 14189 trades from trades_log_backtest.jsonl
+
+==============================================================================
+SECTION 1 — BOT CONFIGURATION (extracted from bot file)
+==============================================================================
+
+  ── Capital & Risk ──
+    INITIAL_CAPITAL              = 10.0
+    CAPITAL_FLOOR                = 0.15
+    BASE_RISK                    = 0.02
+    MIN_RISK                     = 0.01
+    MAX_RISK                     = 0.05
+    MIN_RISK_PER_TRADE           = 0.005
+    MAX_RISK_PER_TRADE           = 0.03
+    PORTFOLIO_HEAT_MAX           = 0.1
+    RISK_STRENGTH_MIN            = 0.5
+    RISK_STRENGTH_MAX            = 1.5
+    MAX_DRAWDOWN_HALT            = 1.0
+    DRAWDOWN_REDUCE_AT           = 0.3
+    DRAWDOWN_REDUCE_AT_50        = 0.5
+    DRAWDOWN_REDUCE_AT_70        = 0.7
+    REDUCED_RISK_MULT            = 0.25
+    BUDGET_ENABLED               = True
+
+  ── Leverage & Margin ──
+    LEVERAGE_BASE                = 50.0
+    LEVERAGE_MIN                 = 5
+    LEVERAGE_MAX                 = 50
+    LEVERAGE                     = 5
+    MAX_ABS_NOTIONAL             = 10000.0
+    MIN_NOTIONAL                 = 5.0
+    LIQ_ENABLED                  = True
+    LIQ_SAFETY_MULT              = 1.5
+    LIQ_FALLBACK_MMR             = 0.02
+    LIQ_EMERGENCY_PROGRESS       = 0.7
+
+  ── SL / TP ──
+    SL_REF_KAPPA                 = 0.8
+    SL_MIN_SIGMA                 = 3.0
+    SL_MAX_SIGMA                 = 8.0
+    SL_WIDEN_MULT                = 0.8
+    TP_MULT                      = 7.0
+    FRICTION_DIP_KAPPA           = 4.0
+    SL_FACTOR                    = 0.5
+
+  ── Trailing & Partial ──
+    TRAIL_ENABLED                = True
+    TRAIL_KAPPA                  = 0.3
+    TRAIL_MIN_FRAC               = 0.002
+    TRAIL_MAX_FRAC               = 0.008
+    TRAIL_ACTIVATE_AT_R          = 2.5
+    TRAIL_DYNAMIC                = True
+    PARTIAL_TP_ENABLED           = True
+    PARTIAL_TP_R                 = 4.5
+    PARTIAL_TP_PCT               = 0.5
+
+  ── Filters ──
+    MIN_SCORE                    = 3
+    FILTER_ENABLED               = False
+    FILTER_MIN_VOTES             = 2
+    REGIME_FILTER_ENABLED        = False
+    SR_FILTER_ENABLED            = False
+    RULE_FILTER_ENABLED          = False
+    RULE_MIN_SCORE               = 2
+    ML_FILTER_ENABLED            = False
+
+  ── Timeframe & Windows ──
+    timeframe                    = 1h
+    history_days                 = 730
+    N                            = 24
+    W                            = 20
+    L                            = 10
+    K_MIN                        = 4
+    K_MAX                        = 12
+    MAX_HOLD_BARS                = 168
+    REENTRY_COOLDOWN_BARS        = 3
+    REENTRY_COOLDOWN_ENABLED     = True
+    N_HOURS                      = 24.0
+    W_HOURS                      = 20.0
+    L_HOURS                      = 10.0
+    ADV_BARS                     = 24
+
+  ── Concurrency ──
+    MAX_CONCURRENT_ASSETS        = 5
+    CORRELATION_THRESHOLD        = 0.7
+
+  ── Fees ──
+    MAKER_FEE                    = 0.0002
+    TAKER_FEE                    = 0.0005
+    FUNDING_RATE_COST            = 0.0001
+    FUNDING_INTERVAL_BARS        = 8
+
+  ── Other fields (275) ──
+    ADV_HOURS                    = 24.0
+    APEX_ENABLED                 = False
+    APEX_KAPPA_ACCEL             = 0.3
+    APEX_KAPPA_ENERGY            = 0.5
+    APEX_KAPPA_PNL               = 0.5
+    APEX_SIGMA_SCALED            = True
+    ASSET_CACHE_DIR              = asset_cache
+    ASSET_CACHE_ENABLED          = True
+    ATR_PERIOD                   = 14
+    COSMOLOGICAL_CONSTANT        = 0
+    CURV_THRESHOLD               = 0.01
+    DF_FREE_E_THRESHOLD          = -0.01
+    DF_FREE_E_Z                  = -1.0
+    DH_ENTROPY_THRESHOLD         = 0.005
+    DH_ENTROPY_Z                 = -1.0
+    DH_HMM_LOWER                 = -0.01
+    DH_HMM_LOWER_Z               = -0.5
+    DH_HMM_UPPER                 = 0.01
+    DH_HMM_UPPER_Z               = 0.5
+    DYNAMIC_MIN_SCORE_ENABLED    = False
+    DYNAMIC_MIN_SCORE_Q          = 0.95
+    EMA_SPAN                     = 200
+    ENTRY_ATR_MULT               = 0.4
+    ENTRY_MAX_DIP_MULT           = 1.0
+    ENTRY_MIN_DIP_MULT           = 0.15
+    ENTRY_REGIME_EXPLOSIVE_MULT  = 1.3
+    ENTRY_REGIME_LOOKBACK        = 100
+    ENTRY_REGIME_RANGING_MULT    = 0.6
+    ENTRY_REGIME_SCALE           = True
+    ENTRY_REGIME_TRENDING_MULT   = 1.0
+    ENTRY_STRUCTURE_ANCHOR       = True
+    ENTRY_STRUCTURE_BUFFER_MULT  = 0.1
+    ENTRY_STRUCTURE_MIN_ADV_USD  = 100000000.0
+    ENTRY_STRUCTURE_RANGE_MULT_HI = 2.0
+    ENTRY_STRUCTURE_RANGE_MULT_LO = 0.3
+    ENTRY_TIME_DECAY             = False
+    ENTRY_TIME_DECAY_BARS_1      = 5
+    ENTRY_TIME_DECAY_BARS_2      = 10
+    ENTRY_TIME_DECAY_BARS_3      = 15
+    ENTRY_TIME_DECAY_BARS_4      = 20
+    ENTRY_TIME_DECAY_MULT_1      = 0.7
+    ENTRY_TIME_DECAY_MULT_2      = 0.5
+    ENTRY_TIME_DECAY_MULT_3      = 0.3
+    EPSILON                      = 1e-09
+    ERGODIC_DH_THRESHOLD         = 0.001
+    ERGODIC_DH_WINDOW            = 12
+    FAST_MONITOR_SECS            = 5.0
+    FILL_ADAPT_ENABLED           = True
+    FILL_ADAPT_WINDOW            = 20
+    FILL_ADVERSE_SELECTION_BPS   = 3.0
+    FILL_APPLY_TO_EXITS          = True
+    FILL_BOOK_DEPTH              = 20
+    FILL_ENGINE_ENABLED          = True
+    FILL_ENTRY_MAX_WAIT_BARS     = 25
+    FILL_ENTRY_MODE              = hybrid
+    FILL_KALMAN_ALPHA            = 0.15
+    FILL_LADDER_LEVELS           = 5
+    FILL_LADDER_WEIGHTS          = (0.5, 0.3, 0.2)
+    FILL_MAX_REPRICE_PER_MIN     = 40
+    FILL_MAX_WAIT_S              = 60
+
+  ── Run metadata ──
+    mode                         = backtest
+    timeframe                    = 4h
+    started_at                   = 2026-10-01 14:11:54
+    N                            = 24
+    W                            = 20
+    L                            = 10
+    K_MAX                        = 12
+    K_MIN                        = 4
+    INITIAL_CAPITAL              = 100.0
+    LEVERAGE_BASE                = 50.0
+    PO_FIXED_PRICE               = False
+
+==============================================================================
+SECTION 2 — OVERALL PERFORMANCE
+==============================================================================
+  n_trades                       14189
+  Capital start           $      100.00
+  Capital end             $  789,371.30
+  Return                    789,271.30%
+  Win rate                       21.59%
+  Profit factor                 1.5017
+  Avg win                 $      774.33
+  Avg loss                $     -141.96
+  Payoff ratio                  5.4546
+  Mean log return             0.000633
+  Std log return              0.009177
+  Max drawdown                   44.33%
+  Max DD at trade index            222
+
+==============================================================================
+SECTION 3 — SL DISTANCE (qty explosion check)
+==============================================================================
+  n                              14189
+  Mean                           6.590%
+  Std                            5.825%
+  p1                             1.238%
+  p5                             2.261%
+  p10                            2.886%
+  p25                            3.933%
+  p50                            5.485%
+  p75                            7.681%
+  p90                           10.658%
+  p95                           13.514%
+  p99                           27.895%
+
+  Distribution:
+    < 0.3%   🔴 VERY TIGHT (explosion)            11 ( 0.08%)
+    0.3-0.5% 🟠 TIGHT (warning)                   30 ( 0.21%)
+    0.5-0.8% 🟡 ACCEPTABLE                        30 ( 0.21%)
+    0.8-1.5% 🟢 NORMAL                           154 ( 1.09%)
+    1.5-3.0% 🟢 WIDE                            1393 ( 9.82%)
+    > 3.0%   ⚪ VERY WIDE                      12571 (88.60%)
+
+==============================================================================
+SECTION 4 — NOTIONAL & EFFECTIVE LEVERAGE
+==============================================================================
+  Notional n                     14189
+  Mean                    $    8,743.39
+  Median                  $   10,000.00
+  Max                     $   10,000.00
+  Min                     $       28.84
+  p90                     $   10,000.00
+  p95                     $   10,000.00
+  p99                     $   10,000.00
+
+  Notional buckets:
+    $0-50               41 ( 0.29%)
+    $50-100            162 ( 1.14%)
+    $100-200            27 ( 0.19%)
+    $200-500            72 ( 0.51%)
+    $500-1000            4 ( 0.03%)
+    $1000-5000          45 ( 0.32%)
+    > $5000 (XL)     13838 (97.53%)
+
+  Effective leverage n           14189
+  Mean                            0.06x
+  Median                          0.02x
+  Max                             2.10x
+  p90                             0.10x
+  p95                             0.19x
+  p99                             0.60x
+
+  Leverage buckets (Binance-typical limits):
+    < 10x (safe)                  14189 (100.00%)
+    10-25x (typical alts)             0 ( 0.00%)
+    25-50x (typical majors)           0 ( 0.00%)
+    50-75x (BNB max)                  0 ( 0.00%)
+    75-100x (ETH max)                 0 ( 0.00%)
+    > 100x (BTC only)                 0 ( 0.00%)
+
+  Top 10 highest-notional trades:
+    ETHFI/USDT      notional=$10,000.00 qty=8445.3640 sl=14.422% lev=0.23x
+    SUSHI/USDT      notional=$10,000.00 qty=18506.3855 sl=7.134% lev=0.20x
+    CRV/USDT        notional=$10,000.00 qty=19009.5059 sl=8.441% lev=0.19x
+    SUSHI/USDT      notional=$10,000.00 qty=18662.0640 sl=8.226% lev=0.18x
+    AVAX/USDT       notional=$10,000.00 qty=522.9603 sl=5.129% lev=0.18x
+    CRV/USDT        notional=$10,000.00 qty=19009.5059 sl=7.465% lev=0.17x
+    RARE/USDT       notional=$10,000.00 qty=276270.7210 sl=5.407% lev=0.17x
+    BCH/USDT        notional=$10,000.00 qty=17.9470 sl=3.178% lev=0.15x
+    JTO/USDT        notional=$10,000.00 qty=9423.3488 sl=3.530% lev=0.15x
+    ALT/USDT        notional=$10,000.00 qty=528314.8494 sl=3.365% lev=0.15x
+
+==============================================================================
+SECTION 5 — RISK PER TRADE (actual dollar risk)
+==============================================================================
+  n                              14189
+  Mean                    $      572.99
+  Median                  $      475.70
+  Min                     $        0.36
+  Max                     $   16,169.06
+  p5                      $      141.86
+  p25                     $      316.06
+  p75                     $      698.13
+  p95                     $    1,230.87
+  p99                     $    2,356.05
+  Max/Median ratio               33.99x
+
+==============================================================================
+SECTION 6 — WORST-CASE SEQUENCES
+==============================================================================
+  Longest losing streak   52 (at index 1127)
+    total loss            $-7,465.50
+  Longest winning streak  23
+    total win             $+21,732.67
+  Worst  10-trade window   $-1,480.10 (at index 6742)
+  Worst  20-trade window   $-2,950.10 (at index 9370)
+  Worst  50-trade window   $-7,204.21 (at index 1127)
+  Worst 100-trade window   $-9,949.68 (at index 3541)
+
+==============================================================================
+SECTION 7 — STARTING-WORST SIMULATION
+==============================================================================
+  Initial capital         $      100.00
+  Avg loss                $     -141.96
+  Worst single loss       $     -157.65
+
+  If bot STARTS with N consecutive average losses:
+    N= 3: cap=$   -325.88  dd=425.88%
+    N= 5: cap=$   -609.80  dd=709.80%
+    N=10: cap=$ -1,319.59  dd=1419.59%
+    N=15: cap=$ -2,029.39  dd=2129.39%
+    N=20: cap=$ -2,739.19  dd=2839.19%
+    N=30: cap=$ -4,158.78  dd=4258.78%
+
+  If bot STARTS with N consecutive WORST losses:
+    N= 3: cap=$   -372.95  dd=472.95%
+    N= 5: cap=$   -688.25  dd=788.25%
+    N=10: cap=$ -1,476.50  dd=1576.50%
+    N=15: cap=$ -2,264.74  dd=2364.74%
+    N=20: cap=$ -3,052.99  dd=3152.99%
+
+==============================================================================
+SECTION 8 — BUY vs SELL
+==============================================================================
+  BUY: n=6828 WR=20.39% PF=1.413 pnl=$+317,753.27 avg_win=$781.28 avg_loss=$-141.61
+  SELL: n=7361 WR=22.70% PF=1.586 pnl=$+474,592.34 avg_win=$768.55 avg_loss=$-142.29
+
+==============================================================================
+SECTION 9 — PERFORMANCE BY SCORE
+==============================================================================
+   score      n     WR%      PF     avg_pnl      total_pnl
+       3   3755  20.77%   1.454 $     51.31 $   192,678.97
+       4   2944  22.45%   1.607 $     67.00 $   197,250.81
+       5   3632  22.11%   1.538 $     58.84 $   213,722.30
+       6   3858  21.23%   1.436 $     48.91 $   188,693.53
+
+==============================================================================
+SECTION 10 — FEATURE CONDITIONAL (Q1–Q4)
+==============================================================================
+
+  E_therm
+    Q   range                       n     WR%      PF     avg_pnl
+    Q1  [  0.0013,   0.0128]   3547  20.16%   1.354 $     40.08
+    Q2  [  0.0128,   0.0168]   3547  19.79%   1.373 $     42.23
+    Q3  [  0.0168,   0.0222]   3547  22.78%   1.577 $     63.34
+    Q4  [  0.0222,   0.3282]   3548  23.62%   1.713 $     77.71
+
+  friction
+    Q   range                       n     WR%      PF     avg_pnl
+    Q1  [  0.1215,   0.1772]   3547  21.51%   1.507 $     56.82
+    Q2  [  0.1772,   0.2002]   3547  20.92%   1.443 $     49.40
+    Q3  [  0.2002,   0.2250]   3547  21.23%   1.454 $     50.56
+    Q4  [  0.2250,   0.2818]   3548  22.69%   1.604 $     66.59
+
+  H_over_Hmax
+    Q   range                       n     WR%      PF     avg_pnl
+    Q1  [ -0.0000,   0.2345]   3547  22.86%   1.621 $     68.18
+    Q2  [  0.2345,   0.3573]   3547  20.92%   1.431 $     48.17
+    Q3  [  0.3573,   0.4858]   3547  21.20%   1.464 $     51.67
+    Q4  [  0.4858,   0.8915]   3548  21.36%   1.493 $     55.35
+
+  T_info
+    Q   range                       n     WR%      PF     avg_pnl
+    Q1  [  1.2624,   3.5703]   3547  20.21%   1.359 $     40.67
+    Q2  [  3.5703,   4.3661]   3547  19.76%   1.371 $     41.95
+    Q3  [  4.3662,   5.4383]   3547  22.78%   1.575 $     63.20
+    Q4  [  5.4391,  20.0000]   3548  23.59%   1.711 $     77.55
+
+  sl_sigma
+    Q   range                       n     WR%      PF     avg_pnl
+    Q1  [  0.9141,   2.9974]   3547  20.07%   1.334 $     37.81
+    Q2  [  2.9974,   3.1690]   3547  23.46%   1.663 $     72.24
+    Q3  [  3.1691,   3.4874]   3547  22.44%   1.613 $     67.29
+    Q4  [  3.4875,  15.3779]   3548  20.38%   1.407 $     46.03
+
+  friction_drag_over_sl
+    Q   range                       n     WR%      PF     avg_pnl
+    Q1  [  0.2601,   1.1469]   3547  20.38%   1.408 $     46.08
+    Q2  [  1.1470,   1.2622]   3547  22.41%   1.610 $     66.98
+    Q3  [  1.2622,   1.3345]   3547  23.48%   1.666 $     72.55
+    Q4  [  1.3345,   4.3760]   3548  20.07%   1.333 $     37.76
+
+  dist_from_ema_norm
+    Q   range                       n     WR%      PF     avg_pnl
+    Q1  [-136.6672, -10.0673]   3547  20.75%   1.426 $     48.83
+    Q2  [-10.0644,  -4.1106]   3547  20.13%   1.388 $     44.01
+    Q3  [ -4.1097,   1.4776]   3547  23.06%   1.657 $     71.32
+    Q4  [  1.4786,  22.2905]   3548  22.41%   1.546 $     59.20
+
+  delta_gap
+    Q   range                       n     WR%      PF     avg_pnl
+    Q1  [  0.0909,   0.3591]   3547  21.31%   1.493 $     55.38
+    Q2  [  0.3591,   0.5091]   3547  22.24%   1.551 $     60.27
+    Q3  [  0.5091,   0.6591]   3547  20.21%   1.370 $     41.93
+    Q4  [  0.6591,   0.9091]   3548  22.58%   1.597 $     65.78
+
+  gauge_force
+    Q   range                       n     WR%      PF     avg_pnl
+    Q1  [  0.0744,   0.0744]   3234  21.83%   1.507 $     55.92
+    Q2  [  0.0744,   0.1053]   3234  22.26%   1.566 $     61.94
+    Q3  [  0.1053,   0.1289]   3234  19.98%   1.378 $     43.09
+    Q4  [  0.1289,   0.3329]   3234  21.52%   1.499 $     56.03
+
+  geodesic_accel
+    Q   range                       n     WR%      PF     avg_pnl
+    Q1  [ -0.2671,  -0.2057]   3547  21.45%   1.463 $     51.69
+    Q2  [ -0.2057,  -0.1158]   3547  21.34%   1.463 $     51.24
+    Q3  [ -0.1158,  -0.0301]   3547  22.61%   1.615 $     67.72
+    Q4  [ -0.0300,   0.2829]   3548  20.94%   1.467 $     52.72
+
+==============================================================================
+SECTION 11 — PER-SYMBOL (top/bottom 15)
+==============================================================================
+  Top 15:
+  symbol              n     WR%      PF            pnl
+  ADA/USDT          139  30.94%   2.641 $    21,184.08
+  PENDLE/USDT       181  25.41%   1.946 $    18,326.97
+  LISTA/USDT        179  25.14%   1.911 $    17,704.61
+  BAT/USDT          150  28.67%   2.078 $    16,663.76
+  MANA/USDT         138  28.26%   2.117 $    15,932.52
+  JTO/USDT          150  27.33%   1.948 $    14,852.93
+  BB/USDT           174  26.44%   1.799 $    14,793.78
+  ZEN/USDT          140  25.00%   1.950 $    13,986.21
+  WLD/USDT          165  22.42%   1.784 $    13,715.48
+  XLM/USDT          138  25.36%   1.949 $    13,664.33
+  AEVO/USDT         172  22.67%   1.699 $    13,473.21
+  SAND/USDT         136  25.74%   1.931 $    13,244.28
+  ETHFI/USDT        178  22.47%   1.670 $    13,209.28
+  SNX/USDT          157  22.93%   1.736 $    12,726.86
+  PYTH/USDT         158  23.42%   1.722 $    12,632.67
+
+  Bottom 15:
+  SAGA/USDT          99  20.20%   1.246 $     2,782.09
+  ATOM/USDT         156  17.95%   1.137 $     2,579.28
+  RARE/USDT         168  16.07%   1.112 $     2,266.05
+  BTC/USDT          108  19.44%   1.193 $     2,110.79
+  TRX/USDT           78  32.05%   1.290 $     1,970.06
+  QNT/USDT          156  18.59%   1.099 $     1,800.24
+  TAIKO/USDT         76  17.11%   1.193 $     1,791.34
+  CELO/USDT         157  17.83%   1.090 $     1,669.78
+  LTC/USDT          122  17.21%   1.117 $     1,599.98
+  NMR/USDT          135  16.30%   1.066 $     1,103.12
+  NEO/USDT          150  16.67%   1.010 $       188.80
+  AXS/USDT          152  15.13%   0.999 $       -18.83
+  RENDER/USDT       152  16.45%   0.986 $      -255.66
+  ANKR/USDT         144  17.36%   0.931 $    -1,208.31
+  STORJ/USDT        131  13.74%   0.914 $    -1,407.32
+
+==============================================================================
+SECTION 12 — MONTHLY
+==============================================================================
+  month          n     WR%      PF            pnl
+  2025-10     1272  23.82%   1.683 $    71,943.47
+  2025-11     1334  21.36%   1.556 $    83,877.19
+  2025-12     1359  16.63%   1.076 $    12,467.48
+  2026-01     1251  25.66%   2.001 $   135,052.36
+  2026-02     1040  31.63%   2.522 $   156,750.30
+  2026-03     1170  19.40%   1.276 $    37,818.14
+  2026-04     1113  20.13%   1.276 $    35,704.95
+  2026-05     1138  21.79%   1.498 $    64,431.67
+  2026-06     1215  18.52%   1.269 $    38,719.62
+  2026-07     1025  17.76%   1.102 $    12,584.34
+  2026-08     1157  22.56%   1.578 $    75,364.08
+  2026-09     1115  20.81%   1.528 $    67,632.01
+
+==============================================================================
+SECTION 13 — EXIT REASON DISTRIBUTION
+==============================================================================
+  reason                         n       %     avg_pnl   med_hold
+  Emergency SL               11975  84.40% $    -99.55       1.0
+  Hard TP                     2070  14.59% $    917.33       6.5
+  MaxHold                      139   0.98% $    565.64      43.0
+  EndOfData                      5   0.04% $  1,384.29      24.0
+
+==============================================================================
+SECTION 14 — MFE ANALYSIS
+==============================================================================
+
+  Winners (n=3063)
+    p10     6.111%
+    p25     7.449%
+    p50     8.595%
+    p75     9.100%
+    p90    10.195%
+    p95    11.811%
+    mean    8.762%
+    >= 0.5%:   3063 (100.00%)
+    >= 1.0%:   3063 (100.00%)
+    >= 2.0%:   3061 (99.93%)
+    >= 3.0%:   3057 (99.80%)
+    >= 5.0%:   3033 (99.02%)
+
+  Losers (n=11126)
+    p10     0.000%
+    p25     0.000%
+    p50     0.313%
+    p75     1.849%
+    p90     3.408%
+    p95     4.301%
+    mean    1.080%
+    >= 0.5%:   5176 (46.52%)
+    >= 1.0%:   4174 (37.52%)
+    >= 2.0%:   2570 (23.10%)
+    >= 3.0%:   1446 (13.00%)
+    >= 5.0%:    188 ( 1.69%)
+
+==============================================================================
+SECTION 15 — CAPITAL PROTECTION
+==============================================================================
+  Start                   $      100.00
+  Min reached             $      115.75
+  Min/Start ratio               1.1575
+  vs floor $0.15           ratio=771.66x  ok
+  vs floor $5.00           ratio= 23.15x  ok
+  vs floor $10.00          ratio= 11.57x  ok
+
+==============================================================================
+SECTION 16 — ADDITIONAL WORST-CASE STRESS
+==============================================================================
+  If starting with $1, $10, $50 instead of $100:
+    Start $    1: min reached $   1.0000 (ok)
+    Start $   10: min reached $  10.0000 (ok)
+    Start $   50: min reached $  50.0000 (ok)
+    Start $  100: min reached $ 100.0000 (ok)
+
+  Rolling 5-trade notional exposure (upper-bound estimate):
+    Max sum of 5 notionals  $   50,000.00
+    Median sum of 5         $   45,000.00
+    Max sum of 5 risks      $   19,779.36
+    Median sum of 5 risks   $    2,565.92
+
+  Largest peak-to-trough dd: 44.33%
+  Worst peak-to-trough at index 3955
+  Recovery at index 14188 (after 10233 trades)
+
+==============================================================================
+SECTION 17 — AUTOMATIC WARNINGS & FLAGS
+==============================================================================
+  1. TRAIL_ENABLED=True — causes premature exits on 4h
+  2. SL_REF_KAPPA=0.8 — likely too tight
+  3. SL_WIDEN_MULT=0.8 < 1
+  4. Longest losing streak 52 — severe
