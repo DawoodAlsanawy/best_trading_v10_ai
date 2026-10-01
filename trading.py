@@ -263,7 +263,7 @@ class Config:
     TF_SECONDS: int = 3600        # seconds per bar
     TF_HOURS: float = 1.0         # hours per bar
     # ══ [NOTIONAL CAP — anti-compounding] ══
-    MAX_ABS_NOTIONAL: float = 10_000.0     # tuned for alt liquidity
+    MAX_ABS_NOTIONAL: float = 20_000.0     # tuned for alt liquidity
     # ══ [DYNAMIC TRAILING — volatility-scaled] ══
     TRAIL_DYNAMIC: bool = True
     TRAIL_KAPPA: float = 0.30                # tuned to 1h timeframe
@@ -538,10 +538,16 @@ class Config:
     # Close PARTIAL_TP_PCT of the position at +PARTIAL_TP_R, let the
     # rest ride with trailing.
     PARTIAL_TP_ENABLED: bool = True
-    PARTIAL_TP_R: float = 4.5           # take profit at +1R
+    PARTIAL_TP_R: float = 1.6           # take profit at +1R
     PARTIAL_TP_PCT: float = 0.5         # close 50% at that level
     TP_MULT: float = 7.0    # كان 2.0 → الآن 1.5 (R:R = 1.5)
     APEX_ENABLED: bool = False    # عطّله مؤقتاً حتى نضبط عتباته
+
+    # ══ [BREAKEVEN SL — protect trades that reach +N R] ══
+    # عند تفعيل --no-trailing، يعمل هذا الميكانيزم المستقل.
+    # يحمي 30% من الصفقات التي تلمس +1R قبل الانعكاس.
+    BREAKEVEN_ENABLED: bool = True
+    BREAKEVEN_AT_R: float = 1.0
 
     # ══ [SINGULARITY TIMING LAYER 1 — EMERGING] ══
     # طبقة توقيت تكشف الرنين الكسري قبل الانفجار بدقائق وتُعجّل
@@ -4645,6 +4651,24 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                 if mfe_cand > pos.mfe_frac:
                     pos.mfe_frac = mfe_cand
 
+                # ══ [BREAKEVEN-SL] نقل SL إلى نقطة الدخول عند +1R ══
+                # الهدف: حماية الصفقات التي وصلت MFE ≥ 1R من الانعكاس الكامل.
+                # يعمل فقط إذا لم يُفعّل Trailing.
+                if not getattr(CFG, 'TRAIL_ENABLED', True) and \
+                        getattr(CFG, 'BREAKEVEN_ENABLED', True):
+                    _sl_frac_init = (pos.sl_dist_initial / pos.entry_px
+                                     if pos.entry_px > 0 and pos.sl_dist_initial > 0
+                                     else 0.01)
+                    _be_trigger_r = float(getattr(CFG, 'BREAKEVEN_AT_R', 1.0))
+                    _be_trigger_frac = _sl_frac_init * _be_trigger_r
+                    if pos.mfe_frac >= _be_trigger_frac:
+                        if sig.action == "BUY":
+                            if pos.entry_px > trail_sl:
+                                trail_sl = pos.entry_px
+                        else:
+                            if pos.entry_px < trail_sl:
+                                trail_sl = pos.entry_px
+
                 # Legacy trailing (uses sub-bar high/low as peak candidate)
                 _td = pos.trail_dist_frac if pos.trail_dist_frac > 0 else CFG.TRAIL_DISTANCE
                 _ta = pos.trail_activate_frac if pos.trail_activate_frac > 0 else CFG.TRAIL_ACTIVATE_MFE
@@ -7123,7 +7147,7 @@ def _place_protective_orders(exchange, sym: str, pos: Dict) -> bool:
         _cancel_all_protective_orders(exchange, sym)
         time.sleep(0.1)
 
-        placed = {'sl': False, 'tp': False}
+        placed = {'sl': False, 'tp': False, 'partial_tp': False}
 
         # ── SL ──
         for attempt in range(max_retries):
@@ -7157,42 +7181,106 @@ def _place_protective_orders(exchange, sym: str, pos: Dict) -> bool:
                     log.debug(f"[Prot] {sym} STOP_MARKET attempt "
                               f"{attempt+1} (reduceOnly) failed: {e2}")
 
-        # ── TP ──
-        for attempt in range(max_retries):
-            try:
-                exchange.create_order(
-                    sym, 'TAKE_PROFIT_MARKET', close_side, None, None,
-                    params={
-                        'stopPrice': tp,
-                        'closePosition': True,
-                        'workingType': wt,
-                    }
-                )
-                placed['tp'] = True
-                break
-            except Exception as e:
-                log.debug(f"[Prot] {sym} TAKE_PROFIT_MARKET attempt "
-                          f"{attempt+1} (closePosition) failed: {e}")
+        # ══ [BROKER-SIDE PARTIAL TP] ══
+        # نضع أمرين TP:
+        #   1. Partial TP عند +PARTIAL_TP_R بـ qty × PARTIAL_TP_PCT
+        #   2. Full TP عند TP_MULT بـ qty × (1 − PARTIAL_TP_PCT)
+        # هذا يجعل Partial يعمل حتى لو البوت معطّل.
+        _partial_pct = float(getattr(CFG, 'PARTIAL_TP_PCT', 0.0))
+        _partial_enabled = (
+            bool(getattr(CFG, 'PARTIAL_TP_ENABLED', False))
+            and 0.0 < _partial_pct < 1.0
+        )
+
+        _sl_dist0 = float(pos.get('sl_dist_initial') or 0.0)
+        _entry_px = float(pos.get('entry') or 0.0)
+        _partial_price = 0.0
+        if _partial_enabled and _sl_dist0 > 0 and _entry_px > 0:
+            _partial_r = float(getattr(CFG, 'PARTIAL_TP_R', 1.5))
+            if action == 'BUY':
+                _partial_price = _entry_px + _sl_dist0 * _partial_r
+            else:
+                _partial_price = _entry_px - _sl_dist0 * _partial_r
+            # تأكد أن Partial TP أدنى من Full TP في الاتجاه الصحيح
+            if action == 'BUY' and _partial_price >= tp:
+                _partial_enabled = False
+            elif action == 'SELL' and _partial_price <= tp:
+                _partial_enabled = False
+
+        _partial_qty = 0.0
+        _full_qty = qty
+        if _partial_enabled:
+            _partial_qty = qty * _partial_pct
+            _full_qty = qty * (1.0 - _partial_pct)
+
+        # ── Partial TP (broker-side) ──
+        if _partial_enabled and _partial_qty > 0:
+            for attempt in range(max_retries):
                 try:
                     exchange.create_order(
-                        sym, 'TAKE_PROFIT_MARKET', close_side, qty, None,
+                        sym, 'TAKE_PROFIT_MARKET', close_side,
+                        _partial_qty, None,
                         params={
-                            'stopPrice': tp,
+                            'stopPrice': _partial_price,
                             'reduceOnly': True,
                             'workingType': wt,
                         }
                     )
-                    placed['tp'] = True
+                    placed['partial_tp'] = True
+                    log.info(f"[Prot] {sym} PARTIAL-TP "
+                             f"@{_partial_price:.6f} "
+                             f"qty={_partial_qty:.6f} "
+                             f"({_partial_pct*100:.0f}%)")
                     break
-                except Exception as e2:
-                    log.debug(f"[Prot] {sym} TAKE_PROFIT_MARKET attempt "
-                              f"{attempt+1} (reduceOnly) failed: {e2}")
+                except Exception as e:
+                    log.debug(f"[Prot] {sym} PARTIAL-TP attempt "
+                              f"{attempt+1} failed: {e}")
 
-        if placed['sl'] and placed['tp']:
-            log.info(f"[Prot] {sym} STOP@{sl:.6f} TP@{tp:.6f} placed")
+        # ── Full TP (broker-side) ──
+        # إذا فُعِّل Partial، نضع Full TP بـ qty المتبقية (reduceOnly)
+        # وإلا نستخدم closePosition (السلوك القديم)
+        if _partial_enabled:
+            _tp_qty = _full_qty
+            _tp_close_pos = False
+        else:
+            _tp_qty = None
+            _tp_close_pos = True
+
+        for attempt in range(max_retries):
+            try:
+                params_tp = {
+                    'stopPrice': tp,
+                    'workingType': wt,
+                }
+                if _tp_close_pos:
+                    params_tp['closePosition'] = True
+                else:
+                    params_tp['reduceOnly'] = True
+                exchange.create_order(
+                    sym, 'TAKE_PROFIT_MARKET', close_side,
+                    _tp_qty, None,
+                    params=params_tp,
+                )
+                placed['tp'] = True
+                break
+            except Exception as e:
+                log.debug(f"[Prot] {sym} FULL-TP attempt "
+                          f"{attempt+1} failed: {e}")
+
+        _partial_ok = placed['partial_tp'] or not _partial_enabled
+        if placed['sl'] and placed['tp'] and _partial_ok:
+            if _partial_enabled:
+                log.info(f"[Prot] {sym} STOP@{sl:.6f} "
+                         f"PARTIAL-TP@{_partial_price:.6f} "
+                         f"FULL-TP@{tp:.6f} placed")
+            else:
+                log.info(f"[Prot] {sym} STOP@{sl:.6f} "
+                         f"TP@{tp:.6f} placed")
             return True
-        log.warning(f"[Prot] {sym} partial: sl={placed['sl']} tp={placed['tp']}")
-        return placed['sl'] and placed['tp']
+        log.warning(f"[Prot] {sym} partial: sl={placed['sl']} "
+                    f"tp={placed['tp']} partial={placed['partial_tp']}")
+        return (placed['sl'] and placed['tp']
+                and (placed['partial_tp'] or not _partial_enabled))
     except Exception as e:
         log.warning(f"[Prot] {sym} place_protective_orders fatal: {e}")
         return False
@@ -11309,12 +11397,19 @@ def run_live(cfg, exchange):
                                     reduce_only=True,
                                 )
                                 if (_res_p.get('filled_qty') or 0) > 0:
-                                    pos['qty'] = float(pos['qty']) - float(_res_p['filled_qty'])
+                                    _filled_q = float(_res_p['filled_qty'])
+                                    _avg_px = float(_res_p['avg_price'])
+                                    # ══ [FIX] احسب ربح الجزء المُغلق ══
+                                    if pos['action'] == "BUY":
+                                        _partial_net = (_avg_px - float(pos['entry'])) * _filled_q
+                                    else:
+                                        _partial_net = (float(pos['entry']) - _avg_px) * _filled_q
+                                    pos['_partial_pnl'] = float(pos.get('_partial_pnl', 0.0)) + _partial_net
+                                    pos['qty'] = float(pos['qty']) - _filled_q
                                     pos['_partial_taken'] = True
-                                    pos['_partial_pnl'] = float(pos.get('_partial_pnl', 0.0))
                                     log.info(f"[PartialTP] {sym} closed "
-                                             f"{_pct*100:.0f}% @ "
-                                             f"{_res_p['avg_price']:.6f} "
+                                             f"{_pct*100:.0f}% @ {_avg_px:.6f} "
+                                             f"net=${_partial_net:+.4f} "
                                              f"remaining={pos['qty']:.6f}")
                                     # Persist state
                                     try:
