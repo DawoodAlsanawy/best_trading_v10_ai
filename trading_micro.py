@@ -103,18 +103,18 @@ class Config:
 
     # ══ التعديل ①: Kelly الجيوديسي (f* = |accel|/Γ × e^{-λT}) ════════════
     # تفرد كيلي المخمد (Sigmoid Limits)
-    BASE_RISK: float = 0.02       
-    MIN_RISK:  float = 0.01       
-    MAX_RISK:  float = 0.05       # أقصى مخاطرة 5% لحماية الجسيم الصغير
+    BASE_RISK: float = 0.10
+    MIN_RISK:  float = 0.08       
+    MAX_RISK:  float = 0.18       # أقصى مخاطرة 5% لحماية الجسيم الصغير
     LAMBDA_KELLY: float = 0.05    # تخميد (سيصبح ديناميكياً)
     KELLY_SCALE: float = 0.50     # مقياس التحويل (تم رفعه إلى 0.50)
     RISK_PER_TRADE: float = 0.15
 
-    LEVERAGE_BASE: float = 50.0   # نبدأ بـ 50x بقوة دفع هائلة
-    LEVERAGE_MIN: int = 5
-    LEVERAGE_MAX: int = 50
+    LEVERAGE_BASE: float = 20.0   # نبدأ بـ 50x بقوة دفع هائلة
+    LEVERAGE_MIN: int = 10
+    LEVERAGE_MAX: int = 20
     LEVERAGE: int = 5
-    INITIAL_CAPITAL: float = 10.0 # الانطلاق بـ 10$
+    INITIAL_CAPITAL: float = 1.0 # الانطلاق بـ 10$
     CAPITAL_FLOOR: float = 0.15    # قوة التنافر اللانهائية (نقطة استحالة التصفية)
     # ══ [REALISTIC FEES — Binance USDT-M Futures VIP0] ══
     # Maker: 0.020% (orders that add liquidity: entry GTX, exit post-only)
@@ -132,14 +132,14 @@ class Config:
     FUNDING_INTERVAL_BARS: int = 8
 
     MAX_DRAWDOWN_HALT: float   = 1.00
-    REDUCED_RISK_MULT: float   = 0.25
+    REDUCED_RISK_MULT: float   = 0.30
     REDUCED_RISK_MULT_50: float= 0.10
     REDUCED_RISK_MULT_70: float= 0.05
     DRAWDOWN_REDUCE_AT:  float = 0.30
     DRAWDOWN_REDUCE_AT_50: float=0.50
     DRAWDOWN_REDUCE_AT_70: float=0.70
 
-    MAX_CONCURRENT_ASSETS: int   = 5
+    MAX_CONCURRENT_ASSETS: int   = 1
     CORRELATION_THRESHOLD: float = 0.70
 
     MAX_HOLD_BARS: int = 168
@@ -241,11 +241,11 @@ class Config:
     TRAIL_MIN_STEP: float = 0.0005       # only move SL if improvement ≥ 0.05%
 
     # ══ [PORTFOLIO RISK BUDGET] ══
-    PORTFOLIO_HEAT_MAX: float = 0.10       # 10% total risk-at-SL across all slots
+    PORTFOLIO_HEAT_MAX: float = 0.40       # 10% total risk-at-SL across all slots
     RISK_STRENGTH_MIN: float = 0.50        # weakest signal → 0.5 × base_per_slot
     RISK_STRENGTH_MAX: float = 1.50        # strongest signal → 1.5 × base_per_slot
-    MIN_RISK_PER_TRADE: float = 0.005      # 0.5% floor (skip if below)
-    MAX_RISK_PER_TRADE: float = 0.030      # 3.0% ceiling per trade
+    MIN_RISK_PER_TRADE: float = 0.10      # 0.5% floor (skip if below)
+    MAX_RISK_PER_TRADE: float = 0.20      # 3.0% ceiling per trade
     BUDGET_ENABLED: bool = True            # master switch
     # ══ [STATE MACHINE — Persistent Symbol Metadata] ══
     SYMBOL_META_FILE: str = "symbol_meta"
@@ -263,7 +263,7 @@ class Config:
     TF_SECONDS: int = 3600        # seconds per bar
     TF_HOURS: float = 1.0         # hours per bar
     # ══ [NOTIONAL CAP — anti-compounding] ══
-    MAX_ABS_NOTIONAL: float = 20_000.0     # tuned for alt liquidity
+    MAX_ABS_NOTIONAL: float = 20.0     # tuned for alt liquidity
     # ══ [DYNAMIC TRAILING — volatility-scaled] ══
     TRAIL_DYNAMIC: bool = True
     TRAIL_KAPPA: float = 0.30                # tuned to 1h timeframe
@@ -299,7 +299,7 @@ class Config:
 #    SL_REF_KAPPA: float = 2.0             # SL/σ = κ × uncertainty / (1 + fric×5)
 #    SL_MIN_SIGMA: float = 1.0             # أدنى SL بوحدة σ
 #    SL_MAX_SIGMA: float = 5.0             # أقصى SL بوحدة σ
-    SL_REF_KAPPA: float = 0.8     # كان 2.0
+    SL_REF_KAPPA: float = 4.0     # كان 2.0
     SL_MIN_SIGMA: float = 3.0     # كان 1.0
     SL_MAX_SIGMA: float = 8.0     # كان 5.0
     N_HOURS: float = 24.0                 # نافذة الميزات (ساعات)
@@ -538,9 +538,9 @@ class Config:
     # Close PARTIAL_TP_PCT of the position at +PARTIAL_TP_R, let the
     # rest ride with trailing.
     PARTIAL_TP_ENABLED: bool = True
-    PARTIAL_TP_R: float = 3.0           # take profit at +1R
+    PARTIAL_TP_R: float = 1.5           # take profit at +1R
     PARTIAL_TP_PCT: float = 0.50         # close 50% at that level
-    TP_MULT: float = 5.0    # كان 2.0 → الآن 1.5 (R:R = 1.5)
+    TP_MULT: float = 2.0    # كان 2.0 → الآن 1.5 (R:R = 1.5)
     APEX_ENABLED: bool = False    # عطّله مؤقتاً حتى نضبط عتباته
 
     # ══ [BREAKEVEN SL — protect trades that reach +N R] ══
@@ -650,6 +650,12 @@ class Config:
     )
     WATCH_OFFSET_MAX_BPS: float = 30.0
     WATCH_OFFSET_MIN_BPS: float = 1.0
+    # ══ [MIN_NOTIONAL BUMP — رأس مال مجهري] ══
+    # إذا كان qty × price < MIN_NOTIONAL، حاول رفع qty.
+    # لكن فقط إذا لم يزد المخاطرة عن MIN_NOTIONAL_RISK_CAP.
+    MICRO_BUMP_ENABLED: bool = True
+    MIN_NOTIONAL_RISK_CAP: float = 0.20   # 20% أقصى مخاطرة عند bump
+
 
 CFG = Config()
 
@@ -3430,18 +3436,42 @@ def _check_unified_stage2(sig, ad, current_ci, current_fi, cfg):
     except Exception as e:
         return False, f"error:{e}", 0.0
 
+#def compute_dynamic_leverage(capital, cfg):
+#    """
+#    ③ الرافعة الديناميكية تتناقص مع نمو رأس المال:
+#    
+#    Lev(C) = LEVERAGE_BASE / √(C / C₀)
+#    
+#    فيزيائياً: الجسيم الأثقل (رأس مال أكبر) يتجاهل التقلبات الصغيرة
+#    → رافعة أقل تعني حماية أكثر عند نمو الثروة.
+#    """
+#    C0 = cfg.INITIAL_CAPITAL
+#    lev = cfg.LEVERAGE_BASE / np.sqrt(max(capital / C0, 1.0))
+#    return int(np.clip(round(lev), cfg.LEVERAGE_MIN, cfg.LEVERAGE_MAX))
+
+
 def compute_dynamic_leverage(capital, cfg):
     """
-    ③ الرافعة الديناميكية تتناقص مع نمو رأس المال:
-    
-    Lev(C) = LEVERAGE_BASE / √(C / C₀)
-    
-    فيزيائياً: الجسيم الأثقل (رأس مال أكبر) يتجاهل التقلبات الصغيرة
-    → رافعة أقل تعني حماية أكثر عند نمو الثروة.
+    [MICRO-FIX] عند C0 صغير، نضمن رافعة كافية للوصول إلى MIN_NOTIONAL.
     """
     C0 = cfg.INITIAL_CAPITAL
     lev = cfg.LEVERAGE_BASE / np.sqrt(max(capital / C0, 1.0))
-    return int(np.clip(round(lev), cfg.LEVERAGE_MIN, cfg.LEVERAGE_MAX))
+    lev = int(np.clip(round(lev), cfg.LEVERAGE_MIN, cfg.LEVERAGE_MAX))
+    
+    # ══ [MICRO-FLOOR] ══
+    # تأكد أن leverage × capital ≥ MIN_NOTIONAL × 1.5 (هامش أمان)
+    _min_notional = float(getattr(cfg, 'MIN_NOTIONAL', 5.0))
+    if capital > 0:
+        _min_lev_needed = int(np.ceil(
+            _min_notional * 1.5 / capital
+        ))
+        if lev < _min_lev_needed:
+            log.debug(f"[Micro-Lev] raise {lev}→{_min_lev_needed}x "
+                      f"(cap=${capital:.2f})")
+            lev = min(_min_lev_needed, cfg.LEVERAGE_MAX)
+    
+    return int(lev)
+
 
 # ════════════════════════════════════════════════════════════════
 # § 12.9  Support/Resistance Detection
@@ -9371,6 +9401,15 @@ def monitor_watch_signals(exchange, open_pos_live: Dict,
             continue
 
         _qty = float(rec.get('qty', 0.0) or 0.0)
+
+        # ══ [MICRO-CHECK] ══
+        _notional_w = _qty * float(rec.get('tunnel_entry_p', 0))
+        if _notional_w < float(getattr(CFG, 'MIN_NOTIONAL', 5.0)):
+            log.debug(f"[Micro] {sym} watch skip: "
+                      f"notional ${_notional_w:.2f} < MIN_NOTIONAL")
+            _WATCHED_SIGNALS.pop(sym, None)
+            continue
+
         _leverage = int(rec.get('leverage', 0) or 0)
         if _qty <= 0 or _leverage <= 0:
             log.warning(f"[Watch] {sym} qty/lev missing — dropping")
@@ -9545,6 +9584,23 @@ def _promote_pending_to_position(exchange, sym: str, rec: Dict,
     total_qty = float(rec.get('qty') or 0.0)
     entry_price = float(rec.get('avg_price') or rec.get('price') or 0.0)
     if filled_qty <= 0 or entry_price <= 0 or total_qty <= 0:
+        return False
+
+    # ══ [MICRO-VALIDATION] ══
+    # تأكد أن notional المُملَّأ ≥ MIN_NOTIONAL
+    _actual_notional = filled_qty * entry_price
+    if _actual_notional < float(getattr(CFG, 'MIN_NOTIONAL', 5.0)):
+        log.warning(
+            f"[Micro] {sym} filled notional "
+            f"${_actual_notional:.2f} < "
+            f"${getattr(CFG, 'MIN_NOTIONAL', 5.0)} — closing"
+        )
+        try:
+            close_side = 'sell' if rec['action'] == 'BUY' else 'buy'
+            exchange.create_order(sym, 'market', close_side, filled_qty,
+                                   params={'reduceOnly': True})
+        except Exception as e:
+            log.error(f"[Micro] close failed {sym}: {e}")
         return False
 
     fill_ratio = filled_qty / total_qty
@@ -11961,8 +12017,38 @@ def run_live(cfg, exchange):
                     # ══ [NOTIONAL CAP] ══
                     qty = cap_notional(qty, lmt)
 
-                    if qty * lmt < cfg.MIN_NOTIONAL:
-                        continue
+                    # ══ [MICRO-CAPITAL BUMP] ══
+                    _notional_now = qty * lmt
+                    if _notional_now < cfg.MIN_NOTIONAL:
+                        if getattr(CFG, 'MICRO_BUMP_ENABLED', True):
+                            # نحاول رفع qty إلى MIN_NOTIONAL
+                            _min_qty_needed = cfg.MIN_NOTIONAL / lmt
+                            # تحقق: هل هذا يخلق مخاطرة مقبولة؟
+                            _risk_with_bump = _min_qty_needed * delta
+                            _equity_base_bump = max(
+                                cap_live - cfg.CAPITAL_FLOOR, 1e-9
+                            )
+                            _risk_frac_bump = _risk_with_bump / _equity_base_bump
+                            _max_bump = float(getattr(
+                                CFG, 'MIN_NOTIONAL_RISK_CAP', 0.20
+                            ))
+                            if _risk_frac_bump <= _max_bump:
+                                qty = _min_qty_needed
+                                sig.dynamic_risk = float(_risk_frac_bump)
+                                log.info(
+                                    f"[Micro] {sym} qty bumped to reach "
+                                    f"MIN_NOTIONAL=${cfg.MIN_NOTIONAL} "
+                                    f"(risk={_risk_frac_bump*100:.1f}%)"
+                                )
+                            else:
+                                log.debug(
+                                    f"[Micro] {sym} skip: bump would need "
+                                    f"{_risk_frac_bump*100:.1f}% risk "
+                                    f"> {_max_bump*100:.0f}% cap"
+                                )
+                                continue
+                        else:
+                            continue
 
                     # Store effective risk for heat tracking
                     sig.dynamic_risk = float(risk_frac)
