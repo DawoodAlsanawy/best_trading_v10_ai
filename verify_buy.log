@@ -1,0 +1,99 @@
+██████████████████████████████████████████████████████████████████████████████████████████
+  GAUGE FILTER — FINAL VALIDATION
+  File: trades_BUY_only.jsonl
+  Date: 2026-10-02 19:23:23
+██████████████████████████████████████████████████████████████████████████████████████████
+
+Loaded 2,146 trades
+
+==========================================================================================
+SECTION 1 — CONFIGURATION DIAGNOSIS
+==========================================================================================
+  mode                      = backtest
+  timeframe                 = 4h
+  INITIAL_CAPITAL           = 100.0
+  N                         = 24
+  W                         = 20
+  L                         = 10
+  K_MIN                     = 16
+  K_MAX                     = 25
+  LEVERAGE_BASE             = 50.0
+  PO_FIXED_PRICE            = False
+  started_at                = 2026-10-02 19:20:32
+
+  ⚠️  dynamic_k غير موجود في السجل
+
+==========================================================================================
+SECTION 2 — GAUGE DECILE ANALYSIS (BUY vs SELL)
+==========================================================================================
+
+  ── BUY (n=2146) ──
+  Decile          n      avg_pnl     WR%          total
+  -------------------------------------------------------
+  D1            880 $      0.01   25.9% $          13
+  D5            540 $     -0.14   23.7% $         -75
+  D7            327 $      0.02   22.9% $           6
+  D9            282 $      0.09   22.3% $          25
+  D10           117 $      0.02   27.4% $           2
+
+==========================================================================================
+SECTION 3 — FILTER THRESHOLD COMPARISON
+==========================================================================================
+
+  BASELINE (no filter):
+    n=2146, avg=$-0.01, WR=24.5%, PF=0.977, Sharpe=-0.071
+
+  ── ALL ACTIONS (n=2146) ──
+  Threshold                 n      avg_pnl     WR%      PF   Sharpe          total
+  ------------------------------------------------------------------------------
+  all                    1266 $     -0.03   23.5%  0.942  -0.178 $         -41
+  top 50%                 726 $      0.05   23.4%  1.081   0.228 $          34
+  top 40%                 726 $      0.05   23.4%  1.081   0.228 $          34
+  top 30%                 399 $      0.07   23.8%  1.126   0.356 $          27
+  top 20%                 399 $      0.07   23.8%  1.126   0.356 $          27
+  top 10%                 117 $      0.02   27.4%  1.053   0.170 $           2
+
+  ── BUY ONLY (n=2146) ──
+  Threshold                 n      avg_pnl     WR%      PF   Sharpe          total
+  ------------------------------------------------------------------------------
+  all                    1266 $     -0.03   23.5%  0.942  -0.178 $         -41
+  top 50%                 726 $      0.05   23.4%  1.081   0.228 $          34
+  top 40%                 726 $      0.05   23.4%  1.081   0.228 $          34
+  top 30%                 399 $      0.07   23.8%  1.126   0.356 $          27
+  top 20%                 399 $      0.07   23.8%  1.126   0.356 $          27
+  top 10%                 117 $      0.02   27.4%  1.053   0.170 $           2
+
+==========================================================================================
+SECTION 4 — TIME PERIOD VALIDATION (threshold = p60)
+==========================================================================================
+Traceback (most recent call last):
+  File "/home/kali/all/projects/AI/best_trading_v10_ai/test_gauge_filter_final.py", line 511, in <module>
+    main()
+    ~~~~^^
+  File "/home/kali/all/projects/AI/best_trading_v10_ai/test_gauge_filter_final.py", line 502, in main
+    section_time_periods(feat, threshold_pct=0.60)
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kali/all/projects/AI/best_trading_v10_ai/test_gauge_filter_final.py", line 303, in section_time_periods
+    thr_sell = np.percentile(feat["gauge"][feat["action"] == "SELL"],
+                             threshold_pct * 100)
+  File "/home/kali/all/projects/AI/quantum_bot2/venv/lib/python3.14/site-packages/numpy/lib/_function_base_impl.py", line 4258, in percentile
+    return _quantile_unchecked(
+        a, q, axis, out, overwrite_input, method, keepdims, weights, weak_q)
+  File "/home/kali/all/projects/AI/quantum_bot2/venv/lib/python3.14/site-packages/numpy/lib/_function_base_impl.py", line 4522, in _quantile_unchecked
+    return _ureduce(a,
+                    func=_quantile_ureduce_func,
+    ...<6 lines>...
+                    method=method,
+                    weak_q=weak_q)
+  File "/home/kali/all/projects/AI/quantum_bot2/venv/lib/python3.14/site-packages/numpy/lib/_function_base_impl.py", line 3892, in _ureduce
+    r = func(a, **kwargs)
+  File "/home/kali/all/projects/AI/quantum_bot2/venv/lib/python3.14/site-packages/numpy/lib/_function_base_impl.py", line 4681, in _quantile_ureduce_func
+    result = _quantile(arr,
+                       quantiles=q,
+    ...<3 lines>...
+                       weights=wgt,
+                       weak_q=weak_q)
+  File "/home/kali/all/projects/AI/quantum_bot2/venv/lib/python3.14/site-packages/numpy/lib/_function_base_impl.py", line 4805, in _quantile
+    slices_having_nans = np.isnan(arr[-1, ...])
+                                  ~~~^^^^^^^^^
+IndexError: index -1 is out of bounds for axis 0 with size 0

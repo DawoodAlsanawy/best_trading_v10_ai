@@ -1,0 +1,26 @@
+trades with sl_dist_initial>0: 7469   overall meanR_final=-0.131  medR=-1.043
+
+== by exit_reason ==
+                     n  share%  meanR   medR  sum_px_pnl$  hold_med
+exit_reason                                                        
+Emergency SL 6,667.000  89.262 -0.697 -1.045 -152,205.892     2.000
+Hard TP        709.000   9.493  4.918  4.901   60,927.403     8.000
+MaxHold         89.000   1.192  2.192  2.140    2,571.075    43.000
+EndOfData        4.000   0.054 -2.800 -0.216   -2,236.981    11.000 
+
+== by action ==
+               n  share%  meanR   medR  sum_px_pnl$  hold_med
+action                                                       
+BUY    5,580.000  74.709 -0.165 -1.043  -60,888.000     2.000
+SELL   1,889.000  25.291 -0.030 -0.089  -30,056.395     3.000 
+
+== chronological quarters (by entry_time) ==
+                n  share%  meanR   medR  sum_px_pnl$  hold_med
+quarter                                                       
+Q1      1,868.000  25.010 -0.233 -1.043     -500.136     2.000
+Q2      1,867.000  24.997 -0.096 -1.043   -1,821.559     3.000
+Q3      1,867.000  24.997 -0.138 -1.045  -10,660.804     3.000
+Q4      1,867.000  24.997 -0.057 -1.043  -77,961.897     3.000 
+
+EndOfData: n=4  sum_px_pnl=$-2,236.98  worst R=-12.20
+R_final >= 3 (partial level): 9.77%   R_final >= 5 (hard TP): 0.00%   R_final <= -1: 55.20%
