@@ -135,9 +135,9 @@ class Config:
     REDUCED_RISK_MULT: float   = 0.25
     REDUCED_RISK_MULT_50: float= 0.10
     REDUCED_RISK_MULT_70: float= 0.05
-    DRAWDOWN_REDUCE_AT:  float = 0.15   # [ABL3c] 0.30 -> 0.15
-    DRAWDOWN_REDUCE_AT_50: float=0.30   # [ABL3c] 0.50 -> 0.30
-    DRAWDOWN_REDUCE_AT_70: float=0.50   # [ABL3c] 0.70 -> 0.50
+    DRAWDOWN_REDUCE_AT:  float = 0.30
+    DRAWDOWN_REDUCE_AT_50: float=0.50
+    DRAWDOWN_REDUCE_AT_70: float=0.70
 
     MAX_CONCURRENT_ASSETS: int   = 5
     CORRELATION_THRESHOLD: float = 0.70
@@ -241,7 +241,7 @@ class Config:
     TRAIL_MIN_STEP: float = 0.0005       # only move SL if improvement ≥ 0.05%
 
     # ══ [PORTFOLIO RISK BUDGET] ══
-    PORTFOLIO_HEAT_MAX: float = 0.10       # 10% total risk-at-SL across all slots
+    PORTFOLIO_HEAT_MAX: float = 0.05       # [ABL3a] 10% -> 5% total risk-at-SL
     RISK_STRENGTH_MIN: float = 0.50        # weakest signal → 0.5 × base_per_slot
     RISK_STRENGTH_MAX: float = 1.50        # strongest signal → 1.5 × base_per_slot
     MIN_RISK_PER_TRADE: float = 0.005      # 0.5% floor (skip if below)
