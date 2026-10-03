@@ -274,7 +274,7 @@ class Config:
     TRAIL_ACT_MAX_FRAC: float = 0.012
     # ══ [SIGMA-SCALED APEX] ══
     APEX_SIGMA_SCALED: bool = True
-    APEX_KAPPA_PNL: float = 0.5
+    APEX_KAPPA_PNL: float = 2.0   # [ABL7b]
     APEX_KAPPA_ENERGY: float = 0.5
     APEX_KAPPA_ACCEL: float = 0.3
     # ══ [RULE-BASED FILTER] ══
