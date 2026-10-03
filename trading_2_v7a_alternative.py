@@ -657,7 +657,7 @@ class Config:
     # النتيجة: SELL يحتاج عتبة عالية جداً أو إلغاء كامل
     GAUGE_FILTER_ENABLED: bool = True
     GAUGE_PERCENTILE_BUY: float = 0.60
-    GAUGE_PERCENTILE_SELL: float = 0.95   # [ABL8b] 0.85 -> 0.95
+    GAUGE_PERCENTILE_SELL: float = 0.85
     GAUGE_MIN_SAMPLES: int = 500       # أدنى عينة لحساب percentile
     GAUGE_DISABLE_SELL: bool = False   # True → BUY-only mode
 
