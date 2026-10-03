@@ -538,7 +538,7 @@ class Config:
     # Close PARTIAL_TP_PCT of the position at +PARTIAL_TP_R, let the
     # rest ride with trailing.
     PARTIAL_TP_ENABLED: bool = True
-    PARTIAL_TP_R: float = 1.5           # [ABL4a] 3.0 -> 1.5
+    PARTIAL_TP_R: float = 3.0           # take profit at +1R
     PARTIAL_TP_PCT: float = 0.50         # close 50% at that level
     TP_MULT: float = 5.0    # كان 2.0 → الآن 1.5 (R:R = 1.5)
     APEX_ENABLED: bool = False    # عطّله مؤقتاً حتى نضبط عتباته
@@ -547,7 +547,7 @@ class Config:
     # عند تفعيل --no-trailing، يعمل هذا الميكانيزم المستقل.
     # يحمي 30% من الصفقات التي تلمس +1R قبل الانعكاس.
     BREAKEVEN_ENABLED: bool = True
-    BREAKEVEN_AT_R: float = 1.0
+    BREAKEVEN_AT_R: float = 0.5   # [ABL4b] 1.0 -> 0.5
 
     # ══ [SINGULARITY TIMING LAYER 1 — EMERGING] ══
     # طبقة توقيت تكشف الرنين الكسري قبل الانفجار بدقائق وتُعجّل
