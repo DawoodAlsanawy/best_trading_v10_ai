@@ -139,7 +139,7 @@ class Config:
     DRAWDOWN_REDUCE_AT_50: float=0.30   # [ABL3c] 0.50 -> 0.30
     DRAWDOWN_REDUCE_AT_70: float=0.50   # [ABL3c] 0.70 -> 0.50
 
-    MAX_CONCURRENT_ASSETS: int   = 3   # [ABL6] 5 -> 3
+    MAX_CONCURRENT_ASSETS: int   = 5
     CORRELATION_THRESHOLD: float = 0.70
 
     MAX_HOLD_BARS: int = 168
@@ -379,7 +379,7 @@ class Config:
     #   1.5 → moderate widening
     #   2.0 → recommended starting point
     #   2.5 → aggressive widening (fewer SL hits, larger drawdowns)
-    SL_WIDEN_MULT: float = 1.5
+    SL_WIDEN_MULT: float = 2.0   # [ABL4f] 1.5 -> 2.0 (wider SL)
 
     # ══ [ADAPTIVE FIX #3] Tick-based penetration ══
     # WIF has 0.254 ticks/bps → 1 bps < 1 tick → orders can't fill properly.

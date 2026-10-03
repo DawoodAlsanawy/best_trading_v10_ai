@@ -139,7 +139,7 @@ class Config:
     DRAWDOWN_REDUCE_AT_50: float=0.30   # [ABL3c] 0.50 -> 0.30
     DRAWDOWN_REDUCE_AT_70: float=0.50   # [ABL3c] 0.70 -> 0.50
 
-    MAX_CONCURRENT_ASSETS: int   = 3   # [ABL6] 5 -> 3
+    MAX_CONCURRENT_ASSETS: int   = 5
     CORRELATION_THRESHOLD: float = 0.70
 
     MAX_HOLD_BARS: int = 168

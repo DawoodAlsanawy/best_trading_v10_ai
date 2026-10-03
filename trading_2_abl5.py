@@ -139,8 +139,8 @@ class Config:
     DRAWDOWN_REDUCE_AT_50: float=0.30   # [ABL3c] 0.50 -> 0.30
     DRAWDOWN_REDUCE_AT_70: float=0.50   # [ABL3c] 0.70 -> 0.50
 
-    MAX_CONCURRENT_ASSETS: int   = 3   # [ABL6] 5 -> 3
-    CORRELATION_THRESHOLD: float = 0.70
+    MAX_CONCURRENT_ASSETS: int   = 5
+    CORRELATION_THRESHOLD: float = 0.50   # [ABL5] 0.70 -> 0.50
 
     MAX_HOLD_BARS: int = 168
 
@@ -5115,6 +5115,8 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
     _tf_sec = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
     _sim_live = bool(getattr(CFG, 'SIMULATE_LIVE_FAITHFULLY', False))
 
+    _CORR_DIAG = {'checks': 0, 'rejects': 0, 'max_seen': 0.0, 'worst_pair': None}
+
     if _sim_live:
         _live_wait_cap_s = float(getattr(CFG, 'PO_MAX_WAIT_S', 0) or 0)
         if _live_wait_cap_s > 0:
@@ -5295,12 +5297,18 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
 
         if len(open_pos) >= CFG.MAX_CONCURRENT_ASSETS: continue
 
-        # تجنب التداخل الطيفي (منع الصفقات المترابطة إحصائياً)
-        too_corr = any(
-            abs(corr_matrix.get((sym, s), 0.)) > CFG.CORRELATION_THRESHOLD
-            for s in open_pos
-        )
-        if too_corr: continue
+        # ══ [CORR-DIAG] ══
+        if len(open_pos) > 0:
+            _rvals = [abs(corr_matrix.get((sym, s), 0.)) for s in open_pos]
+            _mx = max(_rvals) if _rvals else 0.0
+            _CORR_DIAG['checks'] += 1
+            if _mx > _CORR_DIAG['max_seen']:
+                _CORR_DIAG['max_seen'] = _mx
+                _CORR_DIAG['worst_pair'] = (sym, list(open_pos.keys()))
+            if _mx > CFG.CORRELATION_THRESHOLD:
+                _CORR_DIAG['rejects'] += 1
+                continue
+        # ══ [/CORR-DIAG] ══
 
         ad = assets[sym]
 
@@ -5538,6 +5546,12 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         _advance(pos, ad, len(ad.closes) - 1, partial_cb=_partial_tp)
         ep = ad.closes[-1]
         _close(pos, ad, ep, "EndOfData", len(ad.closes)-1)
+
+    log.info(f"[CorrDiag] checks={_CORR_DIAG['checks']}, "
+             f"rejects={_CORR_DIAG['rejects']}, "
+             f"max_ρ_seen={_CORR_DIAG['max_seen']:.4f}, "
+             f"threshold={CFG.CORRELATION_THRESHOLD}, "
+             f"worst_pair={_CORR_DIAG['worst_pair']}")
 
     return trades_out, equity
 

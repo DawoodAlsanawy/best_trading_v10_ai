@@ -139,7 +139,7 @@ class Config:
     DRAWDOWN_REDUCE_AT_50: float=0.30   # [ABL3c] 0.50 -> 0.30
     DRAWDOWN_REDUCE_AT_70: float=0.50   # [ABL3c] 0.70 -> 0.50
 
-    MAX_CONCURRENT_ASSETS: int   = 3   # [ABL6] 5 -> 3
+    MAX_CONCURRENT_ASSETS: int   = 5
     CORRELATION_THRESHOLD: float = 0.70
 
     MAX_HOLD_BARS: int = 168
@@ -547,7 +547,7 @@ class Config:
     # عند تفعيل --no-trailing، يعمل هذا الميكانيزم المستقل.
     # يحمي 30% من الصفقات التي تلمس +1R قبل الانعكاس.
     BREAKEVEN_ENABLED: bool = True
-    BREAKEVEN_AT_R: float = 1.0
+    BREAKEVEN_AT_R: float = 0.5   # [ABL4e] combined with PT=1.5
 
     # ══ [SINGULARITY TIMING LAYER 1 — EMERGING] ══
     # طبقة توقيت تكشف الرنين الكسري قبل الانفجار بدقائق وتُعجّل
