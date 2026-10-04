@@ -1,6 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
+═══════════════════════════════════════════════════════════════════════
+  TRADING R&D — SELL-ONLY
+═══════════════════════════════════════════════════════════════════════
+
+  ⚠️  هذا ملف البحث والتطوير.
+  ⚠️  لا تستخدمه في الإنتاج. استخدم: trading_prod_buy_only.py
+  ⚠️  BUY مُعطَّل تماماً. فقط SELL يُنتج إشارات.
+
+  الهدف:
+    • إيجاد أفضل إعداد لـ SELL حصراً.
+    • عندما يصل SELL لأداء مُرضي (Min Sharpe ≥ 1.55)،
+      ندمجه في production بعد اختبار دقيق.
+
+  تاريخ الإنشاء: 2026-10-04 21:34:44
+  المصدر: trading_2.py
+
+═══════════════════════════════════════════════════════════════════════
+"""
+
+"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║      محرك التداول الثرموديناميكي الكمي – الإصدار 6.1 (محرك التفرد المطور)    ║
 ║    Quantum Thermodynamic Trading Engine – v6.1  (Singularity Engine)         ║
@@ -686,7 +706,8 @@ class Config:
     # ══ [SELL-RND] معاملات بحث SELL المستقل ══
     # عند SELL_ENABLED=False، هذا كله غير مفعّل.
     # BUY غير متأثر إطلاقاً.
-    SELL_ENABLED: bool = False              # master switch
+    SELL_ENABLED: bool = True               # [SELL-ONLY R&D] on
+    BUY_DISABLED: bool = True               # [SELL-ONLY R&D] BUY off
     SELL_MIN_SCORE: int = 3                 # independent from BUY
     SELL_MIN_ZDEV: float = 1.5              # independent from BUY
     SELL_GAUGE_PCT: float = 0.95            # current default
@@ -727,7 +748,7 @@ def _trade_log_init(mode: str, explicit_path: Optional[str] = None):
     if explicit_path:
         _TRADE_LOG_PATH = explicit_path
     else:
-        _TRADE_LOG_PATH = f"trades_log_{mode}.jsonl"
+        _TRADE_LOG_PATH = f"trades_log_{mode}_sellrnd.jsonl"
     try:
         # [DUPLICATE-FIX] append mode — keep prior trades
         with open(_TRADE_LOG_PATH, 'a', encoding='utf-8') as f:
@@ -4023,6 +4044,12 @@ def build_signals(assets, mode="backtest"):
             if abs(_z_dev) < 1.5:
                 continue
             action = "BUY" if _z_dev < 0 else "SELL"
+
+            # ══ [SELL-ONLY-RND] بوابة BUY ══
+            # BUY_DISABLED=True → كل إشارات BUY تُرفض.
+            if action == "BUY":
+                if getattr(CFG, 'BUY_DISABLED', False):
+                    continue
 
             # ══ [SELL-RND] بوابة SELL المستقلة ══
             # BUY لا يُلمَس. SELL فقط يُمرّر عبر هذه البوابة.
@@ -8736,7 +8763,7 @@ def _rate_report() -> None:
 def load_symbol_meta(mode: str) -> Dict[str, Dict]:
     """Load persistent {sym: {leverage, margin_mode, setup_done}} from disk."""
     global _SYMBOL_META, _SYMBOL_META_PATH
-    _SYMBOL_META_PATH = f"{CFG.SYMBOL_META_FILE}_{mode}.json"
+    _SYMBOL_META_PATH = f"{CFG.SYMBOL_META_FILE}_{mode}_sellrnd.json"
     if os.path.exists(_SYMBOL_META_PATH):
         try:
             with open(_SYMBOL_META_PATH) as f:
@@ -9222,7 +9249,7 @@ def load_watched_signals(mode: str) -> Dict[str, Dict]:
     if WATCH_REMOVED:
         return {}
     global _WATCHED_SIGNALS, _WATCHED_SIGNALS_PATH
-    _WATCHED_SIGNALS_PATH = f"{CFG.WATCH_FILE_PREFIX}_{mode}.json"
+    _WATCHED_SIGNALS_PATH = f"{CFG.WATCH_FILE_PREFIX}_{mode}_sellrnd.json"
     if os.path.exists(_WATCHED_SIGNALS_PATH):
         try:
             with open(_WATCHED_SIGNALS_PATH) as f:
@@ -9713,7 +9740,7 @@ def monitor_watch_signals(exchange, open_pos_live: Dict,
 def load_pending_orders(mode: str) -> Dict[str, Dict]:
     """Restore pending orders from disk."""
     global _PENDING_ORDERS, _PENDING_ORDERS_PATH
-    _PENDING_ORDERS_PATH = f"{CFG.PENDING_FILE_PREFIX}_{mode}.json"
+    _PENDING_ORDERS_PATH = f"{CFG.PENDING_FILE_PREFIX}_{mode}_sellrnd.json"
     if os.path.exists(_PENDING_ORDERS_PATH):
         try:
             with open(_PENDING_ORDERS_PATH) as f:
@@ -11211,7 +11238,7 @@ def run_live(cfg, exchange):
     - يطبق قانون القوة لـ بئر دريخليه (10$ لحماية رأس المال المجهري).
     """
     log.info(f"🔴 [{cfg.mode.upper()}] بدء التشغيل (State Machine v2)")
-    state_file = f"live_state_{cfg.mode}.json"
+    state_file = f"live_state_{cfg.mode}_sellrnd.json"
     open_pos_live: Dict[str, Dict] = {}
 
     # ══ [State] Load persistent positions ══
