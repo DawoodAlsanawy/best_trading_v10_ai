@@ -133,8 +133,6 @@ class Config:
     # 0 = استخدم free من البورصة (السلوك الافتراضي).
     # >0 = رأس مال ثابت للـ sizing (لا يتأثر بحركة margin).
     LIVE_TRADING_CAPITAL: float = 0.0
-    # [END-DATE-FIELD]
-    BACKTEST_END_DATE: Optional[str] = None
     CAPITAL_FLOOR: float = 0.15    # قوة التنافر اللانهائية (نقطة استحالة التصفية)
     # ══ [REALISTIC FEES — Binance USDT-M Futures VIP0] ══
     # Maker: 0.020% (orders that add liquidity: entry GTX, exit post-only)
@@ -683,20 +681,6 @@ class Config:
 
 CFG = Config()
 
-
-def _resolve_end_datetime() -> datetime:
-    """[END-DATE-HELPER] يحل نهاية نافذة البيانات."""
-    _raw = getattr(CFG, 'BACKTEST_END_DATE', None)
-    if _raw:
-        try:
-            _dt = datetime.strptime(str(_raw), "%Y-%m-%d")
-            return (_dt.replace(tzinfo=timezone.utc)
-                    + timedelta(days=1)
-                    - timedelta(seconds=1))
-        except Exception as _e:
-            log.warning("[EndDate] parse failed: %s -- using now()" % _e)
-    return datetime.now(timezone.utc)
-
 # ════════════════════════════════════════════════════════════════
 # § TRADE LOGGER — Universal (backtest / testnet / live)
 # ════════════════════════════════════════════════════════════════
@@ -714,8 +698,7 @@ def _trade_log_init(mode: str, explicit_path: Optional[str] = None):
     else:
         _TRADE_LOG_PATH = f"trades_log_{mode}.jsonl"
     try:
-        # [DUPLICATE-FIX] append mode — keep prior trades
-        with open(_TRADE_LOG_PATH, 'a', encoding='utf-8') as f:
+        with open(_TRADE_LOG_PATH, 'w', encoding='utf-8') as f:
             f.write(json.dumps({
                 '_meta': True,
                 'mode': mode,
@@ -1620,9 +1603,7 @@ def _load_cached_sub(symbol, exchange, sub_tf, days):
     _sub_sec = max(_sub_sec, 1)
 
     now_utc = datetime.now(timezone.utc)
-    # [END-DATE-CUTOFF]
-    _end_dt = _resolve_end_datetime()
-    since_full_dt = _end_dt - timedelta(days=int(days))
+    since_full_dt = now_utc - timedelta(days=int(days))
     since_full = exchange.parse8601(since_full_dt.isoformat() + "Z")
 
     df = None
@@ -1798,8 +1779,7 @@ def _load_cached_sub(symbol, exchange, sub_tf, days):
     # [STRICT-WINDOW-SUB] نطبق نفس المنطق: نحترم --history-days
     # بدقة للفريم الأصغر أيضاً، حتى لا يدخل الكاش القديم في
     # معالجة الشموع الرئيسية للنافذة المطلوبة فقط.
-    # [END-DATE-TRUNC]
-    df_window = df[(df.index >= since_full_dt) & (df.index <= _end_dt)]
+    df_window = df[df.index >= since_full_dt]
 
     if len(df_window) >= min_rows:
         log.debug(f"[StrictWindow-Sub] {symbol} {sub_tf}: "
@@ -1904,9 +1884,7 @@ def _load_cached(symbol, exchange, timeframe, days):
     _strict_min = 2 * _kmax * _kmin_pts + CFG.N
 
     now_utc = datetime.now(timezone.utc)
-    # [END-DATE-CUTOFF]
-    _end_dt = _resolve_end_datetime()
-    since_full_dt = _end_dt - timedelta(days=int(days))
+    since_full_dt = now_utc - timedelta(days=int(days))
     since_full = exchange.parse8601(since_full_dt.isoformat() + "Z")
 
     df = None
@@ -2084,8 +2062,7 @@ def _load_cached(symbol, exchange, timeframe, days):
     # [STRICT-WINDOW] لا نعود أبداً للكاش الكامل بعد الآن.
     # إذا طلب المستخدم نافذة معينة، نحترمها. إذا كانت النافذة
     # غير كافية رياضياً → يُرفض الأصل بدل تضخيم البيانات بصمت.
-    # [END-DATE-TRUNC]
-    df_window = df[(df.index >= since_full_dt) & (df.index <= _end_dt)]
+    df_window = df[df.index >= since_full_dt]
 
     # نتحقق فقط أن النافذة قابلة للمعالجة (N+W+100)
     if len(df_window) >= min_rows:
@@ -7237,35 +7214,22 @@ def _is_protective_order(o: Dict) -> bool:
         return False
 
 
-def _cancel_all_protective_orders(exchange, sym: str,
-                                     max_passes: int = 2) -> int:
+def _cancel_all_protective_orders(exchange, sym: str) -> int:
     """
     Cancel every STOP_MARKET / TAKE_PROFIT_MARKET on the symbol.
-
-    [DUPLICATE-FIX] two-pass cancel: الأولى تلغي، والثانية تتحقق.
-    هذا يمنع بقاء نسخة ثانية من الأوامر على البورصة.
+    Returns count cancelled. Silent on errors (best-effort).
     """
     n = 0
-    for pass_idx in range(max_passes):
-        try:
-            open_orders = exchange.fetch_open_orders(sym)
-        except Exception as e:
-            log.debug(f"[Prot] fetch_open_orders {sym} failed: {e}")
-            break
-        prot_orders = [o for o in open_orders if _is_protective_order(o)]
-        if not prot_orders:
-            break
-        if pass_idx == 0:
-            log.info(f"[Prot] {sym} cancelling {len(prot_orders)} "
-                     f"stale protective order(s)")
-        for o in prot_orders:
-            try:
-                exchange.cancel_order(o['id'], sym)
-                n += 1
-            except Exception as e:
-                log.warning(f"[Prot] cancel {sym} oid={o['id']} failed: {e}")
-        import time as _t
-        _t.sleep(0.3)
+    try:
+        for o in exchange.fetch_open_orders(sym):
+            if _is_protective_order(o):
+                try:
+                    exchange.cancel_order(o['id'], sym)
+                    n += 1
+                except Exception as e:
+                    log.debug(f"[Prot] cancel {sym} oid={o['id']} failed: {e}")
+    except Exception as e:
+        log.debug(f"[Prot] fetch_open_orders {sym} failed: {e}")
     return n
 
 
@@ -7297,24 +7261,8 @@ def _place_protective_orders(exchange, sym: str, pos: Dict) -> bool:
         max_retries = int(getattr(CFG, 'PROTECTIVE_MAX_RETRIES', 2))
 
         # Cancel any stale protective orders first (idempotent)
-        # [DUPLICATE-FIX] verify cancel before placing
-        _canceled_count = _cancel_all_protective_orders(exchange, sym)
-        if _canceled_count > 0:
-            log.debug(f"[Prot] {sym} canceled {_canceled_count} "
-                      f"stale order(s)")
-        time.sleep(0.5)
-        try:
-            _remaining = [o for o in exchange.fetch_open_orders(sym)
-                          if _is_protective_order(o)]
-            if _remaining:
-                log.warning(
-                    f"[Prot] {sym} {len(_remaining)} protective "
-                    f"order(s) still open after cancel — retrying"
-                )
-                _cancel_all_protective_orders(exchange, sym)
-                time.sleep(0.5)
-        except Exception as _e:
-            log.debug(f"[Prot] verify cancel for {sym} failed: {_e}")
+        _cancel_all_protective_orders(exchange, sym)
+        time.sleep(0.1)
 
         placed = {'sl': False, 'tp': False, 'partial_tp': False}
 
@@ -8869,56 +8817,17 @@ def reconcile_state_machine(exchange, open_pos_live: Dict,
                 loc['entry'] = ex['entry']
         else:
             log.warning(f"[Reconcile] {sym} exchange-only → adopting")
-            # [DUPLICATE-FIX] use pending geometry if available
-            _pending_vals = None
-            _pending_rec = _PENDING_ORDERS.get(sym)
-            if _pending_rec is not None:
-                _p_sl_dist = float(_pending_rec.get('orig_sl_dist') or 0)
-                _p_tp_dist = float(_pending_rec.get('orig_tp_dist') or 0)
-                if _p_sl_dist > 0 and _p_tp_dist > 0:
-                    _pending_vals = {
-                        'sl_dist': _p_sl_dist,
-                        'tp_dist': _p_tp_dist,
-                        'T_info': float(_pending_rec.get('T_info') or 0),
-                        'dyn_risk': float(_pending_rec.get('dyn_risk') or 0.01),
-                    }
-                    log.info(
-                        f"[Reconcile] {sym} using pending geometry: "
-                        f"sl_dist={_p_sl_dist:.6f} tp_dist={_p_tp_dist:.6f}"
-                    )
-
-            if _pending_vals is not None:
-                if ex['side'] == 'BUY':
-                    _adopted_sl = ex['entry'] - _pending_vals['sl_dist']
-                    _adopted_tp = ex['entry'] + _pending_vals['tp_dist']
-                else:
-                    _adopted_sl = ex['entry'] + _pending_vals['sl_dist']
-                    _adopted_tp = ex['entry'] - _pending_vals['tp_dist']
-                open_pos_live[sym] = {
-                    'action': ex['side'],
-                    'entry': ex['entry'],
-                    'qty': ex['qty'],
-                    'sl': _adopted_sl,
-                    'tp1': _adopted_tp,
-                    'T_info': _pending_vals['T_info'],
-                    'dyn_risk': _pending_vals['dyn_risk'],
-                    'entry_ts': time.time(),
-                    'adopted': True,
-                    'sl_dist_initial': _pending_vals['sl_dist'],
-                }
-                _PENDING_ORDERS.pop(sym, None)
-            else:
-                open_pos_live[sym] = {
-                    'action': ex['side'],
-                    'entry': ex['entry'],
-                    'qty': ex['qty'],
-                    'sl': ex['entry'] * (0.985 if ex['side'] == 'BUY' else 1.015),
-                    'tp1': ex['entry'] * (1.03 if ex['side'] == 'BUY' else 0.97),
-                    'T_info': 0.0,
-                    'dyn_risk': 0.01,
-                    'entry_ts': time.time(),
-                    'adopted': True,
-                }
+            open_pos_live[sym] = {
+                'action': ex['side'],
+                'entry': ex['entry'],
+                'qty': ex['qty'],
+                'sl': ex['entry'] * (0.985 if ex['side'] == 'BUY' else 1.015),
+                'tp1': ex['entry'] * (1.03 if ex['side'] == 'BUY' else 0.97),
+                'T_info': 0.0,
+                'dyn_risk': 0.01,
+                'entry_ts': time.time(),
+                'adopted': True,
+            }
             changed += 1
 
     if changed:
@@ -11194,42 +11103,11 @@ def run_live(cfg, exchange):
     log.info(f"  [State] After initial sync: {len(open_pos_live)} positions")
 
     # ══ [LAYER 7] Ensure every restored position has fresh protective orders ══
-    # [DUPLICATE-FIX] defer if pending exists — لأن الترقية ستضعها
-    # بشكل صحيح، ووضعها الآن يسبب تكراراً على البورصة.
     if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
         _prot_ok = 0
         _prot_fail = 0
-        _prot_deferred = 0
-        _prot_dropped_pending = 0
-        for _sym_p, _pos_p in list(open_pos_live.items()):
-            _pending_rec = _PENDING_ORDERS.get(_sym_p)
-            if _pending_rec is not None:
-                # جلب الحالة الحديثة
-                _status = str(_pending_rec.get('status') or 'open')
-                try:
-                    _sweep_pending_once(exchange, _sym_p)
-                    _pending_rec = _PENDING_ORDERS.get(_sym_p)
-                    if _pending_rec is not None:
-                        _status = str(_pending_rec.get('status') or 'open')
-                except Exception as _e:
-                    log.debug(f"[Prot] sweep {_sym_p} failed: {_e}")
-
-                if _status == 'closed':
-                    log.info(
-                        f"[Prot] {_sym_p} pending already closed — "
-                        f"dropping record, placing protection now"
-                    )
-                    _PENDING_ORDERS.pop(_sym_p, None)
-                    _prot_dropped_pending += 1
-                    # continue to place protection below
-                else:
-                    log.info(
-                        f"[Prot] {_sym_p} pending status={_status} — "
-                        f"deferring protective placement"
-                    )
-                    _prot_deferred += 1
-                    continue
-
+        for _sym_p, _pos_p in open_pos_live.items():
+            # Clear stale cache so we force re-place
             _pos_p.pop('_prot_last_sl', None)
             _pos_p.pop('_prot_last_tp', None)
             try:
@@ -11242,10 +11120,7 @@ def run_live(cfg, exchange):
             except Exception as _e:
                 log.warning(f"[Prot] restore {_sym_p} failed: {_e}")
                 _prot_fail += 1
-        log.info(f"  [Prot] restored={_prot_ok} "
-                 f"deferred={_prot_deferred} "
-                 f"dropped={_prot_dropped_pending} "
-                 f"failed={_prot_fail}")
+        log.info(f"  [Prot] restored={_prot_ok} failed={_prot_fail}")
 
     # ══ [RE-ENTRY COOLDOWN] track last exit time per symbol ══
     last_exit_time: Dict[str, float] = {}
@@ -12671,8 +12546,6 @@ def main():
                    choices=["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
                    default="4h")
     p.add_argument("--history-days",       type=int,   default=None)
-    p.add_argument("--end-date", type=str, default=None,
-                   help="Backtest end date YYYY-MM-DD for reproducibility")
     p.add_argument("--no-numba", action="store_true",
                    help="Disable Numba kernels and use pure-Python fallback")
     p.add_argument("--nassets",       type=int,   default=15)
@@ -12836,9 +12709,6 @@ def main():
     if args.k_max     is not None: CFG.K_MAX = args.k_max
     if args.timeframe     is not None: CFG.timeframe = args.timeframe
     if args.history_days     is not None: CFG.history_days = args.history_days
-    if getattr(args, "end_date", None) is not None:
-        CFG.BACKTEST_END_DATE = str(args.end_date)
-        log.info(f"[Backtest] end-date pinned to {args.end_date}")
     if args.po_pen_bps is not None:  CFG.PO_PENETRATION_BPS = args.po_pen_bps
     if args.po_wait_s is not None:   CFG.PO_MAX_WAIT_S = args.po_wait_s
     if args.heat_max is not None: CFG.PORTFOLIO_HEAT_MAX = args.heat_max

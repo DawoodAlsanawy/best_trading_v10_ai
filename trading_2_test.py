@@ -558,9 +558,9 @@ class Config:
     # Close PARTIAL_TP_PCT of the position at +PARTIAL_TP_R, let the
     # rest ride with trailing.
     PARTIAL_TP_ENABLED: bool = True
-    PARTIAL_TP_R: float = 1.5           # [ABL4a] 3.0 -> 1.5
+    PARTIAL_TP_R: float = 5.0           # [ABL4a] 3.0 -> 1.5
     PARTIAL_TP_PCT: float = 0.50         # close 50% at that level
-    TP_MULT: float = 5.0    # كان 2.0 → الآن 1.5 (R:R = 1.5)
+    TP_MULT: float = 7.0    # كان 2.0 → الآن 1.5 (R:R = 1.5)
     APEX_ENABLED: bool = True     # عطّله مؤقتاً حتى نضبط عتباته
 
     # ══ [BREAKEVEN SL — protect trades that reach +N R] ══

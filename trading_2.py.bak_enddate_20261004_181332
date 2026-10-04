@@ -133,8 +133,6 @@ class Config:
     # 0 = استخدم free من البورصة (السلوك الافتراضي).
     # >0 = رأس مال ثابت للـ sizing (لا يتأثر بحركة margin).
     LIVE_TRADING_CAPITAL: float = 0.0
-    # [END-DATE-FIELD]
-    BACKTEST_END_DATE: Optional[str] = None
     CAPITAL_FLOOR: float = 0.15    # قوة التنافر اللانهائية (نقطة استحالة التصفية)
     # ══ [REALISTIC FEES — Binance USDT-M Futures VIP0] ══
     # Maker: 0.020% (orders that add liquidity: entry GTX, exit post-only)
@@ -682,20 +680,6 @@ class Config:
     GAUGE_DISABLE_SELL: bool = False   # True → BUY-only mode
 
 CFG = Config()
-
-
-def _resolve_end_datetime() -> datetime:
-    """[END-DATE-HELPER] يحل نهاية نافذة البيانات."""
-    _raw = getattr(CFG, 'BACKTEST_END_DATE', None)
-    if _raw:
-        try:
-            _dt = datetime.strptime(str(_raw), "%Y-%m-%d")
-            return (_dt.replace(tzinfo=timezone.utc)
-                    + timedelta(days=1)
-                    - timedelta(seconds=1))
-        except Exception as _e:
-            log.warning("[EndDate] parse failed: %s -- using now()" % _e)
-    return datetime.now(timezone.utc)
 
 # ════════════════════════════════════════════════════════════════
 # § TRADE LOGGER — Universal (backtest / testnet / live)
@@ -1620,9 +1604,7 @@ def _load_cached_sub(symbol, exchange, sub_tf, days):
     _sub_sec = max(_sub_sec, 1)
 
     now_utc = datetime.now(timezone.utc)
-    # [END-DATE-CUTOFF]
-    _end_dt = _resolve_end_datetime()
-    since_full_dt = _end_dt - timedelta(days=int(days))
+    since_full_dt = now_utc - timedelta(days=int(days))
     since_full = exchange.parse8601(since_full_dt.isoformat() + "Z")
 
     df = None
@@ -1798,8 +1780,7 @@ def _load_cached_sub(symbol, exchange, sub_tf, days):
     # [STRICT-WINDOW-SUB] نطبق نفس المنطق: نحترم --history-days
     # بدقة للفريم الأصغر أيضاً، حتى لا يدخل الكاش القديم في
     # معالجة الشموع الرئيسية للنافذة المطلوبة فقط.
-    # [END-DATE-TRUNC]
-    df_window = df[(df.index >= since_full_dt) & (df.index <= _end_dt)]
+    df_window = df[df.index >= since_full_dt]
 
     if len(df_window) >= min_rows:
         log.debug(f"[StrictWindow-Sub] {symbol} {sub_tf}: "
@@ -1904,9 +1885,7 @@ def _load_cached(symbol, exchange, timeframe, days):
     _strict_min = 2 * _kmax * _kmin_pts + CFG.N
 
     now_utc = datetime.now(timezone.utc)
-    # [END-DATE-CUTOFF]
-    _end_dt = _resolve_end_datetime()
-    since_full_dt = _end_dt - timedelta(days=int(days))
+    since_full_dt = now_utc - timedelta(days=int(days))
     since_full = exchange.parse8601(since_full_dt.isoformat() + "Z")
 
     df = None
@@ -2084,8 +2063,7 @@ def _load_cached(symbol, exchange, timeframe, days):
     # [STRICT-WINDOW] لا نعود أبداً للكاش الكامل بعد الآن.
     # إذا طلب المستخدم نافذة معينة، نحترمها. إذا كانت النافذة
     # غير كافية رياضياً → يُرفض الأصل بدل تضخيم البيانات بصمت.
-    # [END-DATE-TRUNC]
-    df_window = df[(df.index >= since_full_dt) & (df.index <= _end_dt)]
+    df_window = df[df.index >= since_full_dt]
 
     # نتحقق فقط أن النافذة قابلة للمعالجة (N+W+100)
     if len(df_window) >= min_rows:
@@ -12671,8 +12649,6 @@ def main():
                    choices=["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
                    default="4h")
     p.add_argument("--history-days",       type=int,   default=None)
-    p.add_argument("--end-date", type=str, default=None,
-                   help="Backtest end date YYYY-MM-DD for reproducibility")
     p.add_argument("--no-numba", action="store_true",
                    help="Disable Numba kernels and use pure-Python fallback")
     p.add_argument("--nassets",       type=int,   default=15)
@@ -12836,9 +12812,6 @@ def main():
     if args.k_max     is not None: CFG.K_MAX = args.k_max
     if args.timeframe     is not None: CFG.timeframe = args.timeframe
     if args.history_days     is not None: CFG.history_days = args.history_days
-    if getattr(args, "end_date", None) is not None:
-        CFG.BACKTEST_END_DATE = str(args.end_date)
-        log.info(f"[Backtest] end-date pinned to {args.end_date}")
     if args.po_pen_bps is not None:  CFG.PO_PENETRATION_BPS = args.po_pen_bps
     if args.po_wait_s is not None:   CFG.PO_MAX_WAIT_S = args.po_wait_s
     if args.heat_max is not None: CFG.PORTFOLIO_HEAT_MAX = args.heat_max

@@ -1,0 +1,185 @@
+17:11:37 [INFO] [Level-2] Numba kernels warm (JIT ready in 4.4s)
+17:11:37 [INFO] [Cache] LIVE_ASSET_CACHE_MAX adjusted to 150
+17:11:40 [INFO] [TF] timeframe=4h TF_SCALE=0.2500 TF_SECONDS=14400 TF_HOURS=4.000
+17:11:40 [INFO] [TF-Unified] N=24 W=20 L=10 ADV_BARS=6 (σ≈0.25× 1h)
+17:11:40 [INFO] [Data] mode=testnet | tf=4h | history=730d | tail=4380 bars/sym | min_for_process=4380 bars | quality=degraded | source=user(730d)
+17:11:40 [WARNING] [Data] degraded quality: tail=4380 < strict_min/2=5012. Many assets may be skipped by degenerate detection. Recommended minimum for 4h: --history-days 2339.
+17:11:40 [INFO] [Trail] Trailing Stop Loss DISABLED — SL is fixed
+17:11:40 [INFO] [Backtest] --no-fixed-price: entry target will be derived from close[sig.close_idx] × (1 ± PO_PENETRATION_BPS)
+17:11:40 [INFO] [Watch] Watch-then-trigger DISABLED (Config default) — legacy immediate placement
+17:11:40 [INFO] [OppTP] Opposite-Signal Adaptive TP DISABLED
+17:11:40 [INFO] [TradeLog] Logging trades to trades_log_testnet.jsonl
+17:11:41 [INFO] [TimeSync] drift = 1.11s — OK
+17:11:41 [INFO] 🔴 [TESTNET] بدء التشغيل (State Machine v2)
+17:11:41 [INFO]   [State] Restored 1 positions from live_state_testnet.json
+17:11:41 [INFO] [Meta] Loaded 1 symbols from symbol_meta_testnet.json
+17:11:41 [INFO] [Pending] Restored 0 pending orders (cleaned 0 stale refs)
+17:11:41 [INFO]   [Watch] Active watched signals: 0
+17:11:41 [INFO]   [Pending] Active pending orders: 0
+17:11:56 [INFO]   [State] After initial sync: 1 positions
+17:11:58 [INFO] [Prot] SOL/USDT PARTIAL-TP @117.505663 qty=1.285000 (50%)
+17:11:58 [INFO] [Prot] SOL/USDT STOP@124.346225 PARTIAL-TP@117.505663 FULL-TP@107.928875 placed
+17:11:58 [INFO]   [Prot] restored=1 deferred=0 dropped=0 failed=0
+17:11:58 [INFO] ⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...
+17:11:59 [INFO]   ✓ ETH/USDT      : 4,380 شمعة
+17:11:59 [INFO]   ✓ AVAX/USDT     : 4,380 شمعة
+17:11:59 [INFO]   ✓ LINK/USDT     : 4,380 شمعة
+17:12:00 [INFO]   ✓ BTC/USDT      : 4,380 شمعة
+17:12:00 [INFO]   ✓ ADA/USDT      : 4,380 شمعة
+17:12:00 [INFO]   ✓ BNB/USDT      : 4,380 شمعة
+17:12:00 [INFO]   ✓ SOL/USDT      : 4,380 شمعة
+17:12:00 [INFO]   ✓ DOT/USDT      : 4,380 شمعة
+17:12:00 [INFO]   ✓ LTC/USDT      : 4,380 شمعة
+17:12:00 [INFO]   ✓ ATOM/USDT     : 4,380 شمعة
+17:12:00 [INFO]   ✓ UNI/USDT      : 4,380 شمعة
+17:12:00 [INFO]   ✓ ETC/USDT      : 4,380 شمعة
+17:12:00 [INFO]   ✓ TRX/USDT      : 4,380 شمعة
+17:12:01 [INFO]   ✓ TON/USDT      : 4,380 شمعة
+17:12:01 [INFO]   ✓ BCH/USDT      : 4,380 شمعة
+17:12:01 [INFO]   ✓ APT/USDT      : 4,380 شمعة
+17:12:01 [INFO]   ✓ HBAR/USDT     : 4,380 شمعة
+17:12:01 [INFO]   ✓ NEAR/USDT     : 4,380 شمعة
+17:12:01 [INFO]   ✓ STX/USDT      : 4,380 شمعة
+17:12:02 [INFO]   ✓ AAVE/USDT     : 4,380 شمعة
+17:12:02 [INFO]   ✓ OP/USDT       : 4,380 شمعة
+17:12:02 [INFO]   ✓ ARB/USDT      : 4,380 شمعة
+17:12:02 [INFO]   ✓ SUI/USDT      : 4,380 شمعة
+17:12:02 [INFO]   ✓ TIA/USDT      : 4,380 شمعة
+17:12:02 [INFO]   ✓ GRT/USDT      : 4,380 شمعة
+17:12:02 [INFO]   ✓ SEI/USDT      : 4,380 شمعة
+17:12:02 [INFO]   ✓ FET/USDT      : 4,380 شمعة
+17:12:02 [INFO]   ✓ ALGO/USDT     : 4,380 شمعة
+17:12:02 [INFO]   ✓ RENDER/USDT   : 4,380 شمعة
+17:12:02 [INFO]   ✓ THETA/USDT    : 4,380 شمعة
+17:12:03 [INFO]   ✓ LDO/USDT      : 4,380 شمعة
+17:12:03 [INFO]   ✓ WIF/USDT      : 4,380 شمعة
+17:12:03 [INFO]   ✓ KAS/USDT      : 4,380 شمعة
+17:12:03 [INFO]   ✓ SAND/USDT     : 4,380 شمعة
+17:12:03 [INFO]   ✓ CHZ/USDT      : 4,380 شمعة
+17:12:03 [INFO]   ✓ MANA/USDT     : 4,380 شمعة
+17:12:03 [INFO]   ✓ AXS/USDT      : 4,380 شمعة
+17:12:03 [INFO]   ✓ XLM/USDT      : 4,380 شمعة
+17:12:03 [INFO]   ✓ POL/USDT      : 4,380 شمعة
+17:12:04 [INFO]   ✓ FLOW/USDT     : 4,380 شمعة
+17:12:04 [INFO]   ✓ FIL/USDT      : 4,380 شمعة
+17:12:04 [INFO]   ✓ CAKE/USDT     : 4,380 شمعة
+17:12:04 [INFO]   ✓ QNT/USDT      : 4,380 شمعة
+17:12:04 [INFO]   ✓ DASH/USDT     : 4,380 شمعة
+17:12:04 [INFO]   ✓ ROSE/USDT     : 4,380 شمعة
+17:12:04 [INFO]   ✓ IOTA/USDT     : 4,380 شمعة
+17:12:04 [INFO]   ✓ NEO/USDT      : 4,380 شمعة
+17:12:04 [INFO]   ✓ CRV/USDT      : 4,380 شمعة
+17:12:05 [INFO]   ✓ KAVA/USDT     : 4,380 شمعة
+17:12:05 [INFO]   ✓ SNX/USDT      : 4,380 شمعة
+17:12:05 [INFO]   ✓ COMP/USDT     : 4,380 شمعة
+17:12:05 [INFO]   ✓ YFI/USDT      : 4,380 شمعة
+17:12:05 [INFO]   ✓ SUSHI/USDT    : 4,380 شمعة
+17:12:05 [INFO]   ✓ BAT/USDT      : 4,380 شمعة
+17:12:05 [INFO]   ✓ ZRX/USDT      : 4,380 شمعة
+17:12:05 [INFO]   ✓ ANKR/USDT     : 4,380 شمعة
+17:12:06 [INFO]   ✓ KSM/USDT      : 4,380 شمعة
+17:12:06 [INFO]   ✓ STORJ/USDT    : 4,380 شمعة
+17:12:06 [INFO]   ✓ NMR/USDT      : 4,380 شمعة
+17:12:06 [INFO]   ✓ BAND/USDT     : 4,380 شمعة
+17:12:06 [INFO]   ✓ ZEN/USDT      : 4,380 شمعة
+17:12:06 [INFO]   ✓ DYDX/USDT     : 4,380 شمعة
+17:12:06 [INFO]   ✓ CELO/USDT     : 4,380 شمعة
+17:12:06 [INFO]   ✓ ENS/USDT      : 4,380 شمعة
+17:12:06 [INFO]   ✓ MASK/USDT     : 4,380 شمعة
+17:12:06 [INFO]   ✓ GMX/USDT      : 4,380 شمعة
+17:12:07 [INFO]   ✓ HIGH/USDT     : 4,380 شمعة
+17:12:07 [INFO]   ✓ CYBER/USDT    : 4,380 شمعة
+17:12:07 [INFO]   ✓ MAGIC/USDT    : 4,380 شمعة
+17:12:07 [INFO]   ✓ JOE/USDT      : 4,380 شمعة
+17:12:07 [INFO]   ✓ PENDLE/USDT   : 4,380 شمعة
+17:12:07 [INFO]   ✓ ARKM/USDT     : 4,380 شمعة
+17:12:07 [INFO]   ✓ WLD/USDT      : 4,380 شمعة
+17:12:08 [INFO]   ✓ BLUR/USDT     : 4,380 شمعة
+17:12:08 [INFO]   ✓ ID/USDT       : 4,380 شمعة
+17:12:08 [INFO]   ✓ ORDI/USDT     : 4,380 شمعة
+17:12:08 [INFO]   ✓ EDU/USDT      : 4,380 شمعة
+17:12:08 [INFO]   ✓ JUP/USDT      : 4,380 شمعة
+17:12:08 [INFO]   ✓ PYTH/USDT     : 4,380 شمعة
+17:12:09 [INFO]   ✓ DYM/USDT      : 4,380 شمعة
+17:12:09 [INFO]   ✓ MANTA/USDT    : 4,380 شمعة
+17:12:09 [INFO]   ✓ JTO/USDT      : 4,380 شمعة
+17:12:09 [INFO]   ✓ STRK/USDT     : 4,380 شمعة
+17:12:09 [INFO]   ✓ ALT/USDT      : 4,380 شمعة
+17:12:09 [INFO]   ✓ AEVO/USDT     : 4,380 شمعة
+17:12:10 [INFO]   ✓ BB/USDT       : 4,380 شمعة
+17:12:10 [INFO]   ✓ ETHFI/USDT    : 4,380 شمعة
+17:12:10 [INFO]   ✓ W/USDT        : 4,380 شمعة
+17:12:10 [INFO]   ✓ SAGA/USDT     : 4,380 شمعة
+17:12:10 [INFO]   ✓ IO/USDT       : 4,380 شمعة
+17:12:10 [INFO]   ✓ ZK/USDT       : 4,380 شمعة
+17:12:10 [INFO]   ✓ G/USDT        : 4,380 شمعة
+17:12:11 [INFO]   ✓ LISTA/USDT    : 4,380 شمعة
+17:12:11 [INFO]   ✓ ZRO/USDT      : 4,380 شمعة
+17:12:11 [INFO]   ✓ RARE/USDT     : 4,380 شمعة
+17:12:11 [INFO]   ✓ TAIKO/USDT    : 2,883 شمعة
+17:12:11 [INFO]   ✓ SYN/USDT      : 4,380 شمعة
+17:12:11 [INFO]   ✓ BANANA/USDT   : 4,380 شمعة
+17:12:11 [INFO]   ✓ MEW/USDT      : 4,380 شمعة
+17:12:12 [INFO]   ✓ MERL/USDT     : 2,962 شمعة
+17:12:12 [INFO] 🚀 تم بناء الذاكرة التاريخية. بدء حلقة التداول اللحظي...
+17:12:12 [INFO] [RateLimit] usage=0.0%
+17:14:06 [WARNING] [process_asset] MEW/USDT: degenerate clustering (H_train=0.062, H_theo=4.644, ratio=0.013, K=25) — returning None
+17:14:07 [INFO] [LiveCache] hits=0, misses=100 (0.0%), evictions=0, entries=97
+17:14:09 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+17:14:09 [INFO] [Gauge-Filter] thresholds: BUY>p60=0.14886, SELL>p95=0.21053 (pool=183456)
+17:17:14 [INFO] [RateLimit] usage=1.0%
+17:19:09 [INFO] [LiveCache] hits=5917, misses=283 (95.4%), evictions=0, entries=97
+17:19:11 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+17:22:14 [INFO] [RateLimit] usage=1.0%
+17:24:14 [INFO] [LiveCache] hits=11834, misses=466 (96.2%), evictions=0, entries=97
+17:24:15 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+17:27:14 [INFO] [RateLimit] usage=1.0%
+17:29:15 [INFO] [LiveCache] hits=17654, misses=646 (96.5%), evictions=0, entries=97
+17:29:16 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+17:32:14 [INFO] [RateLimit] usage=1.0%
+17:34:15 [INFO] [LiveCache] hits=23474, misses=826 (96.6%), evictions=0, entries=97
+17:34:20 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+17:37:14 [INFO] [RateLimit] usage=1.0%
+17:39:19 [INFO] [LiveCache] hits=29391, misses=1009 (96.7%), evictions=0, entries=97
+17:39:20 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+17:42:14 [INFO] [RateLimit] usage=1.0%
+17:44:19 [INFO] [LiveCache] hits=35211, misses=1189 (96.7%), evictions=0, entries=97
+17:44:20 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+17:47:14 [INFO] [RateLimit] usage=1.0%
+17:49:20 [INFO] [LiveCache] hits=41031, misses=1369 (96.8%), evictions=0, entries=97
+17:49:20 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+17:52:14 [INFO] [RateLimit] usage=1.0%
+17:54:20 [INFO] [LiveCache] hits=46851, misses=1549 (96.8%), evictions=0, entries=97
+17:54:20 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+17:57:14 [INFO] [RateLimit] usage=1.0%
+17:59:20 [INFO] [LiveCache] hits=52671, misses=1729 (96.8%), evictions=0, entries=97
+17:59:25 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+18:02:14 [INFO] [RateLimit] usage=1.0%
+18:04:25 [INFO] [LiveCache] hits=58588, misses=1912 (96.8%), evictions=0, entries=97
+18:04:25 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+18:07:14 [INFO] [RateLimit] usage=1.0%
+18:09:30 [INFO] [LiveCache] hits=64505, misses=2095 (96.9%), evictions=0, entries=97
+18:09:30 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+18:12:14 [INFO] [RateLimit] usage=1.0%
+18:14:30 [INFO] [LiveCache] hits=70325, misses=2275 (96.9%), evictions=0, entries=97
+18:14:30 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+18:17:14 [INFO] [RateLimit] usage=1.0%
+18:19:35 [INFO] [LiveCache] hits=76242, misses=2458 (96.9%), evictions=0, entries=97
+18:19:35 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+18:22:14 [INFO] [RateLimit] usage=1.0%
+18:24:40 [INFO] [LiveCache] hits=82159, misses=2641 (96.9%), evictions=0, entries=97
+18:24:40 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+18:27:14 [INFO] [RateLimit] usage=1.0%
+18:29:40 [INFO] [LiveCache] hits=87979, misses=2821 (96.9%), evictions=0, entries=97
+18:29:41 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+18:29:55 [WARNING] [Pending] save failed: [Errno 28] No space left on device: 'pending_orders_testnet.json.tmp'
+18:29:55 [WARNING] [Meta] save failed: [Errno 28] No space left on device: 'symbol_meta_testnet.json.tmp'
+18:30:37 [WARNING] [Pending] save failed: [Errno 28] No space left on device: 'pending_orders_testnet.json.tmp'
+18:30:37 [WARNING] [Meta] save failed: [Errno 28] No space left on device: 'symbol_meta_testnet.json.tmp'
+18:31:02 [WARNING] [Pending] save failed: [Errno 28] No space left on device: 'pending_orders_testnet.json.tmp'
+18:31:02 [WARNING] [Meta] save failed: [Errno 28] No space left on device: 'symbol_meta_testnet.json.tmp'
+18:31:07 [WARNING] [Pending] save failed: [Errno 28] No space left on device: 'pending_orders_testnet.json.tmp'
+18:31:07 [WARNING] [Meta] save failed: [Errno 28] No space left on device: 'symbol_meta_testnet.json.tmp'
+18:31:12 [WARNING] [Pending] save failed: [Errno 28] No space left on device: 'pending_orders_testnet.json.tmp'
+18:31:12 [WARNING] [Meta] save failed: [Errno 28] No space left on device: 'symbol_meta_testnet.json.tmp'
+18:31:17 [WARNING] [Pending] save failed: [Errno 28] No space left on device: 'pending_orders_
