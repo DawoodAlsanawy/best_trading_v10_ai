@@ -274,7 +274,7 @@ class Config:
     TRAIL_ACT_MAX_FRAC: float = 0.012
     # ══ [SIGMA-SCALED APEX] ══
     APEX_SIGMA_SCALED: bool = True
-    APEX_KAPPA_PNL: float = 0.5
+    APEX_KAPPA_PNL: float = 2.0   # [ABL7b]
     APEX_KAPPA_ENERGY: float = 0.5
     APEX_KAPPA_ACCEL: float = 0.3
     # ══ [RULE-BASED FILTER] ══
@@ -657,7 +657,7 @@ class Config:
     # النتيجة: SELL يحتاج عتبة عالية جداً أو إلغاء كامل
     GAUGE_FILTER_ENABLED: bool = True
     GAUGE_PERCENTILE_BUY: float = 0.60
-    GAUGE_PERCENTILE_SELL: float = 0.95   # [ABL8b] 0.85 -> 0.95
+    GAUGE_PERCENTILE_SELL: float = 0.85
     GAUGE_MIN_SAMPLES: int = 500       # أدنى عينة لحساب percentile
     GAUGE_DISABLE_SELL: bool = False   # True → BUY-only mode
 
@@ -3894,19 +3894,14 @@ def build_signals(assets, mode="backtest"):
             _gauge_thr_sell = float(np.percentile(
                 _gauge_arr, CFG.GAUGE_PERCENTILE_SELL * 100
             ))
-            # ══ [SPAM-FIX] اطبع فقط عند تغيّر الـ pool ══
-            _pool_size = len(_gauge_pool)
-            _last_size = getattr(build_signals, '_last_gauge_pool_size', 0)
-            if abs(_pool_size - _last_size) > _pool_size * 0.05:
-                log.info(
-                    f"[Gauge-Filter] thresholds: "
-                    f"BUY>p{int(CFG.GAUGE_PERCENTILE_BUY*100)}="
-                    f"{_gauge_thr_buy:.5f}, "
-                    f"SELL>p{int(CFG.GAUGE_PERCENTILE_SELL*100)}="
-                    f"{_gauge_thr_sell:.5f} "
-                    f"(pool={_pool_size})"
-                )
-                build_signals._last_gauge_pool_size = _pool_size
+            log.info(
+                f"[Gauge-Filter] thresholds: "
+                f"BUY>p{int(CFG.GAUGE_PERCENTILE_BUY*100)}="
+                f"{_gauge_thr_buy:.5f}, "
+                f"SELL>p{int(CFG.GAUGE_PERCENTILE_SELL*100)}="
+                f"{_gauge_thr_sell:.5f} "
+                f"(pool={len(_gauge_pool)})"
+            )
         else:
             log.warning(
                 f"[Gauge-Filter] pool too small ({len(_gauge_pool)}"

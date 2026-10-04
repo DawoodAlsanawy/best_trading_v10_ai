@@ -656,8 +656,12 @@ class Config:
     #   SELL ضعيف دائماً: أفضل حالة top10% = avg $59/صفقة
     # النتيجة: SELL يحتاج عتبة عالية جداً أو إلغاء كامل
     GAUGE_FILTER_ENABLED: bool = True
-    GAUGE_PERCENTILE_BUY: float = 0.60
-    GAUGE_PERCENTILE_SELL: float = 0.95   # [ABL8b] 0.85 -> 0.95
+    # ══ [DIRECTIONAL PHYSICS FILTER — Self-Calibrating] ══
+    # العتبة تُحسب من توزيع gauge_force الخاص بكل أصل + انحراف EMA200.
+    # الوسيط الرياضي = 0.50، لا عتبات يدوية.
+    GAUGE_DRIFT_SENS: float = 0.30      # حساسية العتبة للانحراف (0..1)
+    GAUGE_LOCAL_WINDOW: int = 200       # نافذة percentile المحلية
+    GAUGE_LOCAL_MIN: int = 100          # الحد الأدنى للنافذة
     GAUGE_MIN_SAMPLES: int = 500       # أدنى عينة لحساب percentile
     GAUGE_DISABLE_SELL: bool = False   # True → BUY-only mode
 
@@ -3868,50 +3872,8 @@ def build_signals(assets, mode="backtest"):
     """
     sigs = []
 
-    # ══ [GAUGE-FILTER] حساب العتبات العالمية مرة واحدة ══
-    _gauge_thr_buy = 0.0
-    _gauge_thr_sell = 0.0
-    if getattr(CFG, 'GAUGE_FILTER_ENABLED', False):
-        _gauge_pool = []
-        for _sym, _ad in assets.items():
-            try:
-                gf = getattr(_ad, 'gauge_force', None)
-                if gf is None or len(gf) == 0:
-                    continue
-                # استخدام جزء الاختبار فقط (لا تدريب)
-                _valid = gf[_ad.train_end:]
-                _valid = _valid[_valid > 0]
-                if len(_valid) > 0:
-                    _gauge_pool.extend(_valid.tolist())
-            except Exception:
-                continue
-
-        if len(_gauge_pool) >= int(CFG.GAUGE_MIN_SAMPLES):
-            _gauge_arr = np.array(_gauge_pool)
-            _gauge_thr_buy = float(np.percentile(
-                _gauge_arr, CFG.GAUGE_PERCENTILE_BUY * 100
-            ))
-            _gauge_thr_sell = float(np.percentile(
-                _gauge_arr, CFG.GAUGE_PERCENTILE_SELL * 100
-            ))
-            # ══ [SPAM-FIX] اطبع فقط عند تغيّر الـ pool ══
-            _pool_size = len(_gauge_pool)
-            _last_size = getattr(build_signals, '_last_gauge_pool_size', 0)
-            if abs(_pool_size - _last_size) > _pool_size * 0.05:
-                log.info(
-                    f"[Gauge-Filter] thresholds: "
-                    f"BUY>p{int(CFG.GAUGE_PERCENTILE_BUY*100)}="
-                    f"{_gauge_thr_buy:.5f}, "
-                    f"SELL>p{int(CFG.GAUGE_PERCENTILE_SELL*100)}="
-                    f"{_gauge_thr_sell:.5f} "
-                    f"(pool={_pool_size})"
-                )
-                build_signals._last_gauge_pool_size = _pool_size
-        else:
-            log.warning(
-                f"[Gauge-Filter] pool too small ({len(_gauge_pool)}"
-                f"<{CFG.GAUGE_MIN_SAMPLES}) — filter disabled"
-            )
+    # ══ [DIRECTIONAL PHYSICS FILTER] self-calibrating per-asset ══
+    # العتبة تُحسب داخل الحلقة لكل أصل على حدة (لا تجميع عالمي).
 
     for sym, ad in assets.items():
         n = len(ad.score)
@@ -3966,16 +3928,47 @@ def build_signals(assets, mode="backtest"):
                 continue
             action = "BUY" if _z_dev < 0 else "SELL"
 
-            # ══ [GAUGE-FILTER] ══
+            # ══ [DIRECTIONAL PHYSICS FILTER] self-calibrating per-asset ══
+            # العتبة = 0.50 × (1 ∓ κ × drift)، مشتقة من:
+            #   - توزيع gauge_force الخاص بهذا الأصل (نافذة متدحرجة)
+            #   - انحراف EMA200 بوحدات σ_price/bar
             if getattr(CFG, 'GAUGE_FILTER_ENABLED', False):
                 if action == "SELL" and getattr(CFG, 'GAUGE_DISABLE_SELL', False):
                     continue
                 try:
-                    _gf = float(ad.gauge_force[fi])
-                    if action == "BUY" and _gf < _gauge_thr_buy:
-                        continue
-                    if action == "SELL" and _gf < _gauge_thr_sell:
-                        continue
+                    _win = int(getattr(CFG, 'GAUGE_LOCAL_WINDOW', 200))
+                    _win_min = int(getattr(CFG, 'GAUGE_LOCAL_MIN', 100))
+                    _k = float(getattr(CFG, 'GAUGE_DRIFT_SENS', 0.30))
+                    _w_start = max(0, fi - _win)
+                    _w_gf = ad.gauge_force[_w_start:fi]
+                    if len(_w_gf) >= _win_min:
+                        _gf_now = float(ad.gauge_force[fi])
+                        _gf_pct = float(np.mean(_w_gf <= _gf_now))
+
+                        # الانحراف: ميل EMA200 / σ_price
+                        _drift = 0.0
+                        _lb = 50
+                        if ci >= _lb and ci < len(ad.ema200):
+                            _slope = ((ad.ema200[ci] - ad.ema200[ci - _lb])
+                                      / float(_lb))
+                            _sigma_p = (float(ad.E_therm[fi])
+                                        if 0 <= fi < len(ad.E_therm)
+                                        else 0.01)
+                            if not np.isfinite(_sigma_p) or _sigma_p <= 1e-6:
+                                _sigma_p = 0.01
+                            _drift = float(np.clip(
+                                _slope / (_sigma_p * p), -1.0, 1.0
+                            ))
+
+                        if action == "BUY":
+                            _thr = 0.50 * (1.0 - _k * _drift)
+                        else:
+                            _thr = 0.50 * (1.0 + _k * _drift)
+                        _thr = float(np.clip(_thr, 0.10, 0.95))
+
+                        if _gf_pct < _thr:
+                            continue
+                    # fail-open if window too short
                 except Exception:
                     pass
 
