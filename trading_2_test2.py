@@ -399,7 +399,7 @@ class Config:
     #   1.5 → moderate widening
     #   2.0 → recommended starting point
     #   2.5 → aggressive widening (fewer SL hits, larger drawdowns)
-    SL_WIDEN_MULT: float = 1.5
+    SL_WIDEN_MULT: float = 0.8
 
     # ══ [ADAPTIVE FIX #3] Tick-based penetration ══
     # WIF has 0.254 ticks/bps → 1 bps < 1 tick → orders can't fill properly.
