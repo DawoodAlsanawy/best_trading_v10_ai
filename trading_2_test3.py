@@ -12871,6 +12871,10 @@ def main():
                    help="Disable Breakeven SL")
     p.add_argument("--tp-mult", type=float, default=None,
                    help="Override TP_MULT")
+    p.add_argument("--partial-tp-r", type=float, default=None,
+                   help="Override PARTIAL_TP_R")
+    p.add_argument("--sl-widen-mult", type=float, default=None,
+                   help="Override SL_WIDEN_MULT")
     p.add_argument("--sell-only", action="store_true",
                    help="SELL-only mode")
     p.add_argument("--enable-sell", action="store_true",
@@ -13162,6 +13166,12 @@ def main():
     if getattr(args, "tp_mult", None) is not None:
         CFG.TP_MULT = float(args.tp_mult)
         log.info(f"[Ablation] TP_MULT = {CFG.TP_MULT}")
+    if getattr(args, "partial_tp_r", None) is not None:
+        CFG.PARTIAL_TP_R = float(args.partial_tp_r)
+        log.info(f"[Ablation] PARTIAL_TP_R = {CFG.PARTIAL_TP_R}")
+    if getattr(args, "sl_widen_mult", None) is not None:
+        CFG.SL_WIDEN_MULT = float(args.sl_widen_mult)
+        log.info(f"[Ablation] SL_WIDEN_MULT = {CFG.SL_WIDEN_MULT}")
     if getattr(args, "sell_only", False):
         CFG.GAUGE_DISABLE_BUY = True
         log.info("[Ablation] BUY DISABLED — SELL-only mode")
@@ -13178,6 +13188,12 @@ def main():
     if getattr(args, "tp_mult", None) is not None:
         CFG.TP_MULT = float(args.tp_mult)
         log.info(f"[Ablation] TP_MULT = {CFG.TP_MULT}")
+    if getattr(args, "partial_tp_r", None) is not None:
+        CFG.partial_tp_r = float(args.partial_tp_r)
+        log.info(f"[Ablation] PARTIAL_TP_R = {CFG.PARTIAL_TP_R}")
+    if getattr(args, "sl_widen_mult", None) is not None:
+        CFG.SL_WIDEN_MULT = float(args.sl_widen_mult)
+        log.info(f"[Ablation] SL_WIDEN_MULT = {CFG.SL_WIDEN_MULT}")
     if getattr(args, "sell_only", False):
         CFG.GAUGE_DISABLE_BUY = True
         log.info("[Ablation] BUY DISABLED — SELL-only mode")

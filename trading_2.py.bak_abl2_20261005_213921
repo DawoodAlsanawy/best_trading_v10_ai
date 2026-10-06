@@ -12861,18 +12861,6 @@ def main():
                    help="SELL percentile threshold (default 0.85)")
     p.add_argument("--gauge-disable-sell", action="store_true",
                    help="[DEPRECATED] SELL already disabled by default")
-
-    # [ABLATION-FLAGS]
-    p.add_argument("--no-apex", action="store_true",
-                   help="Disable Apex exit")
-    p.add_argument("--no-partial", action="store_true",
-                   help="Disable Partial TP")
-    p.add_argument("--no-breakeven", action="store_true",
-                   help="Disable Breakeven SL")
-    p.add_argument("--tp-mult", type=float, default=None,
-                   help="Override TP_MULT")
-    p.add_argument("--sell-only", action="store_true",
-                   help="SELL-only mode")
     p.add_argument("--enable-sell", action="store_true",
                    help="Re-enable SELL signals (default: BUY-only)")
     # [SELL-RND] SELL tuning flags
@@ -13149,22 +13137,6 @@ def main():
     if args.gauge_disable_sell:
         CFG.GAUGE_DISABLE_SELL = True
         log.info("[Gauge] SELL DISABLED — BUY-only mode")
-    # [ABLATION-FLAGS]
-    if getattr(args, "no_apex", False):
-        CFG.APEX_ENABLED = False
-        log.info("[Ablation] APEX DISABLED")
-    if getattr(args, "no_partial", False):
-        CFG.PARTIAL_TP_ENABLED = False
-        log.info("[Ablation] PARTIAL_TP DISABLED")
-    if getattr(args, "no_breakeven", False):
-        CFG.BREAKEVEN_ENABLED = False
-        log.info("[Ablation] BREAKEVEN DISABLED")
-    if getattr(args, "tp_mult", None) is not None:
-        CFG.TP_MULT = float(args.tp_mult)
-        log.info(f"[Ablation] TP_MULT = {CFG.TP_MULT}")
-    if getattr(args, "sell_only", False):
-        CFG.GAUGE_DISABLE_BUY = True
-        log.info("[Ablation] BUY DISABLED — SELL-only mode")
     # ═══ [ABLATION-FLAGS] ═══
     if getattr(args, "no_apex", False):
         CFG.APEX_ENABLED = False
