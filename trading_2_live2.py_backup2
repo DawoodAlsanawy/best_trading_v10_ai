@@ -2952,108 +2952,28 @@ def process_asset(symbol, df, km_ext=None, current_capital=None, sub_df=None):
                                  n_train_features=train_end)
     # ══════════════════════════════════════════════════════════
 
-    # ══ [K-ROBUST] Fit KMeans with automatic K-fallback. ══
-    # If the initial K yields degenerate clustering (H_train far below
-    # log2(K)), retry with K/2, K/4, ..., K=2. Prevents the catastrophic
-    # "assets empty -> no signals" failure mode where every symbol
-    # returned None on a transient degenerate fit.
-    _k_threshold = float(getattr(CFG, 'K_DEGENERATE_H_RATIO', 0.25))
-    _k_skip = getattr(CFG, 'K_SKIP_IF_DEGENERATE', True)
+    km = km_ext if km_ext else fit_kmeans(X[:train_end], k=dyn_k)
+    sym_q = assign(X, km)
 
-    if km_ext is not None:
-        # External KMeans provided -> trust it, keep strict behavior
-        km = km_ext
-        sym_q = assign(X, km)
-        H = entropy_series(sym_q, k=dyn_k)
-        dH = np.diff(H, prepend=H[0])
-        d2H = np.diff(dH, prepend=dH[0])
-        if _k_skip and train_end > 0:
-            _H_train_mean = float(np.mean(H[:train_end]))
-            _H_theo = np.log2(max(int(dyn_k), 2))
-            _ratio = _H_train_mean / max(_H_theo, 1e-9)
-            if _ratio < _k_threshold:
-                log.warning(
-                    f"[K-Fallback] {symbol}: degenerate with km_ext "
-                    f"(ratio={_ratio:.3f}, K={dyn_k}) -- returning None"
-                )
-                return None
-    else:
-        # Build candidate list: K_initial, K/2, K/4, ..., 2
-        _k_initial = int(dyn_k)
-        _k_candidates = [_k_initial]
-        _k_cur = _k_initial
-        while _k_cur > 2:
-            _k_cur = max(2, _k_cur // 2)
-            if _k_cur not in _k_candidates:
-                _k_candidates.append(_k_cur)
+    H   = entropy_series(sym_q, k=dyn_k)
+    dH  = np.diff(H,  prepend=H[0])
+    d2H = np.diff(dH, prepend=dH[0])
 
-        _k_chosen = None
-        _km_chosen = None
-        _sym_q_chosen = None
-        _H_chosen = None
-        _last_ratio = None
-        _last_k_tried = None
-
-        for _k_try in _k_candidates:
-            _last_k_tried = _k_try
-            try:
-                _km_try = fit_kmeans(X[:train_end], k=_k_try)
-                _sym_q_try = assign(X, _km_try)
-                _H_try = entropy_series(_sym_q_try, k=_k_try)
-                if _k_skip and train_end > 0:
-                    _H_mean_try = float(np.mean(_H_try[:train_end]))
-                    _H_theo_try = np.log2(max(_k_try, 2))
-                    _ratio_try = _H_mean_try / max(_H_theo_try, 1e-9)
-                    _last_ratio = _ratio_try
-                    if _ratio_try < _k_threshold:
-                        log.debug(
-                            f"[K-Fallback] {symbol} K={_k_try} "
-                            f"degenerate (ratio={_ratio_try:.3f})"
-                        )
-                        continue
-                _k_chosen = _k_try
-                _km_chosen = _km_try
-                _sym_q_chosen = _sym_q_try
-                _H_chosen = _H_try
-                break
-            except Exception as _e:
-                log.debug(
-                    f"[K-Fallback] {symbol} fit K={_k_try} failed: {_e}"
-                )
-                continue
-
-        if _k_chosen is None:
-            # Last resort: force K=2 (guaranteed non-degenerate for any
-            # non-trivial distribution: H_max = 1, threshold = 0.25).
-            try:
-                _k_chosen = 2
-                _km_chosen = fit_kmeans(X[:train_end], k=2)
-                _sym_q_chosen = assign(X, _km_chosen)
-                _H_chosen = entropy_series(_sym_q_chosen, k=2)
-                log.warning(
-                    f"[K-Fallback] {symbol}: all K degenerate "
-                    f"(last K={_last_k_tried}, ratio={_last_ratio}) "
-                    f"-- forced K=2"
-                )
-            except Exception as _e:
-                log.warning(
-                    f"[K-Fallback] {symbol}: K=2 fallback failed: {_e} "
-                    f"-- returning None"
-                )
-                return None
-
-        if _k_chosen != _k_initial:
-            log.info(
-                f"[K-Fallback] {symbol}: K={_k_initial}->{_k_chosen} "
-                f"(ratio={_last_ratio})"
+    # ══ [ADAPTIVE FIX #2b] Degenerate clustering detection ══
+    # If training-set entropy is far below theoretical max, KMeans has
+    # collapsed to a few effective clusters → features are meaningless.
+    # Skip this (symbol, TF) entirely.
+    if getattr(CFG, 'K_SKIP_IF_DEGENERATE', True):
+        _H_train_mean = float(np.mean(H[:max(train_end, 1)]))
+        _H_theo = np.log2(max(int(dyn_k), 2))
+        _ratio = _H_train_mean / max(_H_theo, 1e-9)
+        if _ratio < float(getattr(CFG, 'K_DEGENERATE_H_RATIO', 0.25)):
+            log.warning(
+                f"[process_asset] {symbol}: degenerate clustering "
+                f"(H_train={_H_train_mean:.3f}, H_theo={_H_theo:.3f}, "
+                f"ratio={_ratio:.3f}, K={dyn_k}) — returning None"
             )
-
-        km = _km_chosen
-        sym_q = _sym_q_chosen
-        H = _H_chosen
-        dH = np.diff(H, prepend=H[0])
-        d2H = np.diff(dH, prepend=dH[0])
-        dyn_k = int(_k_chosen)   # propagate for downstream uses
+            return None
 
     lr_full = np.diff(np.log(np.maximum(closes,1e-12)))
     E_therm = np.zeros(n)
@@ -4485,17 +4405,10 @@ def build_signals(assets, mode="backtest"):
                 )
                 build_signals._last_gauge_pool_size = _pool_size
         else:
-            # [RATE-LIMIT] Warn at most once per 5 minutes to avoid log
-            # spam when the pool is persistently empty.
-            _gw_now = time.time()
-            _gw_last = getattr(build_signals, '_last_pool_warn_ts', 0.0)
-            if _gw_now - _gw_last >= 300.0:
-                log.warning(
-                    f"[Gauge-Filter] pool too small ({len(_gauge_pool)}"
-                    f"<{CFG.GAUGE_MIN_SAMPLES}) — filter disabled "
-                    f"(rate-limited to 1 per 5min)"
-                )
-                build_signals._last_pool_warn_ts = _gw_now
+            log.warning(
+                f"[Gauge-Filter] pool too small ({len(_gauge_pool)}"
+                f"<{CFG.GAUGE_MIN_SAMPLES}) — filter disabled"
+            )
 
     for sym, ad in assets.items():
         n = len(ad.score)
@@ -10104,33 +10017,14 @@ def _live_cache_put(sym: str, tf: str, last_closed_ts: int, ad: "AssetData") -> 
 def _live_cache_prune_stale(current_last_closed: Dict[str, int]) -> int:
     """
     Remove entries whose last_closed_ts is older than the current one
-    for the same (sym, tf), BUT ONLY when a strictly newer entry exists
-    for that (sym, tf).
-
-    [ROBUST-PRUNE] Rationale: if process_asset fails transiently this
-    cycle (degenerate KMeans, insufficient bars, etc.), no new entry is
-    stored. Deleting the old entry would leave the symbol with no ad,
-    making assets[sym] empty and cascading into a total signal blackout.
-    Keeping the previous entry alive ensures a working fallback until a
-    fresh ad is computed.
+    for the same (sym, tf). Called periodically.
     """
     removed = 0
-    # Map (sym, tf) -> set of timestamps currently present
-    _by_sym: Dict = defaultdict(set)
-    for key in list(_LIVE_ASSET_CACHE.keys()):
-        _sym, _tf, _ts = key
-        _by_sym[(_sym, _tf)].add(_ts)
-
     for key in list(_LIVE_ASSET_CACHE.keys()):
         sym, tf, ts = key
         cur_ts = current_last_closed.get(sym, ts)
-        if ts >= cur_ts:
-            continue
-        # Prune only if a strictly newer entry exists for the same (sym,tf)
-        _newer = [t for t in _by_sym.get((sym, tf), set()) if t > ts]
-        if _newer:
+        if ts < cur_ts:
             _LIVE_ASSET_CACHE.pop(key, None)
-            _by_sym[(sym, tf)].discard(ts)
             removed += 1
     return removed
 
@@ -13546,31 +13440,6 @@ def run_live(cfg, exchange):
                         assets[sym] = ad
                 except Exception as e:
                     log.warning(f"فشل التحديث اللحظي لـ {sym}: {e}")
-
-            # ══ [DIAG] Loudly report when assets ends up empty ══
-            # Helps debug the "pool too small" cascade in one line.
-            if (not assets) and top_syms:
-                _diag_now = time.time()
-                _diag_last = getattr(run_live, '_last_empty_diag_ts', 0.0)
-                if _diag_now - _diag_last >= 300.0:
-                    run_live._last_empty_diag_ts = _diag_now
-                    _n_cached = sum(
-                        1 for s in top_syms if s in cached_data)
-                    _n_min = int(getattr(
-                        CFG, 'LIVE_MIN_BARS_FOR_PROCESS', 2000))
-                    _n_small = sum(
-                        1 for s in top_syms
-                        if s in cached_data
-                        and len(cached_data[s]) < _n_min
-                    )
-                    _n_deg = len(_DEGENERATE_CACHE)
-                    log.critical(
-                        f"[DIAG] assets empty for {len(top_syms)} symbols "
-                        f"(cached={_n_cached}, too_small={_n_small}, "
-                        f"min_needed={_n_min}, degenerate_marked={_n_deg}). "
-                        f"Likely cause: process_asset returned None. "
-                        f"Check 'K-Fallback' lines above."
-                    )
 
             # ══ [LIVE CACHE] prune stale + report stats ══
             if _current_last_closed:

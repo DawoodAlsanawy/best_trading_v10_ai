@@ -2841,9 +2841,6 @@ class Signal:
     # ══ [SMART ENTRY] ══
     entry_ref_price: float = 0.0   # close price at signal time (dip ref)
     entry_base_dip: float = 0.0    # |ref_price − price| in price units
-    # ══ [MFAL] Signal-time feature vector for Quality factor ══
-    mfal_x: Optional[np.ndarray] = None
-    mfal_p_act: float = 0.0
 
 @dataclass
 class Trade:
@@ -2952,108 +2949,28 @@ def process_asset(symbol, df, km_ext=None, current_capital=None, sub_df=None):
                                  n_train_features=train_end)
     # ══════════════════════════════════════════════════════════
 
-    # ══ [K-ROBUST] Fit KMeans with automatic K-fallback. ══
-    # If the initial K yields degenerate clustering (H_train far below
-    # log2(K)), retry with K/2, K/4, ..., K=2. Prevents the catastrophic
-    # "assets empty -> no signals" failure mode where every symbol
-    # returned None on a transient degenerate fit.
-    _k_threshold = float(getattr(CFG, 'K_DEGENERATE_H_RATIO', 0.25))
-    _k_skip = getattr(CFG, 'K_SKIP_IF_DEGENERATE', True)
+    km = km_ext if km_ext else fit_kmeans(X[:train_end], k=dyn_k)
+    sym_q = assign(X, km)
 
-    if km_ext is not None:
-        # External KMeans provided -> trust it, keep strict behavior
-        km = km_ext
-        sym_q = assign(X, km)
-        H = entropy_series(sym_q, k=dyn_k)
-        dH = np.diff(H, prepend=H[0])
-        d2H = np.diff(dH, prepend=dH[0])
-        if _k_skip and train_end > 0:
-            _H_train_mean = float(np.mean(H[:train_end]))
-            _H_theo = np.log2(max(int(dyn_k), 2))
-            _ratio = _H_train_mean / max(_H_theo, 1e-9)
-            if _ratio < _k_threshold:
-                log.warning(
-                    f"[K-Fallback] {symbol}: degenerate with km_ext "
-                    f"(ratio={_ratio:.3f}, K={dyn_k}) -- returning None"
-                )
-                return None
-    else:
-        # Build candidate list: K_initial, K/2, K/4, ..., 2
-        _k_initial = int(dyn_k)
-        _k_candidates = [_k_initial]
-        _k_cur = _k_initial
-        while _k_cur > 2:
-            _k_cur = max(2, _k_cur // 2)
-            if _k_cur not in _k_candidates:
-                _k_candidates.append(_k_cur)
+    H   = entropy_series(sym_q, k=dyn_k)
+    dH  = np.diff(H,  prepend=H[0])
+    d2H = np.diff(dH, prepend=dH[0])
 
-        _k_chosen = None
-        _km_chosen = None
-        _sym_q_chosen = None
-        _H_chosen = None
-        _last_ratio = None
-        _last_k_tried = None
-
-        for _k_try in _k_candidates:
-            _last_k_tried = _k_try
-            try:
-                _km_try = fit_kmeans(X[:train_end], k=_k_try)
-                _sym_q_try = assign(X, _km_try)
-                _H_try = entropy_series(_sym_q_try, k=_k_try)
-                if _k_skip and train_end > 0:
-                    _H_mean_try = float(np.mean(_H_try[:train_end]))
-                    _H_theo_try = np.log2(max(_k_try, 2))
-                    _ratio_try = _H_mean_try / max(_H_theo_try, 1e-9)
-                    _last_ratio = _ratio_try
-                    if _ratio_try < _k_threshold:
-                        log.debug(
-                            f"[K-Fallback] {symbol} K={_k_try} "
-                            f"degenerate (ratio={_ratio_try:.3f})"
-                        )
-                        continue
-                _k_chosen = _k_try
-                _km_chosen = _km_try
-                _sym_q_chosen = _sym_q_try
-                _H_chosen = _H_try
-                break
-            except Exception as _e:
-                log.debug(
-                    f"[K-Fallback] {symbol} fit K={_k_try} failed: {_e}"
-                )
-                continue
-
-        if _k_chosen is None:
-            # Last resort: force K=2 (guaranteed non-degenerate for any
-            # non-trivial distribution: H_max = 1, threshold = 0.25).
-            try:
-                _k_chosen = 2
-                _km_chosen = fit_kmeans(X[:train_end], k=2)
-                _sym_q_chosen = assign(X, _km_chosen)
-                _H_chosen = entropy_series(_sym_q_chosen, k=2)
-                log.warning(
-                    f"[K-Fallback] {symbol}: all K degenerate "
-                    f"(last K={_last_k_tried}, ratio={_last_ratio}) "
-                    f"-- forced K=2"
-                )
-            except Exception as _e:
-                log.warning(
-                    f"[K-Fallback] {symbol}: K=2 fallback failed: {_e} "
-                    f"-- returning None"
-                )
-                return None
-
-        if _k_chosen != _k_initial:
-            log.info(
-                f"[K-Fallback] {symbol}: K={_k_initial}->{_k_chosen} "
-                f"(ratio={_last_ratio})"
+    # ══ [ADAPTIVE FIX #2b] Degenerate clustering detection ══
+    # If training-set entropy is far below theoretical max, KMeans has
+    # collapsed to a few effective clusters → features are meaningless.
+    # Skip this (symbol, TF) entirely.
+    if getattr(CFG, 'K_SKIP_IF_DEGENERATE', True):
+        _H_train_mean = float(np.mean(H[:max(train_end, 1)]))
+        _H_theo = np.log2(max(int(dyn_k), 2))
+        _ratio = _H_train_mean / max(_H_theo, 1e-9)
+        if _ratio < float(getattr(CFG, 'K_DEGENERATE_H_RATIO', 0.25)):
+            log.warning(
+                f"[process_asset] {symbol}: degenerate clustering "
+                f"(H_train={_H_train_mean:.3f}, H_theo={_H_theo:.3f}, "
+                f"ratio={_ratio:.3f}, K={dyn_k}) — returning None"
             )
-
-        km = _km_chosen
-        sym_q = _sym_q_chosen
-        H = _H_chosen
-        dH = np.diff(H, prepend=H[0])
-        d2H = np.diff(dH, prepend=dH[0])
-        dyn_k = int(_k_chosen)   # propagate for downstream uses
+            return None
 
     lr_full = np.diff(np.log(np.maximum(closes,1e-12)))
     E_therm = np.zeros(n)
@@ -3616,429 +3533,6 @@ def compute_dynamic_leverage(capital, cfg, symbol=None):
     except Exception:
         return raw_lev
 
-# ══════════════════════════════════════════════════════════════════════
-# [MFAL] Multi-Factor Adaptive Leverage
-# ══════════════════════════════════════════════════════════════════════
-#
-# Philosophy:
-#   Leverage is not a single number derived from one formula. It is a
-#   DECISION that fuses multiple independent factors:
-#
-#       L_final = L_core * Q * R * T * M
-#
-#     L_core = physical base (capital + liquidity)
-#     Q      = signal quality (learned weights)
-#     R      = portfolio capacity (corr, heat, dd, perf)
-#     T      = time-of-day liquidity multiplier
-#     M      = micro-structure (spread / depth) multiplier
-#
-#   Hard constraints (Liq cap, symbol max, L_min) applied LAST.
-#
-# Default state: DISABLED. Enable via --mfal flag.
-
-_MFAL_ENABLED: bool = False
-_MFAL_USE_MICRO: bool = True
-_MFAL_USE_TIME: bool = True
-_MFAL_USE_LEARNING: bool = True
-_MFAL_MIN_TRADES_FOR_LEARNING: int = 200
-_MFAL_RETRAIN_EVERY: int = 50
-
-_MFAL_WEIGHTS_PATH: str = "mfal_weights.json"
-_MFAL_HISTORY_PATH: str = "mfal_history.jsonl"
-_MFAL_FEATURE_KEYS = [
-    "score", "p_act", "accel_ratio",
-    "gauge", "z_dev", "rr", "freshness",
-]
-_MFAL_DEFAULT_WEIGHTS = np.array(
-    [0.30, 0.25, 0.15, 0.10, 0.10, 0.05, 0.05],
-    dtype=np.float64,
-)
-_MFAL_WEIGHTS: np.ndarray = _MFAL_DEFAULT_WEIGHTS.copy()
-_MFAL_BIAS: float = 0.0
-
-_MFAL_STATS: Dict = {
-    "compute_calls": 0,
-    "q_min": float("inf"), "q_max": float("-inf"), "q_sum": 0.0,
-    "r_min": float("inf"), "r_max": float("-inf"), "r_sum": 0.0,
-    "l_core_sum": 0.0, "l_final_sum": 0.0,
-    "trades_recorded": 0, "retrains": 0, "last_report_ts": 0.0,
-}
-_MFAL_RECENT_R: List[float] = []
-
-
-def _mfal_load_weights(path=None):
-    global _MFAL_WEIGHTS, _MFAL_BIAS
-    p = path or _MFAL_WEIGHTS_PATH
-    if not os.path.exists(p):
-        log.info(f"[MFAL] No weights file at {p} -- using defaults")
-        return False
-    try:
-        with open(p, "r") as f:
-            data = json.load(f)
-        w = data.get("weights", None)
-        b = float(data.get("bias", 0.0))
-        if w is None or len(w) != len(_MFAL_FEATURE_KEYS):
-            log.warning(f"[MFAL] Invalid weights shape in {p}")
-            return False
-        _MFAL_WEIGHTS = np.array(w, dtype=np.float64)
-        _MFAL_BIAS = b
-        log.info(f"[MFAL] Loaded weights from {p}: "
-                 f"norm={np.linalg.norm(_MFAL_WEIGHTS):.4f}")
-        return True
-    except Exception as e:
-        log.warning(f"[MFAL] Load failed: {e}")
-        return False
-
-
-def _mfal_save_weights(path=None):
-    p = path or _MFAL_WEIGHTS_PATH
-    try:
-        payload = {
-            "weights": _MFAL_WEIGHTS.tolist(),
-            "bias": float(_MFAL_BIAS),
-            "features": list(_MFAL_FEATURE_KEYS),
-            "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "n_trades_at_save": int(_MFAL_STATS.get("trades_recorded", 0)),
-        }
-        tmp = p + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(payload, f, indent=2)
-        os.replace(tmp, p)
-    except Exception as e:
-        log.warning(f"[MFAL] Save failed: {e}")
-
-
-def _mfal_signal_features(score, p_act, accel_ratio, gauge, z_dev, rr):
-    """7-dim feature vector from signal-time data. Bounded to [-1, 1]."""
-    try:
-        x = np.array([
-            float(score) / 8.0,
-            float(p_act),
-            float(np.tanh(accel_ratio / 3.0)),
-            float(np.tanh(gauge * 10.0)),
-            float(np.tanh(abs(z_dev) / 2.0)),
-            float(np.tanh(rr / 3.0)),
-            1.0,
-        ], dtype=np.float64)
-        if not np.all(np.isfinite(x)):
-            return None
-        return x
-    except Exception:
-        return None
-
-
-def _mfal_quality(x):
-    """Q = 0.4 + 1.4 * sigmoid(w.x), range [0.40, 1.80]."""
-    if x is None:
-        return 1.0
-    try:
-        z = float(np.dot(_MFAL_WEIGHTS, x)) + _MFAL_BIAS
-        s = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
-        q = 0.4 + 1.4 * s
-        return float(np.clip(q, 0.40, 1.80))
-    except Exception:
-        return 1.0
-
-
-def _mfal_time_factor(now_ts=None):
-    """Hour-of-day liquidity multiplier (0.75 -> 1.15)."""
-    try:
-        if now_ts is None:
-            now_ts = time.time()
-        h = datetime.fromtimestamp(now_ts, timezone.utc).hour
-        table = {
-            0: 0.85, 1: 0.80, 2: 0.75, 3: 0.75,
-            4: 0.80, 5: 0.85, 6: 0.90, 7: 0.95,
-            8: 1.00, 9: 1.05, 10: 1.05, 11: 1.00,
-            12: 1.05, 13: 1.10, 14: 1.15, 15: 1.15,
-            16: 1.10, 17: 1.05, 18: 1.00, 19: 0.95,
-            20: 0.90, 21: 0.90, 22: 0.85, 23: 0.85,
-        }
-        return float(table.get(h, 1.0))
-    except Exception:
-        return 1.0
-
-
-def _mfal_micro_factor(exchange, sym):
-    """Spread / depth multiplier from live book. Range [0.42, 1.32]."""
-    if not _MFAL_USE_MICRO or exchange is None:
-        return 1.0
-    try:
-        ob = exchange.fetch_order_book(sym, limit=5)
-        bids = ob.get("bids") or []
-        asks = ob.get("asks") or []
-        if not bids or not asks:
-            return 1.0
-        bb = float(bids[0][0]); ba = float(asks[0][0])
-        if bb <= 0 or ba <= 0 or ba < bb:
-            return 1.0
-        mid = (bb + ba) / 2.0
-        spread_bps = (ba - bb) / mid * 1e4
-        depth_bid = sum(float(x[1]) for x in bids[:5]) * bb
-        depth_ask = sum(float(x[1]) for x in asks[:5]) * ba
-        depth_usd = (depth_bid + depth_ask) / 2.0
-        f_spread = float(np.clip(
-            (3.0 / max(spread_bps, 0.1)) ** 0.5, 0.60, 1.20))
-        f_depth = float(np.clip(
-            (depth_usd / 1.0e5) ** 0.30, 0.70, 1.10))
-        return float(np.clip(f_spread * f_depth, 0.42, 1.32))
-    except Exception as e:
-        log.debug(f"[MFAL] micro_factor failed for {sym}: {e}")
-        return 1.0
-
-
-def _mfal_portfolio_factor(sym, open_pos_live, capital,
-                             peak_capital, corr_cache):
-    """R = R_corr * R_heat * R_dd * R_perf, clipped to [0.30, 1.30]."""
-    try:
-        if open_pos_live and corr_cache:
-            rho_max = 0.0
-            for other in open_pos_live.keys():
-                rho = abs(float(corr_cache.get((sym, other), 0.0)))
-                if rho > rho_max:
-                    rho_max = rho
-            R_corr = 1.0 - 0.5 * rho_max
-        else:
-            R_corr = 1.0
-
-        heat_max = float(getattr(CFG, "PORTFOLIO_HEAT_MAX", 0.10))
-        heat_used = 0.0
-        for p in open_pos_live.values():
-            try:
-                if isinstance(p, dict):
-                    heat_used += float(p.get("dyn_risk", 0.0) or 0.0)
-                else:
-                    try:
-                        heat_used += float(p.signal.dynamic_risk)
-                    except Exception:
-                        heat_used += float(
-                            getattr(p, "dynamic_risk", 0.0) or 0.0)
-            except Exception:
-                pass
-        R_heat = (1.0 - 0.4 * min(1.0, heat_used / heat_max)
-                  if heat_max > 1e-9 else 1.0)
-
-        dd = (max(0.0, (peak_capital - capital) / peak_capital)
-              if peak_capital > 1e-9 else 0.0)
-        R_dd = float(np.exp(-3.0 * dd))
-
-        if len(_MFAL_RECENT_R) >= 10:
-            r = np.array(_MFAL_RECENT_R[-50:], dtype=np.float64)
-            mu = float(np.mean(r))
-            sd = float(np.std(r, ddof=1)) if len(r) > 1 else 0.0
-            sharpe = (mu / sd * np.sqrt(len(r))) if sd > 1e-9 else 0.0
-            R_perf = float(np.clip(0.9 + 0.1 * sharpe, 0.70, 1.20))
-        else:
-            R_perf = 1.0
-
-        R = R_corr * R_heat * R_dd * R_perf
-        return float(np.clip(R, 0.30, 1.30))
-    except Exception as e:
-        log.debug(f"[MFAL] portfolio_factor failed: {e}")
-        return 1.0
-
-
-def compute_adaptive_leverage(symbol, sig, open_pos_live, capital,
-                                peak_capital, corr_cache, exchange,
-                                cfg):
-    """
-    [MFAL] Adaptive leverage:
-        L = clamp(L_core * Q * R * T * M, L_min, min(L_liq, L_sym))
-    Falls back to compute_dynamic_leverage when MFAL is disabled.
-    """
-    L_core = int(compute_dynamic_leverage(capital, cfg, symbol=symbol))
-
-    if not _MFAL_ENABLED:
-        return L_core
-
-    x = getattr(sig, "mfal_x", None) if sig is not None else None
-    Q = _mfal_quality(x)
-    R = _mfal_portfolio_factor(
-        sym=symbol,
-        open_pos_live=open_pos_live or {},
-        capital=capital,
-        peak_capital=peak_capital,
-        corr_cache=corr_cache or {},
-    )
-    T = _mfal_time_factor() if _MFAL_USE_TIME else 1.0
-    M = _mfal_micro_factor(exchange, symbol) if _MFAL_USE_MICRO else 1.0
-
-    L_scored = L_core * Q * R * T * M
-
-    try:
-        _mmr = _get_mmr_for_symbol(exchange, symbol) if exchange else 0.02
-        _sl_frac_max = 0.015 * float(getattr(cfg, "SL_WIDEN_MULT", 1.0))
-        L_liq = int(compute_max_leverage_by_liq(
-            sl_frac_max=_sl_frac_max,
-            mmr=_mmr,
-            safety_mult=float(getattr(cfg, "LIQ_SAFETY_MULT", 1.5)),
-            symbol=symbol,
-        ))
-    except Exception:
-        L_liq = int(cfg.LEVERAGE_MAX)
-
-    try:
-        L_sym = int(max(_symbol_tiers(symbol, cfg)))
-    except Exception:
-        L_sym = int(cfg.LEVERAGE_MAX)
-
-    L_min = int(cfg.LEVERAGE_MIN)
-    L_final = int(np.floor(L_scored))
-    L_final = max(L_min, min(L_final, L_liq, L_sym))
-
-    try:
-        tiers = _symbol_tiers(symbol, cfg)
-        valid = [int(t) for t in tiers if L_min <= int(t) <= L_final]
-        L_final = int(valid[-1]) if valid else L_min
-    except Exception:
-        pass
-
-    _MFAL_STATS["compute_calls"] += 1
-    _MFAL_STATS["q_min"] = min(_MFAL_STATS["q_min"], Q)
-    _MFAL_STATS["q_max"] = max(_MFAL_STATS["q_max"], Q)
-    _MFAL_STATS["q_sum"] += Q
-    _MFAL_STATS["r_min"] = min(_MFAL_STATS["r_min"], R)
-    _MFAL_STATS["r_max"] = max(_MFAL_STATS["r_max"], R)
-    _MFAL_STATS["r_sum"] += R
-    _MFAL_STATS["l_core_sum"] += L_core
-    _MFAL_STATS["l_final_sum"] += L_final
-
-    if Q < 0.7 or Q > 1.4 or R < 0.7:
-        log.info(
-            f"[MFAL] {symbol} L={L_final}x "
-            f"(core={L_core}, Q={Q:.2f}, R={R:.2f}, "
-            f"T={T:.2f}, M={M:.2f})"
-        )
-
-    return int(L_final)
-
-
-def _mfal_record_trade(sig, outcome_R, success):
-    """Records a trade outcome. Accepts Signal object OR dict."""
-    try:
-        x = None
-        if sig is not None:
-            if isinstance(sig, dict):
-                _x_raw = sig.get("_mfal_x") or sig.get("mfal_x")
-                if _x_raw is not None:
-                    try:
-                        x = np.asarray(_x_raw, dtype=np.float64)
-                    except Exception:
-                        x = None
-            else:
-                x = getattr(sig, "mfal_x", None)
-        if x is None:
-            return
-        record = {
-            "ts": time.time(),
-            "symbol": str(
-                sig.get("_sym") if isinstance(sig, dict)
-                else getattr(sig, "symbol", "?")),
-            "x": np.asarray(x).tolist(),
-            "outcome_R": float(outcome_R),
-            "success": bool(success),
-        }
-        try:
-            with open(_MFAL_HISTORY_PATH, "a") as f:
-                f.write(json.dumps(record) + "\n")
-        except Exception:
-            pass
-
-        _MFAL_RECENT_R.append(float(outcome_R))
-        if len(_MFAL_RECENT_R) > 200:
-            _MFAL_RECENT_R[:] = _MFAL_RECENT_R[-100:]
-
-        _MFAL_STATS["trades_recorded"] += 1
-
-        if (_MFAL_USE_LEARNING
-                and _MFAL_STATS["trades_recorded"] >= _MFAL_MIN_TRADES_FOR_LEARNING
-                and _MFAL_STATS["trades_recorded"] % _MFAL_RETRAIN_EVERY == 0):
-            _mfal_retrain()
-    except Exception as e:
-        log.debug(f"[MFAL] record_trade failed: {e}")
-
-
-def _mfal_retrain():
-    global _MFAL_WEIGHTS, _MFAL_BIAS
-    if not os.path.exists(_MFAL_HISTORY_PATH):
-        return
-    try:
-        X, y = [], []
-        with open(_MFAL_HISTORY_PATH) as f:
-            for line in f:
-                try:
-                    r = json.loads(line)
-                except Exception:
-                    continue
-                x = r.get("x")
-                if not isinstance(x, list):
-                    continue
-                if len(x) != len(_MFAL_FEATURE_KEYS):
-                    continue
-                X.append(x)
-                y.append(1.0 if r.get("success") else 0.0)
-        if len(X) < _MFAL_MIN_TRADES_FOR_LEARNING:
-            return
-        Xa = np.array(X, dtype=np.float64)
-        ya = np.array(y, dtype=np.float64)
-        if ya.sum() < 20 or (1.0 - ya).sum() < 20:
-            return
-        from scipy.optimize import minimize as _scipy_min
-
-        def _loss(params):
-            w = params[:-1]; b = params[-1]
-            z = Xa @ w + b
-            p = np.where(z >= 0, 1.0 / (1.0 + np.exp(-z)),
-                         np.exp(z) / (1.0 + np.exp(z)))
-            eps = 1e-9
-            p = np.clip(p, eps, 1.0 - eps)
-            nll = -np.mean(ya * np.log(p) + (1 - ya) * np.log(1 - p))
-            reg = 0.1 * float(np.sum(w * w))
-            return float(nll + reg)
-
-        x0 = np.concatenate([_MFAL_WEIGHTS, [_MFAL_BIAS]])
-        res = _scipy_min(_loss, x0, method="L-BFGS-B",
-                          options={"maxiter": 100})
-
-        _MFAL_WEIGHTS = 0.8 * _MFAL_WEIGHTS + 0.2 * res.x[:-1]
-        _MFAL_BIAS = 0.8 * _MFAL_BIAS + 0.2 * float(res.x[-1])
-
-        _MFAL_STATS["retrains"] += 1
-        _mfal_save_weights()
-        log.info(
-            f"[MFAL] Retrained #{_MFAL_STATS['retrains']} "
-            f"(n={len(X)}, w_norm={np.linalg.norm(_MFAL_WEIGHTS):.4f})"
-        )
-    except Exception as e:
-        log.warning(f"[MFAL] retrain failed: {e}")
-
-
-def _mfal_log_stats():
-    if not _MFAL_ENABLED:
-        return
-    now = time.time()
-    if now - _MFAL_STATS.get("last_report_ts", 0.0) < 300:
-        return
-    _MFAL_STATS["last_report_ts"] = now
-    n = max(_MFAL_STATS["compute_calls"], 1)
-    log.info(
-        f"[MFAL] calls={n}, "
-        f"Q=[{_MFAL_STATS['q_min']:.2f},{_MFAL_STATS['q_max']:.2f}] "
-        f"mu={_MFAL_STATS['q_sum']/n:.2f}, "
-        f"R=[{_MFAL_STATS['r_min']:.2f},{_MFAL_STATS['r_max']:.2f}] "
-        f"mu={_MFAL_STATS['r_sum']/n:.2f}, "
-        f"L_core_avg={_MFAL_STATS['l_core_sum']/n:.2f}, "
-        f"L_final_avg={_MFAL_STATS['l_final_sum']/n:.2f}, "
-        f"trades={_MFAL_STATS['trades_recorded']}, "
-        f"retrains={_MFAL_STATS['retrains']}"
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════
-# [/MFAL]
-# ══════════════════════════════════════════════════════════════════════
-
-
 # ════════════════════════════════════════════════════════════════
 # § 12.9  Support/Resistance Detection
 # ════════════════════════════════════════════════════════════════
@@ -4485,17 +3979,10 @@ def build_signals(assets, mode="backtest"):
                 )
                 build_signals._last_gauge_pool_size = _pool_size
         else:
-            # [RATE-LIMIT] Warn at most once per 5 minutes to avoid log
-            # spam when the pool is persistently empty.
-            _gw_now = time.time()
-            _gw_last = getattr(build_signals, '_last_pool_warn_ts', 0.0)
-            if _gw_now - _gw_last >= 300.0:
-                log.warning(
-                    f"[Gauge-Filter] pool too small ({len(_gauge_pool)}"
-                    f"<{CFG.GAUGE_MIN_SAMPLES}) — filter disabled "
-                    f"(rate-limited to 1 per 5min)"
-                )
-                build_signals._last_pool_warn_ts = _gw_now
+            log.warning(
+                f"[Gauge-Filter] pool too small ({len(_gauge_pool)}"
+                f"<{CFG.GAUGE_MIN_SAMPLES}) — filter disabled"
+            )
 
     for sym, ad in assets.items():
         n = len(ad.score)
@@ -4691,22 +4178,6 @@ def build_signals(assets, mode="backtest"):
 
             dynamic_risk = compute_geodesic_kelly(ad, fi, CFG)
 
-            # ══ [MFAL] Extract signal features for Quality factor ══
-            try:
-                _accel_ratio_mfal = abs(geo_accel) / max(fric_val, 1e-9)
-                _sl_dist_mfal = abs(tunnel_entry_p - sl)
-                _rr_mfal = abs(tp1 - tunnel_entry_p) / max(_sl_dist_mfal, 1e-9)
-                _mfal_x = _mfal_signal_features(
-                    score=float(ad.score[fi]),
-                    p_act=float(P_activation),
-                    accel_ratio=float(_accel_ratio_mfal),
-                    gauge=float(ad.gauge_force[fi]),
-                    z_dev=float(_z_dev),
-                    rr=float(_rr_mfal),
-                )
-            except Exception:
-                _mfal_x = None
-
             # ══ [TRADE FILTER] ══
             _new_sig = Signal(
                 timestamp=ad.timestamps[ci], symbol=sym,
@@ -4719,8 +4190,6 @@ def build_signals(assets, mode="backtest"):
                 dyn_sl_factor=sl_dist / tunnel_entry_p,
                 entry_ref_price=float(p),
                 entry_base_dip=float(_entry_dip),
-                mfal_x=_mfal_x,
-                mfal_p_act=float(P_activation),
             )
 
             _FILTER_STATS['total_signals'] += 1
@@ -4816,81 +4285,32 @@ def precompute_correlations(assets) -> Dict[Tuple[str,str], float]:
     return cm
 
 
-def _compute_entry_target(sig, ad, side, exchange=None) -> float:
+def _backtest_entry_target(sig, ad) -> float:
     """
-    [UNIFIED-ENTRY] Single source of truth for entry pricing in BOTH
-    backtest and live.
+    Limit order target in backtest — mirrors Live's two pricing modes.
 
-    Two modes, controlled by CFG.PO_FIXED_PRICE:
+    PO_FIXED_PRICE=True (default):
+        target = sig.price   (the tunnel / phase-matched price)
 
-      PO_FIXED_PRICE = True:
-          target = sig.price   (the tunnel price, no offset)
-          Backtest and live both use the exact same value.
+    PO_FIXED_PRICE=False (--no-fixed-price):
+        target ≈ the live best bid/ask at placement time:
+          BUY:  closes[sig.close_idx] × (1 − pen_frac)
+          SELL: closes[sig.close_idx] × (1 + pen_frac)
+        where pen_frac = PO_PENETRATION_BPS × 1e-4.
 
-      PO_FIXED_PRICE = False (--no-fixed-price):
-          base   = close[sig.close_idx]
-          offset = dynamic (tick / sigma_bar / ADV)
-          Direction is mean-reversion:
-              BUY : target = base - offset   (below -> wait for a dip)
-              SELL: target = base + offset   (above -> wait for a rally)
-
-    The offset function _watch_compute_entry_offset is shared with the
-    live Watch mode. With exchange=None (backtest) it uses a pure-bps
-    tick fallback so the result is deterministic and reproducible.
+    Bar-level proxy for Live's live order-book fetch.
     """
-    # ── PO_FIXED_PRICE path (identical in backtest and live) ──
     if getattr(CFG, 'PO_FIXED_PRICE', True):
         return float(sig.price)
-
-    # ── --no-fixed-price path ──
-    _base = float(sig.price)
     try:
-        _ci = int(getattr(sig, 'close_idx', -1))
-        if ad is not None and 0 <= _ci < len(ad.closes):
-            _base = float(ad.closes[_ci])
+        _close_at_sig = float(ad.closes[int(sig.close_idx)])
+        _pen_frac = float(getattr(CFG, 'PO_PENETRATION_BPS', 1.0)) * 1e-4
+        if sig.action == "BUY":
+            return _close_at_sig * (1.0 - _pen_frac)
+        else:
+            return _close_at_sig * (1.0 + _pen_frac)
     except Exception:
-        pass
-
-    _sigma = 0.01
-    try:
-        _fi = int(getattr(sig, 'feat_idx', -1))
-        if ad is not None and 0 <= _fi < len(ad.E_therm):
-            _s = float(ad.E_therm[_fi])
-            if np.isfinite(_s) and _s > 1e-6:
-                _sigma = _s
-    except Exception:
-        pass
-
-    _adv = 1e8
-    try:
-        _ci = int(getattr(sig, 'close_idx', -1))
-        if ad is not None and 0 <= _ci < len(ad.adv_usd):
-            _adv = float(ad.adv_usd[_ci])
-    except Exception:
-        pass
-
-    _off = _watch_compute_entry_offset(
-        tunnel_p=_base,
-        sigma_bar=_sigma,
-        adv_usd=_adv,
-        exchange=exchange,
-        symbol=(getattr(sig, 'symbol', None)
-                if exchange is not None else None),
-        qty=0.0,
-    )
-
-    # Direction: mean-reversion
-    #   BUY  -> below market (wait for a dip)
-    #   SELL -> above market (wait for a rally)
-    if side == 'buy':
-        return float(_base - _off)
-    return float(_base + _off)
-
-
-def _backtest_entry_target(sig, ad) -> float:
-    """[UNIFIED-ENTRY] Delegates to _compute_entry_target (single source)."""
-    _side = 'buy' if sig.action == "BUY" else 'sell'
-    return _compute_entry_target(sig, ad, _side, exchange=None)
+        return float(sig.price)
 
 # ════════════════════════════════════════════════════════════════
 # § 15  محاكاة المحفظة (التعديلات ①②)
@@ -5925,22 +5345,6 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         except Exception as _tle:
             log.debug(f"[TradeLog] backtest hook failed: {_tle}")
 
-        # ══ [MFAL] Record trade outcome ══
-        try:
-            if _MFAL_ENABLED:
-                _entry_px_m = float(pos.entry_px)
-                _sl_d0_m = float(getattr(pos, "sl_dist_initial", 0.0))
-                if _entry_px_m > 0 and _sl_d0_m > 0:
-                    if sig.action == "BUY":
-                        _pnl_frac_m = (exit_eff - _entry_px_m) / _entry_px_m
-                    else:
-                        _pnl_frac_m = (_entry_px_m - exit_eff) / _entry_px_m
-                    _sl_frac_m = _sl_d0_m / _entry_px_m
-                    _R_m = _pnl_frac_m / _sl_frac_m if _sl_frac_m > 0 else 0.0
-                    _mfal_record_trade(sig, float(_R_m), _R_m > 0.5)
-        except Exception as _me:
-            log.debug(f"[MFAL] backtest record failed: {_me}")
-
     # ══ [FIX 4] Partial TP callback ══
     def _partial_tp(pos, px, ci):
         """Record a partial take-profit and reduce the position size."""
@@ -6165,17 +5569,8 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         # Required quantity
         qty = risk_amt / delta
 
-        # Leverage cap (MFAL-aware when --mfal is enabled)
-        dynamic_leverage = compute_adaptive_leverage(
-            symbol=sym,
-            sig=sig,
-            open_pos_live=open_pos,
-            capital=capital,
-            peak_capital=peak_cap,
-            corr_cache=corr_matrix,
-            exchange=None,
-            cfg=CFG,
-        )
+        # Leverage cap
+        dynamic_leverage = compute_dynamic_leverage(capital, CFG, symbol=sym)
 
         # ══ [LIVE PARITY] Apply LevCap + LiqGate like live does ══
         # Live uses real MMR from the exchange. Backtest uses the
@@ -8180,21 +7575,13 @@ def _place_protective_orders(exchange, sym: str, pos: Dict) -> bool:
     """
     Place STOP_MARKET at SL and TAKE_PROFIT_MARKET at TP for the position.
 
-    [SURGICAL-PLACEMENT] This version handles each leg independently:
-
-      1. Fetch current protective orders (via _lv_open_orders_all which
-         includes Algo Orders / conditional orders on Binance Futures).
-      2. Classify each existing order:
-           - SL at pos['sl']           -> kept as-is
-           - Full-TP at pos['tp1']     -> kept as-is
-           - Partial-TP at partial_px  -> kept as-is
-           - anything else             -> STALE -> cancelled
-      3. Place ONLY the legs that are missing.
-
-    Never cancels a leg that already exists at the correct price. This
-    eliminates the SL-stacking bug that occurred when the SL was a
-    closePosition order that fetch_open_orders could not see.
-
+    Design:
+      - closePosition=True → Binance auto-sizes and auto-cancels if position
+        disappears. No risk of orphan orders when the other side fires.
+      - workingType=MARK_PRICE → avoids last-price manipulation and matches
+        what Binance uses for liquidation.
+      - Fallback to explicit qty + reduceOnly if the exchange rejects
+        closePosition (some testnets).
     Returns True on success.
     """
     if not getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
@@ -8207,16 +7594,93 @@ def _place_protective_orders(exchange, sym: str, pos: Dict) -> bool:
         if action not in ('BUY', 'SELL') or sl <= 0 or tp <= 0 or qty <= 0:
             return False
 
+        # SMART-CHECK: if the exchange already has matching SL and TP,
+        # leave them untouched and return success immediately.
+        _ex_has_sl, _ex_has_tp = _lv_check_protective_on_exchange(
+            exchange, sym, sl, tp
+        )
+        if _ex_has_sl and _ex_has_tp:
+            log.debug(
+                f"[Prot] {sym} SL@{sl:.6f} and TP@{tp:.6f} already "
+                f"exist on exchange -- no action"
+            )
+            return True
+        if _ex_has_sl or _ex_has_tp:
+            log.info(
+                f"[Prot] {sym} partial protection "
+                f"(sl_exists={_ex_has_sl}, tp_exists={_ex_has_tp}) -- "
+                f"will cancel remaining and re-place both"
+            )
+
         close_side = 'sell' if action == 'BUY' else 'buy'
         wt = str(getattr(CFG, 'PROTECTIVE_WORKING_TYPE', 'MARK_PRICE'))
         max_retries = int(getattr(CFG, 'PROTECTIVE_MAX_RETRIES', 2))
 
-        # ── Compute partial-TP target price (needed for stale detection) ──
+        # Cancel any stale protective orders first (idempotent)
+        # [DUPLICATE-FIX] verify cancel before placing
+        _canceled_count = _cancel_all_protective_orders(exchange, sym)
+        if _canceled_count > 0:
+            log.debug(f"[Prot] {sym} canceled {_canceled_count} "
+                      f"stale order(s)")
+        time.sleep(0.5)
+        try:
+            _remaining = [o for o in exchange.fetch_open_orders(sym)
+                          if _is_protective_order(o)]
+            if _remaining:
+                log.warning(
+                    f"[Prot] {sym} {len(_remaining)} protective "
+                    f"order(s) still open after cancel — retrying"
+                )
+                _cancel_all_protective_orders(exchange, sym)
+                time.sleep(0.5)
+        except Exception as _e:
+            log.debug(f"[Prot] verify cancel for {sym} failed: {_e}")
+
+        placed = {'sl': False, 'tp': False, 'partial_tp': False}
+
+        # ── SL ──
+        for attempt in range(max_retries):
+            try:
+                exchange.create_order(
+                    sym, 'STOP_MARKET', close_side, None, None,
+                    params={
+                        'stopPrice': sl,
+                        'closePosition': True,
+                        'workingType': wt,
+                    }
+                )
+                placed['sl'] = True
+                break
+            except Exception as e:
+                log.debug(f"[Prot] {sym} STOP_MARKET attempt {attempt+1} "
+                          f"(closePosition) failed: {e}")
+                # Fallback: explicit qty + reduceOnly
+                try:
+                    exchange.create_order(
+                        sym, 'STOP_MARKET', close_side, qty, None,
+                        params={
+                            'stopPrice': sl,
+                            'reduceOnly': True,
+                            'workingType': wt,
+                        }
+                    )
+                    placed['sl'] = True
+                    break
+                except Exception as e2:
+                    log.debug(f"[Prot] {sym} STOP_MARKET attempt "
+                              f"{attempt+1} (reduceOnly) failed: {e2}")
+
+        # ══ [BROKER-SIDE PARTIAL TP] ══
+        # نضع أمرين TP:
+        #   1. Partial TP عند +PARTIAL_TP_R بـ qty × PARTIAL_TP_PCT
+        #   2. Full TP عند TP_MULT بـ qty × (1 − PARTIAL_TP_PCT)
+        # هذا يجعل Partial يعمل حتى لو البوت معطّل.
         _partial_pct = float(getattr(CFG, 'PARTIAL_TP_PCT', 0.0))
         _partial_enabled = (
             bool(getattr(CFG, 'PARTIAL_TP_ENABLED', False))
             and 0.0 < _partial_pct < 1.0
         )
+
         _sl_dist0 = float(pos.get('sl_dist_initial') or 0.0)
         _entry_px = float(pos.get('entry') or 0.0)
         _partial_price = 0.0
@@ -8226,199 +7690,99 @@ def _place_protective_orders(exchange, sym: str, pos: Dict) -> bool:
                 _partial_price = _entry_px + _sl_dist0 * _partial_r
             else:
                 _partial_price = _entry_px - _sl_dist0 * _partial_r
+            # تأكد أن Partial TP أدنى من Full TP في الاتجاه الصحيح
             if action == 'BUY' and _partial_price >= tp:
                 _partial_enabled = False
             elif action == 'SELL' and _partial_price <= tp:
                 _partial_enabled = False
+        # [FIX-B] إذا لم يُحسب سعر Partial (sl_dist0 = 0)، عطّله
         if _partial_enabled and _partial_price <= 0:
             _partial_enabled = False
-        if pos.get('_partial_taken'):
+        if pos.get('_partial_taken'):          # [LV20] already taken → remainder uses closePosition TP
             _partial_enabled = False
 
-        # ── Fetch existing protective orders ──
-        try:
-            _existing = _lv_open_orders_all(exchange, sym)
-        except Exception as _e:
-            log.debug(f"[Prot] {sym} fetch orders failed: {_e}")
-            _existing = []
-        _prot = [o for o in _existing if _is_protective_order(o)]
+        _partial_qty = 0.0
+        _full_qty = qty
+        if _partial_enabled:
+            _partial_qty = qty * _partial_pct
+            _full_qty = qty * (1.0 - _partial_pct)
 
-        def _px(o):
-            return float(
-                o.get('stopPrice')
-                or o.get('triggerPrice')
-                or (o.get('info') or {}).get('stopPrice')
-                or 0
-            )
-
-        def _is_tp(o):
-            return 'take_profit' in str(o.get('type') or '').lower()
-
-        tol = 1e-4
-        _ex_sl = None
-        _ex_tp_full = None
-        _ex_tp_partial = None
-        _stale_ids = []
-
-        for o in _prot:
-            p = _px(o)
-            if p <= 0:
-                continue
-            if _is_tp(o):
-                if (_partial_enabled
-                        and abs(p - _partial_price) /
-                            max(abs(_partial_price), 1e-9) < tol):
-                    _ex_tp_partial = p
-                elif abs(p - tp) / max(abs(tp), 1e-9) < tol:
-                    _ex_tp_full = p
-                else:
-                    _stale_ids.append(o['id'])
-            else:
-                if abs(p - sl) / max(abs(sl), 1e-9) < tol:
-                    _ex_sl = p
-                else:
-                    _stale_ids.append(o['id'])
-
-        # ── Cancel ONLY the stale legs ──
-        for _oid in _stale_ids:
-            _done = False
-            for _prm in ({'trigger': True}, {}):
-                try:
-                    exchange.cancel_order(_oid, sym, params=_prm)
-                    _done = True
-                    break
-                except Exception as _ce:
-                    _m = str(_ce).lower()
-                    if '-2011' in _m or 'unknown order' in _m:
-                        _done = True
-                        break
-            if not _done:
-                log.warning(f"[Prot] {sym} stale cancel oid={_oid} failed")
-        if _stale_ids:
-            log.info(f"[Prot] {sym} cancelled {len(_stale_ids)} stale "
-                     f"protective order(s) before placement")
-            time.sleep(0.4)
-
-        # ── Early return if everything is already in place ──
-        if (_ex_sl is not None
-                and _ex_tp_full is not None
-                and (not _partial_enabled or _ex_tp_partial is not None)):
-            log.debug(f"[Prot] {sym} all legs present -- no action")
-            pos['_broker_partial'] = bool(_ex_tp_partial is not None)
-            return True
-
-        placed = {
-            'sl': _ex_sl is not None,
-            'tp': _ex_tp_full is not None,
-            'partial_tp': _ex_tp_partial is not None,
-        }
-
-        # ══════════════════════════════════════════════════════════════
-        # SL — place only if missing
-        # ══════════════════════════════════════════════════════════════
-        if not placed['sl']:
-            for attempt in range(max_retries):
-                try:
-                    exchange.create_order(
-                        sym, 'STOP_MARKET', close_side, None, None,
-                        params={'stopPrice': sl,
-                                'closePosition': True,
-                                'workingType': wt})
-                    placed['sl'] = True
-                    log.info(f"[Prot] {sym} SL placed @ {sl:.6f} "
-                             f"(closePosition)")
-                    break
-                except Exception as e:
-                    log.debug(f"[Prot] {sym} SL closePosition "
-                              f"attempt {attempt+1} failed: {e}")
-                    try:
-                        exchange.create_order(
-                            sym, 'STOP_MARKET', close_side, qty, None,
-                            params={'stopPrice': sl,
-                                    'reduceOnly': True,
-                                    'workingType': wt})
-                        placed['sl'] = True
-                        log.info(f"[Prot] {sym} SL placed @ {sl:.6f} "
-                                 f"(reduceOnly)")
-                        break
-                    except Exception as e2:
-                        log.debug(f"[Prot] {sym} SL reduceOnly "
-                                  f"attempt {attempt+1} failed: {e2}")
-        else:
-            log.debug(f"[Prot] {sym} SL already present @ "
-                      f"{_ex_sl:.6f} -- kept")
-
-        # ══════════════════════════════════════════════════════════════
-        # Partial TP — place only if enabled and missing
-        # ══════════════════════════════════════════════════════════════
-        _partial_qty = qty * _partial_pct if _partial_enabled else 0.0
-        _full_qty = (qty * (1.0 - _partial_pct)
-                     if _partial_enabled else qty)
-
-        if _partial_enabled and not placed['partial_tp'] and _partial_qty > 0:
+        # ── Partial TP (broker-side) ──
+        if _partial_enabled and _partial_qty > 0:
             for attempt in range(max_retries):
                 try:
                     exchange.create_order(
                         sym, 'TAKE_PROFIT_MARKET', close_side,
                         _partial_qty, None,
-                        params={'stopPrice': _partial_price,
-                                'reduceOnly': True,
-                                'workingType': wt})
+                        params={
+                            'stopPrice': _partial_price,
+                            'reduceOnly': True,
+                            'workingType': wt,
+                        }
+                    )
                     placed['partial_tp'] = True
-                    log.info(f"[Prot] {sym} PARTIAL-TP placed @ "
-                             f"{_partial_price:.6f} qty={_partial_qty:.6f} "
+                    log.info(f"[Prot] {sym} PARTIAL-TP "
+                             f"@{_partial_price:.6f} "
+                             f"qty={_partial_qty:.6f} "
                              f"({_partial_pct*100:.0f}%)")
                     break
                 except Exception as e:
-                    log.debug(f"[Prot] {sym} partial-TP attempt "
+                    log.debug(f"[Prot] {sym} PARTIAL-TP attempt "
                               f"{attempt+1} failed: {e}")
-            if not placed['partial_tp']:
-                log.warning(f"[Prot] {sym} partial-TP rejected -- "
-                            f"falling back to full-qty TP only")
-                _partial_enabled = False
-        elif _partial_enabled and placed['partial_tp']:
-            log.debug(f"[Prot] {sym} PARTIAL-TP already present @ "
-                      f"{_ex_tp_partial:.6f} -- kept")
 
+        if _partial_enabled and not placed['partial_tp']:
+            log.warning(f"[Prot] {sym} partial leg rejected — full-qty TP + bot-side partial instead")
+            _partial_enabled = False
         pos['_broker_partial'] = bool(placed['partial_tp'])
-
-        # ══════════════════════════════════════════════════════════════
-        # Full TP — place only if missing
-        # ══════════════════════════════════════════════════════════════
-        if not placed['tp']:
-            _tp_close_pos = (not _partial_enabled)
-            _tp_qty = None if _tp_close_pos else _full_qty
-            for attempt in range(max_retries):
-                try:
-                    params_tp = {'stopPrice': tp, 'workingType': wt}
-                    if _tp_close_pos:
-                        params_tp['closePosition'] = True
-                    else:
-                        params_tp['reduceOnly'] = True
-                    exchange.create_order(
-                        sym, 'TAKE_PROFIT_MARKET', close_side,
-                        _tp_qty, None, params=params_tp)
-                    placed['tp'] = True
-                    log.info(f"[Prot] {sym} FULL-TP placed @ {tp:.6f} "
-                             f"({'closePosition' if _tp_close_pos else 'reduceOnly'})")
-                    break
-                except Exception as e:
-                    log.debug(f"[Prot] {sym} full-TP attempt "
-                              f"{attempt+1} failed: {e}")
+        # ── Full TP (broker-side) ──
+        # إذا فُعِّل Partial، نضع Full TP بـ qty المتبقية (reduceOnly)
+        # وإلا نستخدم closePosition (السلوك القديم)
+        if _partial_enabled:
+            _tp_qty = _full_qty
+            _tp_close_pos = False
         else:
-            log.debug(f"[Prot] {sym} FULL-TP already present @ "
-                      f"{_ex_tp_full:.6f} -- kept")
+            _tp_qty = None
+            _tp_close_pos = True
 
-        _ok = (placed['sl'] and placed['tp']
-               and (placed['partial_tp'] or not _partial_enabled))
-        if _ok:
+        for attempt in range(max_retries):
+            try:
+                params_tp = {
+                    'stopPrice': tp,
+                    'workingType': wt,
+                }
+                if _tp_close_pos:
+                    params_tp['closePosition'] = True
+                else:
+                    params_tp['reduceOnly'] = True
+                exchange.create_order(
+                    sym, 'TAKE_PROFIT_MARKET', close_side,
+                    _tp_qty, None,
+                    params=params_tp,
+                )
+                placed['tp'] = True
+                break
+            except Exception as e:
+                log.debug(f"[Prot] {sym} FULL-TP attempt "
+                          f"{attempt+1} failed: {e}")
+
+        _partial_ok = placed['partial_tp'] or not _partial_enabled
+        if placed['sl'] and placed['tp'] and _partial_ok:
+            if _partial_enabled:
+                log.info(f"[Prot] {sym} STOP@{sl:.6f} "
+                         f"PARTIAL-TP@{_partial_price:.6f} "
+                         f"FULL-TP@{tp:.6f} placed")
+            else:
+                log.info(f"[Prot] {sym} STOP@{sl:.6f} "
+                         f"TP@{tp:.6f} placed")
             return True
-        log.warning(f"[Prot] {sym} incomplete: sl={placed['sl']} "
+        log.warning(f"[Prot] {sym} partial: sl={placed['sl']} "
                     f"tp={placed['tp']} partial={placed['partial_tp']}")
-        return _ok
+        return (placed['sl'] and placed['tp']
+                and (placed['partial_tp'] or not _partial_enabled))
     except Exception as e:
         log.warning(f"[Prot] {sym} place_protective_orders fatal: {e}")
         return False
+
 
 def _sync_protective_orders(exchange, sym: str, pos: Dict) -> bool:
     """
@@ -10104,33 +9468,14 @@ def _live_cache_put(sym: str, tf: str, last_closed_ts: int, ad: "AssetData") -> 
 def _live_cache_prune_stale(current_last_closed: Dict[str, int]) -> int:
     """
     Remove entries whose last_closed_ts is older than the current one
-    for the same (sym, tf), BUT ONLY when a strictly newer entry exists
-    for that (sym, tf).
-
-    [ROBUST-PRUNE] Rationale: if process_asset fails transiently this
-    cycle (degenerate KMeans, insufficient bars, etc.), no new entry is
-    stored. Deleting the old entry would leave the symbol with no ad,
-    making assets[sym] empty and cascading into a total signal blackout.
-    Keeping the previous entry alive ensures a working fallback until a
-    fresh ad is computed.
+    for the same (sym, tf). Called periodically.
     """
     removed = 0
-    # Map (sym, tf) -> set of timestamps currently present
-    _by_sym: Dict = defaultdict(set)
-    for key in list(_LIVE_ASSET_CACHE.keys()):
-        _sym, _tf, _ts = key
-        _by_sym[(_sym, _tf)].add(_ts)
-
     for key in list(_LIVE_ASSET_CACHE.keys()):
         sym, tf, ts = key
         cur_ts = current_last_closed.get(sym, ts)
-        if ts >= cur_ts:
-            continue
-        # Prune only if a strictly newer entry exists for the same (sym,tf)
-        _newer = [t for t in _by_sym.get((sym, tf), set()) if t > ts]
-        if _newer:
+        if ts < cur_ts:
             _LIVE_ASSET_CACHE.pop(key, None)
-            _by_sym[(sym, tf)].discard(ts)
             removed += 1
     return removed
 
@@ -11673,28 +11018,31 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
         qty=qty,
     )
 
-    # ══ [UNIFIED-ENTRY] Target via _compute_entry_target ══
-    # Same function used by the backtest -> no divergence.
+    # ══ تحديد الـ target ══
     if explicit_target is not None and explicit_target > 0:
-        # Watch mode passes the price ready-made
+        # Watch mode: يُمرَّر جاهزاً
         target = float(explicit_target)
+    elif getattr(CFG, 'PO_FIXED_PRICE', True):
+        # Base = tunnel، offset outward
+        if side == 'buy':
+            target = float(sig.price) + _dyn_offset
+        else:
+            target = float(sig.price) - _dyn_offset
     else:
+        # --no-fixed-price: Base = close[sig.close_idx]، offset outward
         try:
-            target = _compute_entry_target(sig, ad, side,
-                                            exchange=exchange)
-        except Exception as e:
-            log.warning(
-                f"[Pending] {sym} unified target computation failed: "
-                f"{e} — falling back to sig.price ± fixed pen"
-            )
-            _fallback_pen = max(pen, 1e-5)
-            target = (float(sig.price) * (1.0 - _fallback_pen)
-                      if side == 'buy'
-                      else float(sig.price) * (1.0 + _fallback_pen))
+            _base = float(sig.price)
+            if ad is not None and hasattr(ad, 'closes'):
+                _ci = int(getattr(sig, 'close_idx', -1))
+                if 0 <= _ci < len(ad.closes):
+                    _base = float(ad.closes[_ci])
 
-        # Sanity gate: live-only (backtest has no live mid).
-        # Applies in --no-fixed-price mode only.
-        if not getattr(CFG, 'PO_FIXED_PRICE', True):
+            if side == 'buy':
+                target = _base + _dyn_offset
+            else:
+                target = _base - _dyn_offset
+
+            # Sanity gate
             try:
                 ob = exchange.fetch_order_book(sym, limit=5)
                 _mid = (float(ob['bids'][0][0])
@@ -11713,6 +11061,15 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
                         return None
             except Exception:
                 pass
+        except Exception as e:
+            log.warning(
+                f"[Pending] {sym} offset computation failed: {e} — "
+                f"falling back to sig.price ± fixed pen"
+            )
+            _fallback_pen = max(pen, 1e-5)
+            target = (float(sig.price) * (1.0 - _fallback_pen)
+                      if side == 'buy'
+                      else float(sig.price) * (1.0 + _fallback_pen))
 
     # ══ Log القرار ══
     log.debug(f"[Pending] {sym} base={'tunnel' if explicit_target is None else 'watch'} "
@@ -12883,13 +12240,6 @@ def _lv_place_pending_entry(*a, **kw):
             rec['sig_tri'] = float(getattr(sig, 'tri_val', 0.0))
             rec['sig_ref_px'] = float(getattr(sig, 'entry_ref_price', 0.0) or 0.0)
             rec['sig_base_dip'] = float(getattr(sig, 'entry_base_dip', 0.0) or 0.0)
-            try:
-                _mx = getattr(sig, 'mfal_x', None)
-                rec['sig_mfal_x'] = (
-                    _mx.tolist() if _mx is not None else None)
-            except Exception:
-                rec['sig_mfal_x'] = None
-            rec['sig_mfal_p_act'] = float(getattr(sig, 'mfal_p_act', 0.0))
         except Exception as e:
             log.debug(f"[LV] pending extras failed: {e}")
     return rec
@@ -12964,12 +12314,6 @@ def _lv_promote_pending_to_position(exchange, sym, rec, open_pos_live) -> bool:
         if rec.get('close_idx'):
             p['_entry_ci'] = int(rec['close_idx'])
         _lv_finalize_position(exchange, sym, p, rec.get('ad_ref'))
-        # [MFAL] carry the signal-quality vector into the position record
-        try:
-            p['_mfal_x'] = rec.get('sig_mfal_x')
-            p['_mfal_p_act'] = float(rec.get('sig_mfal_p_act', 0.0))
-        except Exception:
-            pass
     return ok
 
 
@@ -13350,8 +12694,6 @@ def run_live(cfg, exchange):
             t0 = time.time()
             # ══ [RateLimit] periodic report ══
             _rate_report()
-            # ══ [MFAL] periodic stats ══
-            _mfal_log_stats()
             # ══ [KILL SWITCH] check every cycle ══
             if getattr(CFG, 'KILL_SWITCH_ENABLED', True):
                 # File-based HMAC trigger
@@ -13546,31 +12888,6 @@ def run_live(cfg, exchange):
                         assets[sym] = ad
                 except Exception as e:
                     log.warning(f"فشل التحديث اللحظي لـ {sym}: {e}")
-
-            # ══ [DIAG] Loudly report when assets ends up empty ══
-            # Helps debug the "pool too small" cascade in one line.
-            if (not assets) and top_syms:
-                _diag_now = time.time()
-                _diag_last = getattr(run_live, '_last_empty_diag_ts', 0.0)
-                if _diag_now - _diag_last >= 300.0:
-                    run_live._last_empty_diag_ts = _diag_now
-                    _n_cached = sum(
-                        1 for s in top_syms if s in cached_data)
-                    _n_min = int(getattr(
-                        CFG, 'LIVE_MIN_BARS_FOR_PROCESS', 2000))
-                    _n_small = sum(
-                        1 for s in top_syms
-                        if s in cached_data
-                        and len(cached_data[s]) < _n_min
-                    )
-                    _n_deg = len(_DEGENERATE_CACHE)
-                    log.critical(
-                        f"[DIAG] assets empty for {len(top_syms)} symbols "
-                        f"(cached={_n_cached}, too_small={_n_small}, "
-                        f"min_needed={_n_min}, degenerate_marked={_n_deg}). "
-                        f"Likely cause: process_asset returned None. "
-                        f"Check 'K-Fallback' lines above."
-                    )
 
             # ══ [LIVE CACHE] prune stale + report stats ══
             if _current_last_closed:
@@ -13985,25 +13302,6 @@ def run_live(cfg, exchange):
                     except Exception as _tle:
                         log.debug(f"[TradeLog] live hook failed: {_tle}")
 
-                    # ══ [MFAL] Record trade outcome ══
-                    try:
-                        _entry_px_m = float(pos.get('entry') or 0)
-                        _sl_d0_m = float(pos.get('sl_dist_initial') or 0)
-                        if _entry_px_m > 0 and _sl_d0_m > 0:
-                            _exit_px_m = float(exec_price or 0)
-                            if pos.get('action') == 'BUY':
-                                _pnl_frac_m = (
-                                    _exit_px_m - _entry_px_m) / _entry_px_m
-                            else:
-                                _pnl_frac_m = (
-                                    _entry_px_m - _exit_px_m) / _entry_px_m
-                            _sl_frac_m = _sl_d0_m / _entry_px_m
-                            _R_m = _pnl_frac_m / _sl_frac_m \
-                                    if _sl_frac_m > 0 else 0.0
-                            _mfal_record_trade(pos, float(_R_m), _R_m > 0.5)
-                    except Exception as _me:
-                        log.debug(f"[MFAL] record failed: {_me}")
-
                     del open_pos_live[sym]
                     last_exit_time[sym] = time.time()
                     _LV_LAST_EXIT[sym] = last_exit_time[sym]
@@ -14256,16 +13554,8 @@ def run_live(cfg, exchange):
 
                     qty_risk_based = risk_amt / delta
 
-                    dynamic_leverage = compute_adaptive_leverage(
-                        symbol=sym,
-                        sig=sig,
-                        open_pos_live=open_pos_live,
-                        capital=cap_live,
-                        peak_capital=peak_cap_live,
-                        corr_cache=corr_cache,
-                        exchange=exchange,
-                        cfg=cfg,
-                    )
+                    dynamic_leverage = compute_dynamic_leverage(
+                        cap_live, cfg, symbol=sym)
 
                     # ══ [LIQ-CAP] Cap leverage so SL is safely inside Liq ══
                     _mmr_sig = None
@@ -14912,42 +14202,7 @@ def main():
                         "(default 0.3)")
     p.add_argument("--opp-tp-max-age-bars", type=int, default=None,
                    help="Max age of opposite signal in bars (default 4)")
-    # ══ [MFAL] CLI args ══
-    p.add_argument("--mfal", action="store_true",
-                   help="Enable Multi-Factor Adaptive Leverage")
-    p.add_argument("--mfal-no-micro", action="store_true",
-                   help="Disable micro-structure factor M")
-    p.add_argument("--mfal-no-time", action="store_true",
-                   help="Disable time-of-day factor T")
-    p.add_argument("--mfal-no-learn", action="store_true",
-                   help="Disable online learning")
-    p.add_argument("--mfal-weights", type=str, default=None,
-                   help="Path to MFAL weights JSON")
     args = p.parse_args()
-
-    # ══ [MFAL] CLI wiring ══
-    try:
-        if args.mfal:
-            globals()['_MFAL_ENABLED'] = True
-            if args.mfal_no_micro:
-                globals()['_MFAL_USE_MICRO'] = False
-            if args.mfal_no_time:
-                globals()['_MFAL_USE_TIME'] = False
-            if args.mfal_no_learn:
-                globals()['_MFAL_USE_LEARNING'] = False
-            if args.mfal_weights:
-                globals()['_MFAL_WEIGHTS_PATH'] = str(args.mfal_weights)
-            _mfal_load_weights()
-            log.info(
-                "[MFAL] ENABLED  "
-                f"micro={_MFAL_USE_MICRO} "
-                f"time={_MFAL_USE_TIME} "
-                f"learn={_MFAL_USE_LEARNING}"
-            )
-        else:
-            log.info("[MFAL] Disabled (use --mfal to enable)")
-    except Exception as _e:
-        log.warning(f"[MFAL] CLI wiring failed: {_e}")
 
     CFG.mode = args.mode
     CFG.api_key = args.api_key

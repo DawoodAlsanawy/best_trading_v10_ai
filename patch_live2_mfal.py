@@ -410,6 +410,7 @@ def _mfal_record_trade(sig, outcome_R, success):
 
 
 def _mfal_retrain():
+    global _MFAL_WEIGHTS, _MFAL_BIAS
     if not os.path.exists(_MFAL_HISTORY_PATH):
         return
     try:
@@ -450,7 +451,6 @@ def _mfal_retrain():
         res = _scipy_min(_loss, x0, method="L-BFGS-B",
                           options={"maxiter": 100})
 
-        global _MFAL_WEIGHTS, _MFAL_BIAS
         _MFAL_WEIGHTS = 0.8 * _MFAL_WEIGHTS + 0.2 * res.x[:-1]
         _MFAL_BIAS = 0.8 * _MFAL_BIAS + 0.2 * float(res.x[-1])
 
