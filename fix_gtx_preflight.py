@@ -1,34 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-fix_gtx_preflight.py
-====================
+fix_gtx_preflight.py  (v2)
+==========================
 FIX-25: GTX pre-flight check against order book.
 
-المشكلة:
-    أمر GTX يُرفض بـ -5022 (أو -2010) لأن السعر يقطع دفتر الأوامر.
-    الـ fallback الحالي ينزلق tick واحد → غالباً يفشل أيضاً.
-
-الحل:
-    قبل إرسال GTX:
-      1. اجلب دفتر الأوامر (weight=2)
-      2. عدّل target للجانب الآمن:
-           BUY : best_bid - tick
-           SELL: best_ask + tick
-      3. أرسل GTX بالسعر الجديد
-
-    المحاولة الأولى تنجح. لا rejection، لا محاولة ثانية.
-
-التوافق:
-    - لا انزلاق (يبقى Maker)
-    - متوافق مع mean-reversion
-    - لا يغيّر SL/TP
-    - لا يضيف منطق دخول جديد
-
-الاستخدام:
-    python fix_gtx_preflight.py \
-        --input  trading_2_complete.py \
-        --output trading_2_gtx_safe.py
+الإصلاح في v2:
+    - verify() يستخدم markers مرنة (لا تعتمد على وجود {sym} أو لا)
+    - يطبع حالة الـ src أثناء الفشل (debug info)
+    - يكتشف أنه إذا كانت كل العلامات موجودة إلا marker واحد مرن، يفشل تلقائياً
 """
 
 import argparse
@@ -52,7 +32,7 @@ def _once(src, old, new, tag, already_marker=None):
 
 
 # ════════════════════════════════════════════════════════════════
-# HELPER — pre-flight function
+# HELPER BLOCK
 # ════════════════════════════════════════════════════════════════
 
 HELPER_BLOCK = '''# ════════════════════════════════════════════════════════════════
@@ -64,13 +44,8 @@ HELPER_BLOCK = '''# ════════════════════
 #   BUY : if target > best_bid  →  target = best_bid - tick
 #   SELL: if target < best_ask  →  target = best_ask + tick
 #
-# This preserves maker-only execution (no slippage) and aligns with
-# the mean-reversion strategy (BUY waits below market, SELL waits
-# above market).
-#
-# The adjustment only fires when the original target would cross.
-# Otherwise, the target is left unchanged.
-# ════════════════════════════════════════════════════════════════
+# Preserves maker-only execution (no slippage) and aligns with the
+# mean-reversion strategy (BUY waits below market, SELL waits above).
 
 _GTX_PREFLIGHT_ENABLED: bool = True
 _GTX_PREFLIGHT_STATS: Dict = {
@@ -83,18 +58,12 @@ _GTX_PREFLIGHT_STATS: Dict = {
 
 def _gtx_preflight(exchange, sym: str, side: str, target: float,
                     exchange_tick: Optional[float] = None) -> float:
-    """
-    [FIX-25] Adjust target so that GTX won't cross the book.
-
-    Returns:
-        Adjusted target (or original if no adjustment needed).
-    """
+    """[FIX-25] Adjust target so that GTX won't cross the book."""
     if not _GTX_PREFLIGHT_ENABLED:
         return target
 
     _GTX_PREFLIGHT_STATS["checked"] += 1
 
-    # Resolve tick size
     tick = exchange_tick
     if tick is None or tick <= 0:
         try:
@@ -104,7 +73,6 @@ def _gtx_preflight(exchange, sym: str, side: str, target: float,
     if tick <= 0:
         tick = max(target * 1e-6, 1e-8)
 
-    # Fetch book
     try:
         ob = exchange.fetch_order_book(sym, limit=5)
         _rate_record(2.0)
@@ -122,24 +90,22 @@ def _gtx_preflight(exchange, sym: str, side: str, target: float,
     if best_bid <= 0 or best_ask <= 0 or best_ask < best_bid:
         return target
 
-    # BUY: safe if target <= best_bid
     if side == "buy":
         if target > best_bid:
             safe = best_bid - tick
             if safe <= 0:
-                return target  # sanity
+                return target
             log.debug(
-                f"[GTX-Preflight] {sym} BUY {target:.8f} → {safe:.8f} "
+                f"[GTX-Preflight] {sym} BUY {target:.8f} \u2192 {safe:.8f} "
                 f"(bid={best_bid:.8f}, tick={tick:.8f})"
             )
             _GTX_PREFLIGHT_STATS["adjusted"] += 1
             return float(safe)
-    # SELL: safe if target >= best_ask
     else:
         if target < best_ask:
             safe = best_ask + tick
             log.debug(
-                f"[GTX-Preflight] {sym} SELL {target:.8f} → {safe:.8f} "
+                f"[GTX-Preflight] {sym} SELL {target:.8f} \u2192 {safe:.8f} "
                 f"(ask={best_ask:.8f}, tick={tick:.8f})"
             )
             _GTX_PREFLIGHT_STATS["adjusted"] += 1
@@ -171,7 +137,7 @@ def _gtx_preflight_log_stats() -> None:
 
 
 # ════════════════════════════════════════════════════════════════
-# EDIT 1 — insert helper block before place_pending_entry
+# Edit 1
 # ════════════════════════════════════════════════════════════════
 
 def edit1_add_helpers(src):
@@ -189,7 +155,7 @@ def edit1_add_helpers(src):
 
 
 # ════════════════════════════════════════════════════════════════
-# EDIT 2 — modify GTX placement block
+# Edit 2 — GTX block replacement
 # ════════════════════════════════════════════════════════════════
 
 OLD_GTX = '''    # ══ وضع الأمر النهائي ══
@@ -228,7 +194,6 @@ OLD_GTX = '''    # ══ وضع الأمر النهائي ══
 NEW_GTX = '''    # ══ وضع الأمر النهائي ══
     if _exec_mode == "gtx":
         # ══ [FIX-25] Pre-flight: adjust to safe side BEFORE sending ══
-        # This prevents the -2010 / -5022 rejection in the first place.
         _tick_for_gtx = _get_tick_size(exchange, sym) or 0.0
         _orig_target = target
         target = _gtx_preflight(exchange, sym, side, target,
@@ -236,7 +201,7 @@ NEW_GTX = '''    # ══ وضع الأمر النهائي ══
         if target != _orig_target:
             log.debug(
                 f"[FIX-25] {sym} GTX target adjusted "
-                f"{_orig_target:.8f} → {target:.8f}"
+                f"{_orig_target:.8f} \u2192 {target:.8f}"
             )
 
         try:
@@ -246,13 +211,13 @@ NEW_GTX = '''    # ══ وضع الأمر النهائي ══
             )
         except Exception as e:
             _emsg = str(e).lower()
-            # [FIX-4.1 + FIX-25] GTX rejected even after pre-flight.
+            # [FIX-25] GTX rejected even after pre-flight.
             # Fetch book freshly and retry with the actual safe price.
             if ('-2010' in _emsg or '-5022' in _emsg
                     or 'post only' in _emsg or 'gtx' in _emsg):
                 log.info(
                     f"[FIX-25] {sym} GTX rejected after pre-flight "
-                    f"— fetching fresh book"
+                    f"- fetching fresh book"
                 )
                 try:
                     _ob2 = exchange.fetch_order_book(sym, limit=5)
@@ -265,9 +230,9 @@ NEW_GTX = '''    # ══ وضع الأمر النهائي ══
                     else:
                         target2 = _ba2 + _tick2
                     log.info(
-                        f"[FIX-25] {sym} retry {target:.8f} → "
-                        f"{target2:.8f} (bid={_bb2:.8f}, "
-                        f"ask={_ba2:.8f})"
+                        f"[FIX-25] {sym} retry target "
+                        f"{target:.8f} \u2192 {target2:.8f} "
+                        f"(bid={_bb2:.8f}, ask={_ba2:.8f})"
                     )
                     o = exchange.create_order(
                         sym, 'limit', side, qty, target2,
@@ -287,7 +252,7 @@ NEW_GTX = '''    # ══ وضع الأمر النهائي ══
 
 def edit2_modify_gtx_block(src):
     print("\n▶ Edit 2: add GTX pre-flight + improved fallback")
-    if "# [FIX-25] Pre-flight" in src:
+    if "[FIX-25] Pre-flight" in src:
         print("   ℹ️  already applied")
         return src, True
     if OLD_GTX not in src:
@@ -302,7 +267,7 @@ def edit2_modify_gtx_block(src):
 
 
 # ════════════════════════════════════════════════════════════════
-# EDIT 3 — wire stats logger into main loop
+# Edit 3
 # ════════════════════════════════════════════════════════════════
 
 def edit3_stats_logger(src):
@@ -310,7 +275,6 @@ def edit3_stats_logger(src):
     if "_gtx_preflight_log_stats()" in src:
         print("   ℹ️  already applied")
         return src, True
-
     anchor = (
         "            # [FIX-09-PROPER] pos-cache stats\n"
         "            _pos_cache_log_stats()"
@@ -330,32 +294,65 @@ def edit3_stats_logger(src):
 
 
 # ════════════════════════════════════════════════════════════════
-# VERIFY
+# VERIFY — FLEXIBLE MARKERS (v2)
 # ════════════════════════════════════════════════════════════════
 
 def verify(src):
     print("\n╔══════════════════════════════════════════════════════════════╗")
     print("║  VERIFY                                                     ║")
     print("╚══════════════════════════════════════════════════════════════╝")
+
+    # Flexible markers: any one of the alternatives passes
     checks = [
-        ("FIX-25 helpers",          "[FIX-25] GTX pre-flight check"),
-        ("_GTX_PREFLIGHT_ENABLED",   "_GTX_PREFLIGHT_ENABLED: bool = True"),
-        ("_GTX_PREFLIGHT_STATS",     "_GTX_PREFLIGHT_STATS: Dict = {"),
-        ("_gtx_preflight",           "def _gtx_preflight("),
-        ("_gtx_preflight_log_stats", "def _gtx_preflight_log_stats("),
-        ("pre-flight call",          "[FIX-25] Pre-flight: adjust to safe side"),
-        ("improved fallback",        "[FIX-25] retry"),
-        ("-5022 detection",          "'-5022' in _emsg"),
-        ("stats logger",             "_gtx_preflight_log_stats()"),
+        ("FIX-25 helpers", [
+            "[FIX-25] GTX pre-flight check",
+        ]),
+        ("_GTX_PREFLIGHT_ENABLED", [
+            "_GTX_PREFLIGHT_ENABLED: bool = True",
+        ]),
+        ("_GTX_PREFLIGHT_STATS", [
+            "_GTX_PREFLIGHT_STATS: Dict = {",
+        ]),
+        ("_gtx_preflight function", [
+            "def _gtx_preflight(",
+        ]),
+        ("_gtx_preflight_log_stats", [
+            "def _gtx_preflight_log_stats(",
+        ]),
+        ("pre-flight call", [
+            "[FIX-25] Pre-flight",
+        ]),
+        ("improved fallback", [
+            "[FIX-25] {sym} retry target",   # actual code marker
+            "[FIX-25] retry",                 # alt
+            "GTX rejected after pre-flight",  # alt 2
+        ]),
+        ("-5022 detection", [
+            "'-5022' in _emsg",
+        ]),
+        ("stats logger call", [
+            "_gtx_preflight_log_stats()",
+        ]),
     ]
+
     all_ok = True
-    for label, marker in checks:
-        ok = marker in src
+    for label, alternatives in checks:
+        # Pass if ANY alternative is present
+        found = None
+        for alt in alternatives:
+            if alt in src:
+                found = alt
+                break
+        ok = found is not None
         print(f"   {'✅' if ok else '❌'} {label}")
+        if ok and found != alternatives[0]:
+            print(f"      (matched alt: {found!r})")
+        if not ok:
+            print(f"      tried: {alternatives}")
         if not ok:
             all_ok = False
 
-    # Sanity: old fallback should be replaced
+    # Sanity checks
     print("\n   Sanity:")
     for label, marker, want in [
         ("place_pending_entry", "def place_pending_entry(", True),
@@ -377,8 +374,8 @@ def verify(src):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input",  default="trading_2_complete.py")
-    ap.add_argument("--output", default="trading_2_gtx_safe.py")
+    ap.add_argument("--input",  default="trading_2_complete3.py")
+    ap.add_argument("--output", default="trading_2_complete4.py")
     args = ap.parse_args()
 
     if not os.path.exists(args.input):
@@ -390,7 +387,7 @@ def main():
     print(f"📖 Loaded {args.input} ({len(src):,} bytes)")
 
     print("\n╔══════════════════════════════════════════════════════════════╗")
-    print("║  FIX-25: GTX pre-flight check                               ║")
+    print("║  FIX-25: GTX pre-flight check (v2)                          ║")
     print("╚══════════════════════════════════════════════════════════════╝")
 
     steps = [
@@ -431,6 +428,15 @@ def main():
             print(f"   {'✅' if ok else '❌'} {label}")
         print(f"   verify:  {'OK' if all_ok else 'FAILED'}")
         print(f"   syntax:  {'OK' if syntax_ok else 'FAILED'}")
+
+        # ═══ DEBUG: dump snippet of the modified area ═══
+        print("\n╔══════════════════════════════════════════════════════════════╗")
+        print("║  DEBUG: GTX block in modified src                          ║")
+        print("╚══════════════════════════════════════════════════════════════╝")
+        idx = src.find("# ══ وضع الأمر النهائي ══")
+        if idx >= 0:
+            end = min(len(src), idx + 2500)
+            print(src[idx:end])
         sys.exit(1)
 
     header = (
@@ -439,18 +445,9 @@ def main():
         "# ═══════════════════════════════════════════════════════\n"
         f"#  {os.path.basename(args.output)}\n"
         "#  Quantum Thermodynamic Trading Engine\n"
-        "#  GTX-Safe Build — FIX-25\n"
+        "#  GTX-Safe Build — FIX-25 (v2)\n"
         f"#  Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"#  Base: {args.input}\n"
-        "#\n"
-        "#  FIX-25 adds:\n"
-        "#    • _gtx_preflight() — adjusts target before GTX send\n"
-        "#    • BUY  → best_bid - tick (if target would cross)\n"
-        "#    • SELL → best_ask + tick (if target would cross)\n"
-        "#    • Improved fallback uses fresh book (not blind tick)\n"
-        "#    • Handles -5022 explicitly\n"
-        "#    • Preserves maker-only execution (no slippage)\n"
-        "#    • Compatible with mean-reversion strategy\n"
         "# ═══════════════════════════════════════════════════════\n"
     )
 

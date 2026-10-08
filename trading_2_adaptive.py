@@ -1,6 +1,30 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # ═══════════════════════════════════════════════════════
+#  trading_2_adaptive.py
+#  Quantum Thermodynamic Trading Engine
+#  Capital-Adaptive Build — v1
+#  Generated: 2026-10-06 17:13:38
+#  Base: trading_2_complete4.py
+#
+#  Capital-Adaptive v1 adds:
+#    • _adapt_config_to_capital() — 5 tiers (micro→whale)
+#    • _filter_symbols_for_capital() — MVT-based filtering
+#    • _check_capital_sufficient_for_entry() — runtime guard
+#    • _compute_symbol_min_capital() — per-symbol MVT
+#    • Tier-aware risk, leverage, kill switch, cooldown
+#    • SL_WIDEN_MULT auto-tuned (1.0 → 1.5 by tier)
+# ═══════════════════════════════════════════════════════
+# -*- coding: utf-8 -*-
+# ═══════════════════════════════════════════════════════
+#  trading_2_complete4.py
+#  Quantum Thermodynamic Trading Engine
+#  GTX-Safe Build — FIX-25 (v2)
+#  Generated: 2026-10-06 16:21:47
+#  Base: trading_2_complete3.py
+# ═══════════════════════════════════════════════════════
+# -*- coding: utf-8 -*-
+# ═══════════════════════════════════════════════════════
 #  trading_2_complete.py
 #  Quantum Thermodynamic Trading Engine — COMPLETE
 #  Generated: 2026-10-05 14:43:38
@@ -396,7 +420,7 @@ class Config:
     TF_SECONDS: int = 3600        # seconds per bar
     TF_HOURS: float = 1.0         # hours per bar
     # ══ [NOTIONAL CAP — anti-compounding] ══
-    MAX_ABS_NOTIONAL: float = 100_000.0     # tuned for alt liquidity
+    MAX_ABS_NOTIONAL: float = 20_000.0     # tuned for alt liquidity
     # ══ [DYNAMIC TRAILING — volatility-scaled] ══
     TRAIL_DYNAMIC: bool = True
     TRAIL_KAPPA: float = 0.30                # tuned to 1h timeframe
@@ -1228,8 +1252,8 @@ def _default_assets():
         "ETH/USDT",    # إيثيريوم - رافعة 100x
         "BNB/USDT",    # بيнанс كوين - رافعة 75x
         "SOL/USDT",    # سولانا - رافعة 50x
-        "XRP/USDT",    # ريبل - رافعة 50x
-        "DOGE/USDT",   # دوجكوين - رافعة 50x
+#        "XRP/USDT",    # ريبل - رافعة 50x
+#        "DOGE/USDT",   # دوجكوين - رافعة 50x
         "ADA/USDT",    # كاردانو - رافعة 50x
         "AVAX/USDT",   # أفالانش - رافعة 50x
         "LINK/USDT",   # تشين لينك - رافعة 50x
@@ -1244,12 +1268,12 @@ def _default_assets():
         "NEAR/USDT",   # نير بروتوكول - رافعة 50x
         "APT/USDT",    # أبتوس - رافعة 50x
         "HBAR/USDT",   # هيدرا - رافعة 50x
-        "VET/USDT",    # في تشين - رافعة 50x
+#        "VET/USDT",    # في تشين - رافعة 50x
         "STX/USDT",    # ستاكس - رافعة 50x
         "AAVE/USDT",   # آفي - رافعة 50x
         "ARB/USDT",    # أربيتروم - رافعة 50x
         "OP/USDT",     # أوبتيميزم - رافعة 50x
-        "INJ/USDT",    # إنجكتيف - رافعة 50x
+#        "INJ/USDT",    # إنجكتيف - رافعة 50x
         "SUI/USDT",    # سوي - رافعة 50x
         "TIA/USDT",    # سيليستيا - رافعة 50x
         "SEI/USDT",    # ساي - رافعة 50x
@@ -1270,36 +1294,36 @@ def _default_assets():
         "FIL/USDT",    # فيل كوين - رافعة 50x
         "QNT/USDT",    # كوانت - رافعة 50x
         "DASH/USDT",   # داش - رافعة 50x
-        "EOS/USDT",    # إيوس - رافعة 50x
-        "FTM/USDT",    # فانتوم - رافعة 50x
+#        "EOS/USDT",    # إيوس - رافعة 50x
+#        "FTM/USDT",    # فانتوم - رافعة 50x
         "FLOW/USDT",   # فلو - رافعة 50x
         "CAKE/USDT",   # بانكيك سواب - رافعة 50x
         "ROSE/USDT",   # أوايسيس نتوورك - رافعة 50x
-        "ZIL/USDT",    # زيلكا - رافعة 50x
-        "ONE/USDT",    # هارموني - رافعة 50x
+#        "ZIL/USDT",    # زيلكا - رافعة 50x
+#        "ONE/USDT",    # هارموني - رافعة 50x
         "IOTA/USDT",   # أيوتا - رافعة 50x
         "NEO/USDT",    # نيو - رافعة 50x
         "KAVA/USDT",   # كافا - رافعة 50x
         "CRV/USDT",    # كورف - رافعة 50x
         "SNX/USDT",    # سينثيتيكس - رافعة 50x
         "COMP/USDT",   # كومباووند - رافعة 50x
-        "MKR/USDT",    # ميكر - رافعة 50x
+#        "MKR/USDT",    # ميكر - رافعة 50x
         "SUSHI/USDT",  # سوشي سواب - رافعة 50x
         "YFI/USDT",    # يرن فايننس - رافعة 50x
         "ZRX/USDT",    # زيرو إكس - رافعة 50x
         "BAT/USDT",    # باسيك أتنشن توكن - رافعة 50x
-        "ENJ/USDT",    # إنجين - رافعة 50x
+#        "ENJ/USDT",    # إنجين - رافعة 50x
         "ANKR/USDT",   # أنكر - رافعة 50x
-        "OCEAN/USDT",  # أوشن بروتوكول - رافعة 50x
+#        "OCEAN/USDT",  # أوشن بروتوكول - رافعة 50x
         "BAND/USDT",   # باند بروتوكول - رافعة 50x
         "NMR/USDT",    # نوميرا - رافعة 50x
         "STORJ/USDT",  # ستورج - رافعة 50x
         "KSM/USDT",    # كوساما - رافعة 50x
-        "WAVES/USDT",  # ويفز - رافعة 50x
+#        "WAVES/USDT",  # ويفز - رافعة 50x
         "ZEN/USDT",    # هوريزن - رافعة 50x
-        "ICP/USDT",    # إنترنت كمبيوتر - رافعة 50x
+#        "ICP/USDT",    # إنترنت كمبيوتر - رافعة 50x
         "CELO/USDT",   # سيلو - رافعة 50x
-        "AR/USDT",     # أرويف - رافعة 50x
+#        "AR/USDT",     # أرويف - رافعة 50x
         "MASK/USDT",   # ماسك نتوورك - رافعة 50x
         "DYDX/USDT",   # دي واي دي إكس - رافعة 50x
         "ENS/USDT",    # إيثيريوم نيم سيرفس - رافعة 50x
@@ -1314,12 +1338,12 @@ def _default_assets():
         "BLUR/USDT",   # بلور - رافعة 50x
         "ID/USDT",     # سبيس آي دي - رافعة 50x
         "EDU/USDT",    # إيدي - رافعة 50x
-        "PEPE/USDT",   # بيبي - رافعة 50x
-        "FLOKI/USDT",  # فلوكي - رافعة 50x
-        "BONK/USDT",   # بونك - رافعة 50x
-        "MEME/USDT",   # ميم كوين - رافعة 50x
+#        "PEPE/USDT",   # بيبي - رافعة 50x
+#        "FLOKI/USDT",  # فلوكي - رافعة 50x
+#        "BONK/USDT",   # بونك - رافعة 50x
+#        "MEME/USDT",   # ميم كوين - رافعة 50x
         "ORDI/USDT",   # أوردينالز - رافعة 50x
-        "1000SATS/USDT", # ساتس - رافعة 50x
+#        "1000SATS/USDT", # ساتس - رافعة 50x
         "JUP/USDT",    # جوبيتر - رافعة 50x
         "PYTH/USDT",   # بايث - رافعة 50x
         "JTO/USDT",    # جيتو - رافعة 50x
@@ -1329,11 +1353,11 @@ def _default_assets():
         "ALT/USDT",    # ألت لاير - رافعة 50x
         "AEVO/USDT",   # أفيفو - رافعة 50x
         "ETHFI/USDT",  # إيثير فاي - رافعة 50x
-        "BOME/USDT",   # بوك أوف ميم - رافعة 50x
+#        "BOME/USDT",   # بوك أوف ميم - رافعة 50x
         "W/USDT",      # ورم هول - رافعة 50x
         "SAGA/USDT",   # ساغا - رافعة 50x
-        "OMNI/USDT",   # أومني - رافعة 50x
-        "REZ/USDT",    # رينزو - رافعة 50x
+#        "OMNI/USDT",   # أومني - رافعة 50x
+#        "REZ/USDT",    # رينزو - رافعة 50x
         "BB/USDT",     # باونس بيت - رافعة 50x
         "IO/USDT",     # آي أو نت - رافعة 50x
         "ZK/USDT",     # zkSync - رافعة 50x
@@ -1372,34 +1396,34 @@ def _robust_center_scale(x):
     return med, scale
 
 def scan_top_assets(exchange, n=None) -> List[str]:
-#    n = n or CFG.n_assets
-#    try:
-#        tickers = exchange.fetch_tickers()
-#    except Exception as e:
-#        log.warning(f"scan_top_assets: {e}")
-#        return _default_assets()[:n]
-#
-#    scored = []
-#    for sym, t in tickers.items():
-#        if not sym.endswith("/USDT"):
-#        # if not "/USDT" in sym:
-#            continue
-#        base = sym.replace("/USDT","")
-#        if any(ex in base for ex in CFG.exclude_tokens):
-#            continue
-#        qv  = float(t.get("quoteVolume", 0) or 0)
-#        if qv < CFG.min_quote_vol_usd:
-#            continue
-#        chg = abs(float(t.get("percentage",0) or 0))
-#        scored.append((qv*(chg+1.0), sym))
-#
-#    scored.sort(key=lambda x: -x[0])
-#    sel = [s for _,s in scored[:n]]
-#    if not sel:
-#        return _default_assets()[:n]
-#    log.info(f"مسح الأصول: {len(sel)} عملة مختارة")
-#    return sel
-    return _default_assets()[:n]
+    n = n or CFG.n_assets
+    try:
+        tickers = exchange.fetch_tickers()
+    except Exception as e:
+        log.warning(f"scan_top_assets: {e}")
+        return _default_assets()[:n]
+
+    scored = []
+    for sym, t in tickers.items():
+        # if not sym.endswith("/USDT"):
+        if not "/USDT" in sym:
+            continue
+        base = sym.replace("/USDT","")
+        if any(ex in base for ex in CFG.exclude_tokens):
+            continue
+        qv  = float(t.get("quoteVolume", 0) or 0)
+        if qv < CFG.min_quote_vol_usd:
+            continue
+        chg = abs(float(t.get("percentage",0) or 0))
+        scored.append((qv*(chg+1.0), sym))
+
+    scored.sort(key=lambda x: -x[0])
+    sel = [s for _,s in scored[:n]]
+    if not sel:
+        return _default_assets()[:n]
+    log.info(f"مسح الأصول: {len(sel)} عملة مختارة")
+    return sel
+#    return _default_assets()[:n]
 
 # ════════════════════════════════════════════════════════════════
 # § 2.05  Timeframe Scaling Helpers
@@ -9255,6 +9279,365 @@ def _pos_cache_log_stats() -> None:
 # ══ end FIX-09-PROPER helpers ══
 
 
+# ════════════════════════════════════════════════════════════════
+# [CAPITAL-ADAPTIVE v1] Auto-configure for any initial capital
+# ════════════════════════════════════════════════════════════════
+#
+# Design principles:
+#   1. All parameters derive from the actual capital at startup.
+#   2. Symbols filtered by Minimum Viable Trade (MVT).
+#   3. Kill switch scales by tier (micro→50%, whale→70%).
+#   4. Runtime guard blocks entries when capital insufficient.
+#
+# Tiers:
+#   micro  : $0    - $50      1 slot,  high risk, kill@50%
+#   small  : $50   - $500     2 slots, med risk,  kill@60%
+#   medium : $500  - $5000    3 slots, normal,    kill@70%
+#   large  : $5k   - $50k     5 slots, normal,    kill@70%
+#   whale  : $50k+           8 slots, low risk,  kill@70%
+
+_CAPITAL_TIER: str = "unknown"
+_CAPITAL_ADAPT_STATS: Dict = {
+    "adaptations": 0,
+    "symbols_filtered_out": 0,
+    "blocked_by_capital": 0,
+    "last_report_ts": 0.0,
+}
+
+
+def _tier_from_capital(cap: float) -> str:
+    if cap < 50:    return "micro"
+    if cap < 500:   return "small"
+    if cap < 5000:  return "medium"
+    if cap < 50000: return "large"
+    return "whale"
+
+
+def _compute_symbol_min_capital(exchange, sym: str,
+                                 cfg=None) -> Optional[Dict]:
+    """
+    [CAPITAL-ADAPTIVE] Compute Minimum Viable Trade info for a symbol.
+
+    Returns dict with:
+      mvt            : minimum $ value to place a trade
+      binding        : which filter binds (MIN_NOTIONAL / minQty / stepSize)
+      max_leverage   : from tier 0
+      mmr            : tier 0 maintenance margin rate
+      price          : current price
+    Returns None on failure.
+    """
+    try:
+        mkt = exchange.market(sym)
+    except Exception:
+        return None
+    if not mkt or not mkt.get("active"):
+        return None
+
+    info = mkt.get("info") or {}
+    filters = {}
+    for f in (info.get("filters") or []):
+        ft = f.get("filterType")
+        if ft:
+            filters[ft] = f
+
+    mn = filters.get("MIN_NOTIONAL", {})
+    min_notional = float(mn.get("notional", 5.0) or 5.0)
+
+    lot = filters.get("MARKET_LOT_SIZE", {}) or filters.get("LOT_SIZE", {})
+    min_qty = float(lot.get("minQty", 0) or 0)
+    step    = float(lot.get("stepSize", 0) or 0)
+
+    try:
+        tk = exchange.fetch_ticker(sym)
+        price = float(tk.get("last") or 0)
+    except Exception:
+        return None
+    if price <= 0:
+        return None
+
+    mvt_by_notional = min_notional
+    mvt_by_qty   = min_qty * price if min_qty > 0 else 0.0
+    mvt_by_step  = step * price if step > 0 else 0.0
+
+    mvt = max(mvt_by_notional, mvt_by_qty, mvt_by_step)
+    if mvt <= 0:
+        return None
+
+    if mvt_by_notional >= max(mvt_by_qty, mvt_by_step):
+        binding = "MIN_NOTIONAL"
+    elif mvt_by_qty >= mvt_by_step:
+        binding = "minQty"
+    else:
+        binding = "stepSize"
+
+    # Max leverage from tier 0
+    max_lev = 1
+    mmr = float(getattr(CFG, 'LIQ_FALLBACK_MMR', 0.02))
+    try:
+        tiers = exchange.fetch_leverage_tiers([sym])
+        if tiers:
+            tl = tiers[0].get("tiers") or []
+            if tl:
+                max_lev = int(tl[0].get("maxLeverage", 1) or 1)
+                mmr = float(tl[0].get("maintenanceMarginRate", mmr) or mmr)
+    except Exception:
+        pass
+
+    return {
+        "symbol": sym,
+        "price": price,
+        "mvt": mvt,
+        "binding": binding,
+        "max_leverage": max_lev,
+        "mmr": mmr,
+    }
+
+
+def _min_capital_for_symbol(info: Dict, cfg,
+                             sl_frac: float = 0.02,
+                             risk_frac: float = None) -> float:
+    """
+    capital needed = max(MVT × sl_frac / risk_frac,  MVT / max_lev)
+
+    Interpretation:
+      - We must place a notional ≥ MVT.
+      - If we can't size below MVT, the effective risk becomes
+        MVT × sl_frac, which must be ≤ capital × risk_frac.
+      - Also: MVT must be reachable via leverage.
+    """
+    if risk_frac is None:
+        risk_frac = min(float(getattr(cfg, 'MAX_RISK_PER_TRADE', 0.10)),
+                        0.15)
+    mvt = info["mvt"]
+    lev = max(int(info.get("max_leverage", 1)), 1)
+    cap_by_risk = mvt * sl_frac / risk_frac
+    cap_by_lev  = mvt / lev
+    return float(max(cap_by_risk, cap_by_lev))
+
+
+def _adapt_config_to_capital(capital: float, cfg=None) -> str:
+    """
+    [CAPITAL-ADAPTIVE] Adjust CFG based on initial capital.
+    Called once at startup (before run_live).
+    Returns the tier name.
+    """
+    global _CAPITAL_TIER
+    if cfg is None:
+        cfg = CFG
+
+    tier = _tier_from_capital(capital)
+    _CAPITAL_TIER = tier
+
+    # ── Risk levels ──
+    if tier == "micro":
+        cfg.BASE_RISK = 0.03
+        cfg.MIN_RISK = 0.02
+        cfg.MAX_RISK = 0.08
+        cfg.MIN_RISK_PER_TRADE = 0.02
+        cfg.MAX_RISK_PER_TRADE = 0.10
+        cfg.PORTFOLIO_HEAT_MAX = 0.15
+        cfg.RISK_STRENGTH_MIN = 0.7
+        cfg.RISK_STRENGTH_MAX = 1.5
+    elif tier == "small":
+        cfg.BASE_RISK = 0.02
+        cfg.MIN_RISK = 0.01
+        cfg.MAX_RISK = 0.05
+        cfg.MIN_RISK_PER_TRADE = 0.01
+        cfg.MAX_RISK_PER_TRADE = 0.05
+        cfg.PORTFOLIO_HEAT_MAX = 0.15
+    # medium/large/whale → keep defaults
+
+    # ── Leverage ──
+    if tier == "micro":
+        cfg.LEVERAGE_MIN = 10
+        cfg.LEVERAGE_BASE = 50
+        cfg.LEVERAGE_MAX = 50
+    elif tier == "small":
+        cfg.LEVERAGE_MIN = 5
+        cfg.LEVERAGE_BASE = 30
+        cfg.LEVERAGE_MAX = 50
+
+    # ── Concurrent assets ──
+    if tier == "micro":
+        cfg.MAX_CONCURRENT_ASSETS = 1
+    elif tier == "small":
+        cfg.MAX_CONCURRENT_ASSETS = 2
+    elif tier == "medium":
+        cfg.MAX_CONCURRENT_ASSETS = 3
+    elif tier == "large":
+        cfg.MAX_CONCURRENT_ASSETS = 5
+    # whale → keep 8 or user setting
+
+    # ── Notional cap ──
+    if tier == "micro":
+        cfg.MAX_ABS_NOTIONAL = 500.0
+    elif tier == "small":
+        cfg.MAX_ABS_NOTIONAL = 5000.0
+    elif tier == "medium":
+        cfg.MAX_ABS_NOTIONAL = 50000.0
+
+    # ── Capital floor ──
+    if tier == "micro":
+        cfg.CAPITAL_FLOOR = max(0.05, capital * 0.05)
+    elif tier == "small":
+        cfg.CAPITAL_FLOOR = max(0.15, capital * 0.03)
+    elif tier == "medium":
+        cfg.CAPITAL_FLOOR = max(0.5, capital * 0.02)
+    # large/whale → keep default 0.15 or user value
+
+    # ── Cooldown ──
+    if tier == "micro":
+        cfg.REENTRY_COOLDOWN_BARS = 6
+    elif tier == "small":
+        cfg.REENTRY_COOLDOWN_BARS = 4
+
+    # ── Kill switch ──
+    if tier == "micro":
+        cfg.MAX_DRAWDOWN_HALT = 0.50
+    elif tier == "small":
+        cfg.MAX_DRAWDOWN_HALT = 0.60
+    else:
+        cfg.MAX_DRAWDOWN_HALT = 0.70
+
+    # ── SL widening: keep tighter for small capital ──
+    # (smaller SL = smaller $ risk per trade at MVT floor)
+    if tier == "micro":
+        cfg.SL_WIDEN_MULT = 1.0     # tightest
+        cfg.SL_MIN_SIGMA = 2.5
+        cfg.SL_MAX_SIGMA = 6.0
+    elif tier == "small":
+        cfg.SL_WIDEN_MULT = 1.2
+        cfg.SL_MIN_SIGMA = 2.8
+        cfg.SL_MAX_SIGMA = 7.0
+    # medium+ → keep defaults (1.5 / 3.0 / 8.0)
+
+    # ── Log summary ──
+    log.info("")
+    log.info("╔══════════════════════════════════════════════════════════════╗")
+    log.info("║  [CAPITAL-ADAPTIVE] Configuration applied                   ║")
+    log.info("╚══════════════════════════════════════════════════════════════╝")
+    log.info(f"  Tier            : {tier.upper()}")
+    log.info(f"  Capital         : ${capital:.4f}")
+    log.info(f"  BASE_RISK       : {cfg.BASE_RISK*100:.2f}%")
+    log.info(f"  MIN/MAX_RISK    : "
+             f"{cfg.MIN_RISK_PER_TRADE*100:.2f}% / "
+             f"{cfg.MAX_RISK_PER_TRADE*100:.2f}%")
+    log.info(f"  HEAT_MAX        : {cfg.PORTFOLIO_HEAT_MAX*100:.2f}%")
+    log.info(f"  LEVERAGE        : "
+             f"[{cfg.LEVERAGE_MIN}, {cfg.LEVERAGE_BASE}, {cfg.LEVERAGE_MAX}]")
+    log.info(f"  MAX_CONCURRENT  : {cfg.MAX_CONCURRENT_ASSETS}")
+    log.info(f"  MAX_ABS_NOTIONAL: ${cfg.MAX_ABS_NOTIONAL:.2f}")
+    log.info(f"  CAPITAL_FLOOR   : ${cfg.CAPITAL_FLOOR:.4f}")
+    log.info(f"  KILL_DD         : {cfg.MAX_DRAWDOWN_HALT*100:.0f}%")
+    log.info(f"  COOLDOWN_BARS   : {cfg.REENTRY_COOLDOWN_BARS}")
+    log.info(f"  SL_WIDEN_MULT   : {cfg.SL_WIDEN_MULT}")
+    log.info(f"  SL_SIGMA        : "
+             f"[{cfg.SL_MIN_SIGMA}, {cfg.SL_MAX_SIGMA}]")
+    log.info("")
+
+    _CAPITAL_ADAPT_STATS["adaptations"] += 1
+    return tier
+
+
+def _filter_symbols_for_capital(exchange, symbols: List[str],
+                                  capital: float, cfg=None,
+                                  sl_frac: float = 0.02,
+                                  risk_frac: float = None) -> List[str]:
+    """
+    [CAPITAL-ADAPTIVE] Return only symbols tradeable at this capital.
+    Sorted by lowest MVT first (best chances for small capital).
+    """
+    if cfg is None:
+        cfg = CFG
+    if risk_frac is None:
+        risk_frac = min(float(cfg.MAX_RISK_PER_TRADE), 0.15)
+
+    eligible: List[Tuple[str, float]] = []
+    n_out = 0
+
+    log.info("[CapitalAdapt] Filtering symbols by capital requirement…")
+    for sym in symbols:
+        info = _compute_symbol_min_capital(exchange, sym, cfg)
+        if info is None:
+            n_out += 1
+            continue
+        min_cap = _min_capital_for_symbol(info, cfg,
+                                           sl_frac=sl_frac,
+                                           risk_frac=risk_frac)
+        if capital >= min_cap:
+            eligible.append((sym, min_cap, info["mvt"]))
+        else:
+            n_out += 1
+            log.debug(
+                f"[CapitalAdapt] {sym} requires ${min_cap:.4f} "
+                f"(MVT=${info['mvt']:.2f}) — skip"
+            )
+
+    eligible.sort(key=lambda x: x[2])  # by MVT ascending
+    _CAPITAL_ADAPT_STATS["symbols_filtered_out"] += n_out
+
+    result = [s[0] for s in eligible]
+    log.info(
+        f"[CapitalAdapt] {len(result)}/{len(symbols)} symbols "
+        f"tradeable at ${capital:.4f} ({n_out} filtered out)"
+    )
+    if result:
+        log.info(f"[CapitalAdapt] Top 5 (lowest MVT):")
+        for sym, min_cap, mvt in eligible[:5]:
+            log.info(f"  {sym:<14s}  MVT=${mvt:.2f}  "
+                     f"min_cap=${min_cap:.4f}  "
+                     f"headroom={capital/min_cap:.2f}x")
+    else:
+        log.warning(
+            "[CapitalAdapt] NO symbols tradeable at this capital! "
+            "Increase capital or reduce risk settings."
+        )
+    return result
+
+
+def _check_capital_sufficient_for_entry(sym: str, capital: float,
+                                          exchange, cfg=None
+                                          ) -> Tuple[bool, str]:
+    """
+    [CAPITAL-ADAPTIVE] Runtime check before placing an entry.
+    Returns (ok, reason).
+    """
+    if cfg is None:
+        cfg = CFG
+    if capital <= cfg.CAPITAL_FLOOR:
+        return False, (f"capital ${capital:.4f} ≤ "
+                       f"floor ${cfg.CAPITAL_FLOOR:.4f}")
+    try:
+        min_notional = _get_min_notional(exchange, sym)
+    except Exception:
+        min_notional = 5.0
+    max_notional = capital * cfg.LEVERAGE_BASE
+    if max_notional < min_notional:
+        return False, (f"max notional ${max_notional:.2f} < "
+                       f"MIN_NOTIONAL ${min_notional:.2f}")
+    return True, "OK"
+
+
+def _capital_adapt_log_stats() -> None:
+    """Log capital-adapt stats every 5 min."""
+    now = time.time()
+    if now - float(_CAPITAL_ADAPT_STATS.get("last_report_ts", 0.0)) < 300:
+        return
+    _CAPITAL_ADAPT_STATS["last_report_ts"] = now
+    s = _CAPITAL_ADAPT_STATS
+    if s["blocked_by_capital"] == 0 and s["symbols_filtered_out"] == 0:
+        return
+    log.info(
+        f"[CapitalAdapt] tier={_CAPITAL_TIER} "
+        f"blocked={s['blocked_by_capital']} "
+        f"filtered_out={s['symbols_filtered_out']} "
+        f"adaptations={s['adaptations']}"
+    )
+
+
+# ══ end CAPITAL-ADAPTIVE ══
+
+
 def load_symbol_meta(mode: str) -> Dict[str, Dict]:
     """Load persistent {sym: {leverage, margin_mode, setup_done}} from disk."""
     global _SYMBOL_META, _SYMBOL_META_PATH
@@ -11229,6 +11612,104 @@ def monitor_pending_orders(exchange, open_pos_live: Dict,
             continue
 
 
+# ════════════════════════════════════════════════════════════════
+# [FIX-25] GTX pre-flight check
+# ════════════════════════════════════════════════════════════════
+#
+# Prevents GTX rejections (-2010 / -5022) by adjusting the target
+# BEFORE sending the order:
+#   BUY : if target > best_bid  →  target = best_bid - tick
+#   SELL: if target < best_ask  →  target = best_ask + tick
+#
+# Preserves maker-only execution (no slippage) and aligns with the
+# mean-reversion strategy (BUY waits below market, SELL waits above).
+
+_GTX_PREFLIGHT_ENABLED: bool = True
+_GTX_PREFLIGHT_STATS: Dict = {
+    "checked": 0,
+    "adjusted": 0,
+    "fetch_failed": 0,
+    "last_report_ts": 0.0,
+}
+
+
+def _gtx_preflight(exchange, sym: str, side: str, target: float,
+                    exchange_tick: Optional[float] = None) -> float:
+    """[FIX-25] Adjust target so that GTX won't cross the book."""
+    if not _GTX_PREFLIGHT_ENABLED:
+        return target
+
+    _GTX_PREFLIGHT_STATS["checked"] += 1
+
+    tick = exchange_tick
+    if tick is None or tick <= 0:
+        try:
+            tick = _get_tick_size(exchange, sym) or 0.0
+        except Exception:
+            tick = 0.0
+    if tick <= 0:
+        tick = max(target * 1e-6, 1e-8)
+
+    try:
+        ob = exchange.fetch_order_book(sym, limit=5)
+        _rate_record(2.0)
+    except Exception as e:
+        _GTX_PREFLIGHT_STATS["fetch_failed"] += 1
+        log.debug(f"[GTX-Preflight] {sym} book fetch failed: {e}")
+        return target
+
+    try:
+        best_bid = float(ob["bids"][0][0])
+        best_ask = float(ob["asks"][0][0])
+    except (IndexError, ValueError, TypeError):
+        return target
+
+    if best_bid <= 0 or best_ask <= 0 or best_ask < best_bid:
+        return target
+
+    if side == "buy":
+        if target > best_bid:
+            safe = best_bid - tick
+            if safe <= 0:
+                return target
+            log.debug(
+                f"[GTX-Preflight] {sym} BUY {target:.8f} → {safe:.8f} "
+                f"(bid={best_bid:.8f}, tick={tick:.8f})"
+            )
+            _GTX_PREFLIGHT_STATS["adjusted"] += 1
+            return float(safe)
+    else:
+        if target < best_ask:
+            safe = best_ask + tick
+            log.debug(
+                f"[GTX-Preflight] {sym} SELL {target:.8f} → {safe:.8f} "
+                f"(ask={best_ask:.8f}, tick={tick:.8f})"
+            )
+            _GTX_PREFLIGHT_STATS["adjusted"] += 1
+            return float(safe)
+
+    return target
+
+
+def _gtx_preflight_log_stats() -> None:
+    """Log pre-flight stats every 5 minutes."""
+    now = time.time()
+    if now - float(_GTX_PREFLIGHT_STATS.get("last_report_ts", 0.0)) < 300:
+        return
+    _GTX_PREFLIGHT_STATS["last_report_ts"] = now
+    s = _GTX_PREFLIGHT_STATS
+    if s["checked"] == 0:
+        return
+    log.info(
+        f"[GTX-Preflight] checked={s['checked']}, "
+        f"adjusted={s['adjusted']}, "
+        f"fetch_failed={s['fetch_failed']}"
+    )
+
+
+# ══ end FIX-25 helpers ══
+
+
 def place_pending_entry(exchange, sym: str, side: str, qty: float,
                         sig, timeout_s: float, leverage: int,
                         ad=None,
@@ -11461,6 +11942,17 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
 
     # ══ وضع الأمر النهائي ══
     if _exec_mode == "gtx":
+        # ══ [FIX-25] Pre-flight: adjust to safe side BEFORE sending ══
+        _tick_for_gtx = _get_tick_size(exchange, sym) or 0.0
+        _orig_target = target
+        target = _gtx_preflight(exchange, sym, side, target,
+                                  exchange_tick=_tick_for_gtx)
+        if target != _orig_target:
+            log.debug(
+                f"[FIX-25] {sym} GTX target adjusted "
+                f"{_orig_target:.8f} → {target:.8f}"
+            )
+
         try:
             o = exchange.create_order(
                 sym, 'limit', side, qty, target,
@@ -11468,24 +11960,38 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
             )
         except Exception as e:
             _emsg = str(e).lower()
-            # [FIX-4.1] عند رفض GTX (post-only would cross):
-            # انزلق بعيداً عن السوق بمقدار 1 tick إضافي ثم أعد المحاولة.
-            if '-2010' in _emsg or 'post only' in _emsg or 'gtx' in _emsg:
-                log.info(f"[Pending] {sym} GTX rejected — "
-                         f"falling back with wider offset")
+            # [FIX-25] GTX rejected even after pre-flight.
+            # Fetch book freshly and retry with the actual safe price.
+            if ('-2010' in _emsg or '-5022' in _emsg
+                    or 'post only' in _emsg or 'gtx' in _emsg):
+                log.info(
+                    f"[FIX-25] {sym} GTX rejected after pre-flight "
+                    f"- fetching fresh book"
+                )
                 try:
-                    _tick = _get_tick_size(exchange, sym) or target * 1e-5
+                    _ob2 = exchange.fetch_order_book(sym, limit=5)
+                    _rate_record(2.0)
+                    _bb2 = float(_ob2['bids'][0][0])
+                    _ba2 = float(_ob2['asks'][0][0])
+                    _tick2 = _tick_for_gtx or target * 1e-5
                     if side == 'buy':
-                        target2 = target - _tick
+                        target2 = _bb2 - _tick2
                     else:
-                        target2 = target + _tick
+                        target2 = _ba2 + _tick2
+                    log.info(
+                        f"[FIX-25] {sym} retry target "
+                        f"{target:.8f} → {target2:.8f} "
+                        f"(bid={_bb2:.8f}, ask={_ba2:.8f})"
+                    )
                     o = exchange.create_order(
                         sym, 'limit', side, qty, target2,
                         params={'timeInForce': 'GTX'}
                     )
-                    target = target2  # للـ rec
+                    target = target2
                 except Exception as e2:
-                    log.warning(f"[Pending] {sym} GTX fallback failed: {e2}")
+                    log.warning(
+                        f"[Pending] {sym} GTX fallback failed: {e2}"
+                    )
                     return None
             else:
                 log.debug(f"[Pending] {sym} order rejected @ "
@@ -11999,6 +12505,23 @@ def run_live(cfg, exchange):
 
     log.info("⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...")
     top_syms = scan_top_assets(exchange)
+    # ══ [CAPITAL-ADAPTIVE] filter in run_live ══
+    _cap_for_filter = float(
+        getattr(CFG, "LIVE_TRADING_CAPITAL", 0.0)
+        or getattr(CFG, "INITIAL_CAPITAL", 100.0)
+    )
+    if _cap_for_filter > 0:
+        _filtered = _filter_symbols_for_capital(
+            exchange, list(top_syms), _cap_for_filter, CFG
+        )
+        if _filtered:
+            top_syms = _filtered
+        else:
+            log.error(
+                "[CapitalAdapt] NO symbols tradeable "
+                "at this capital. Aborting."
+            )
+            return
 
     # ══ [DATA-LENGTH-FIX] Live needs real history, not 60 days ══
     # Backtest uses 730 days; live used 60 → KMeans collapsed (H_train ≈ 0.2).
@@ -12044,6 +12567,8 @@ def run_live(cfg, exchange):
             _rate_report()
             # [FIX-09-PROPER] pos-cache stats
             _pos_cache_log_stats()
+            # [CAPITAL-ADAPTIVE] stats
+            _capital_adapt_log_stats()
             # ══ [KILL SWITCH] check every cycle ══
             if getattr(CFG, 'KILL_SWITCH_ENABLED', True):
                 # File-based HMAC trigger
@@ -12951,6 +13476,18 @@ def run_live(cfg, exchange):
                     if delta < 1e-8: continue
                     if cap_live <= cfg.CAPITAL_FLOOR + 0.1: continue
 
+                    # ══ [CAPITAL-ADAPTIVE] runtime guard ══
+                    _cap_ok, _cap_reason = _check_capital_sufficient_for_entry(
+                        sym, cap_live, exchange, CFG
+                    )
+                    if not _cap_ok:
+                        _CAPITAL_ADAPT_STATS['blocked_by_capital'] += 1
+                        log.debug(
+                            f"[CapitalAdapt] {sym} blocked: "
+                            f"{_cap_reason}"
+                        )
+                        continue
+
                     # ══ [SR FILTER — Live] ══
                     _live_ci = max(0, len(ad.closes) - 2)
                     _sr_ok, _sr_reason = _sr_filter_check(sig, ad, _live_ci)
@@ -13709,6 +14246,8 @@ def main():
     CFG.api_secret = args.api_secret
     if args.capital   is not None: CFG.INITIAL_CAPITAL = args.capital
     if args.live_capital is not None: CFG.LIVE_TRADING_CAPITAL = float(args.live_capital)
+    # ══ [CAPITAL-ADAPTIVE] main() — apply capital-based overrides ══
+    _adapt_config_to_capital(float(CFG.INITIAL_CAPITAL), CFG)
     if args.base_risk is not None: CFG.BASE_RISK = args.base_risk; CFG.MIN_RISK_PER_TRADE = args.base_risk
     if args.max_risk  is not None: CFG.MAX_RISK  = args.max_risk
     if args.min_risk  is not None: CFG.MIN_RISK  = args.min_risk

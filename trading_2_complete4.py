@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # ═══════════════════════════════════════════════════════
+#  trading_2_complete4.py
+#  Quantum Thermodynamic Trading Engine
+#  GTX-Safe Build — FIX-25 (v2)
+#  Generated: 2026-10-06 16:21:47
+#  Base: trading_2_complete3.py
+# ═══════════════════════════════════════════════════════
+# -*- coding: utf-8 -*-
+# ═══════════════════════════════════════════════════════
 #  trading_2_complete.py
 #  Quantum Thermodynamic Trading Engine — COMPLETE
 #  Generated: 2026-10-05 14:43:38
@@ -396,7 +404,7 @@ class Config:
     TF_SECONDS: int = 3600        # seconds per bar
     TF_HOURS: float = 1.0         # hours per bar
     # ══ [NOTIONAL CAP — anti-compounding] ══
-    MAX_ABS_NOTIONAL: float = 100_000.0     # tuned for alt liquidity
+    MAX_ABS_NOTIONAL: float = 20_000.0     # tuned for alt liquidity
     # ══ [DYNAMIC TRAILING — volatility-scaled] ══
     TRAIL_DYNAMIC: bool = True
     TRAIL_KAPPA: float = 0.30                # tuned to 1h timeframe
@@ -1228,8 +1236,8 @@ def _default_assets():
         "ETH/USDT",    # إيثيريوم - رافعة 100x
         "BNB/USDT",    # بيнанс كوين - رافعة 75x
         "SOL/USDT",    # سولانا - رافعة 50x
-        "XRP/USDT",    # ريبل - رافعة 50x
-        "DOGE/USDT",   # دوجكوين - رافعة 50x
+#        "XRP/USDT",    # ريبل - رافعة 50x
+#        "DOGE/USDT",   # دوجكوين - رافعة 50x
         "ADA/USDT",    # كاردانو - رافعة 50x
         "AVAX/USDT",   # أفالانش - رافعة 50x
         "LINK/USDT",   # تشين لينك - رافعة 50x
@@ -1244,12 +1252,12 @@ def _default_assets():
         "NEAR/USDT",   # نير بروتوكول - رافعة 50x
         "APT/USDT",    # أبتوس - رافعة 50x
         "HBAR/USDT",   # هيدرا - رافعة 50x
-        "VET/USDT",    # في تشين - رافعة 50x
+#        "VET/USDT",    # في تشين - رافعة 50x
         "STX/USDT",    # ستاكس - رافعة 50x
         "AAVE/USDT",   # آفي - رافعة 50x
         "ARB/USDT",    # أربيتروم - رافعة 50x
         "OP/USDT",     # أوبتيميزم - رافعة 50x
-        "INJ/USDT",    # إنجكتيف - رافعة 50x
+#        "INJ/USDT",    # إنجكتيف - رافعة 50x
         "SUI/USDT",    # سوي - رافعة 50x
         "TIA/USDT",    # سيليستيا - رافعة 50x
         "SEI/USDT",    # ساي - رافعة 50x
@@ -1270,36 +1278,36 @@ def _default_assets():
         "FIL/USDT",    # فيل كوين - رافعة 50x
         "QNT/USDT",    # كوانت - رافعة 50x
         "DASH/USDT",   # داش - رافعة 50x
-        "EOS/USDT",    # إيوس - رافعة 50x
-        "FTM/USDT",    # فانتوم - رافعة 50x
+#        "EOS/USDT",    # إيوس - رافعة 50x
+#        "FTM/USDT",    # فانتوم - رافعة 50x
         "FLOW/USDT",   # فلو - رافعة 50x
         "CAKE/USDT",   # بانكيك سواب - رافعة 50x
         "ROSE/USDT",   # أوايسيس نتوورك - رافعة 50x
-        "ZIL/USDT",    # زيلكا - رافعة 50x
-        "ONE/USDT",    # هارموني - رافعة 50x
+#        "ZIL/USDT",    # زيلكا - رافعة 50x
+#        "ONE/USDT",    # هارموني - رافعة 50x
         "IOTA/USDT",   # أيوتا - رافعة 50x
         "NEO/USDT",    # نيو - رافعة 50x
         "KAVA/USDT",   # كافا - رافعة 50x
         "CRV/USDT",    # كورف - رافعة 50x
         "SNX/USDT",    # سينثيتيكس - رافعة 50x
         "COMP/USDT",   # كومباووند - رافعة 50x
-        "MKR/USDT",    # ميكر - رافعة 50x
+#        "MKR/USDT",    # ميكر - رافعة 50x
         "SUSHI/USDT",  # سوشي سواب - رافعة 50x
         "YFI/USDT",    # يرن فايننس - رافعة 50x
         "ZRX/USDT",    # زيرو إكس - رافعة 50x
         "BAT/USDT",    # باسيك أتنشن توكن - رافعة 50x
-        "ENJ/USDT",    # إنجين - رافعة 50x
+#        "ENJ/USDT",    # إنجين - رافعة 50x
         "ANKR/USDT",   # أنكر - رافعة 50x
-        "OCEAN/USDT",  # أوشن بروتوكول - رافعة 50x
+#        "OCEAN/USDT",  # أوشن بروتوكول - رافعة 50x
         "BAND/USDT",   # باند بروتوكول - رافعة 50x
         "NMR/USDT",    # نوميرا - رافعة 50x
         "STORJ/USDT",  # ستورج - رافعة 50x
         "KSM/USDT",    # كوساما - رافعة 50x
-        "WAVES/USDT",  # ويفز - رافعة 50x
+#        "WAVES/USDT",  # ويفز - رافعة 50x
         "ZEN/USDT",    # هوريزن - رافعة 50x
-        "ICP/USDT",    # إنترنت كمبيوتر - رافعة 50x
+#        "ICP/USDT",    # إنترنت كمبيوتر - رافعة 50x
         "CELO/USDT",   # سيلو - رافعة 50x
-        "AR/USDT",     # أرويف - رافعة 50x
+#        "AR/USDT",     # أرويف - رافعة 50x
         "MASK/USDT",   # ماسك نتوورك - رافعة 50x
         "DYDX/USDT",   # دي واي دي إكس - رافعة 50x
         "ENS/USDT",    # إيثيريوم نيم سيرفس - رافعة 50x
@@ -1314,12 +1322,12 @@ def _default_assets():
         "BLUR/USDT",   # بلور - رافعة 50x
         "ID/USDT",     # سبيس آي دي - رافعة 50x
         "EDU/USDT",    # إيدي - رافعة 50x
-        "PEPE/USDT",   # بيبي - رافعة 50x
-        "FLOKI/USDT",  # فلوكي - رافعة 50x
-        "BONK/USDT",   # بونك - رافعة 50x
-        "MEME/USDT",   # ميم كوين - رافعة 50x
+#        "PEPE/USDT",   # بيبي - رافعة 50x
+#        "FLOKI/USDT",  # فلوكي - رافعة 50x
+#        "BONK/USDT",   # بونك - رافعة 50x
+#        "MEME/USDT",   # ميم كوين - رافعة 50x
         "ORDI/USDT",   # أوردينالز - رافعة 50x
-        "1000SATS/USDT", # ساتس - رافعة 50x
+#        "1000SATS/USDT", # ساتس - رافعة 50x
         "JUP/USDT",    # جوبيتر - رافعة 50x
         "PYTH/USDT",   # بايث - رافعة 50x
         "JTO/USDT",    # جيتو - رافعة 50x
@@ -1329,11 +1337,11 @@ def _default_assets():
         "ALT/USDT",    # ألت لاير - رافعة 50x
         "AEVO/USDT",   # أفيفو - رافعة 50x
         "ETHFI/USDT",  # إيثير فاي - رافعة 50x
-        "BOME/USDT",   # بوك أوف ميم - رافعة 50x
+#        "BOME/USDT",   # بوك أوف ميم - رافعة 50x
         "W/USDT",      # ورم هول - رافعة 50x
         "SAGA/USDT",   # ساغا - رافعة 50x
-        "OMNI/USDT",   # أومني - رافعة 50x
-        "REZ/USDT",    # رينزو - رافعة 50x
+#        "OMNI/USDT",   # أومني - رافعة 50x
+#        "REZ/USDT",    # رينزو - رافعة 50x
         "BB/USDT",     # باونس بيت - رافعة 50x
         "IO/USDT",     # آي أو نت - رافعة 50x
         "ZK/USDT",     # zkSync - رافعة 50x
@@ -11229,6 +11237,104 @@ def monitor_pending_orders(exchange, open_pos_live: Dict,
             continue
 
 
+# ════════════════════════════════════════════════════════════════
+# [FIX-25] GTX pre-flight check
+# ════════════════════════════════════════════════════════════════
+#
+# Prevents GTX rejections (-2010 / -5022) by adjusting the target
+# BEFORE sending the order:
+#   BUY : if target > best_bid  →  target = best_bid - tick
+#   SELL: if target < best_ask  →  target = best_ask + tick
+#
+# Preserves maker-only execution (no slippage) and aligns with the
+# mean-reversion strategy (BUY waits below market, SELL waits above).
+
+_GTX_PREFLIGHT_ENABLED: bool = True
+_GTX_PREFLIGHT_STATS: Dict = {
+    "checked": 0,
+    "adjusted": 0,
+    "fetch_failed": 0,
+    "last_report_ts": 0.0,
+}
+
+
+def _gtx_preflight(exchange, sym: str, side: str, target: float,
+                    exchange_tick: Optional[float] = None) -> float:
+    """[FIX-25] Adjust target so that GTX won't cross the book."""
+    if not _GTX_PREFLIGHT_ENABLED:
+        return target
+
+    _GTX_PREFLIGHT_STATS["checked"] += 1
+
+    tick = exchange_tick
+    if tick is None or tick <= 0:
+        try:
+            tick = _get_tick_size(exchange, sym) or 0.0
+        except Exception:
+            tick = 0.0
+    if tick <= 0:
+        tick = max(target * 1e-6, 1e-8)
+
+    try:
+        ob = exchange.fetch_order_book(sym, limit=5)
+        _rate_record(2.0)
+    except Exception as e:
+        _GTX_PREFLIGHT_STATS["fetch_failed"] += 1
+        log.debug(f"[GTX-Preflight] {sym} book fetch failed: {e}")
+        return target
+
+    try:
+        best_bid = float(ob["bids"][0][0])
+        best_ask = float(ob["asks"][0][0])
+    except (IndexError, ValueError, TypeError):
+        return target
+
+    if best_bid <= 0 or best_ask <= 0 or best_ask < best_bid:
+        return target
+
+    if side == "buy":
+        if target > best_bid:
+            safe = best_bid - tick
+            if safe <= 0:
+                return target
+            log.debug(
+                f"[GTX-Preflight] {sym} BUY {target:.8f} → {safe:.8f} "
+                f"(bid={best_bid:.8f}, tick={tick:.8f})"
+            )
+            _GTX_PREFLIGHT_STATS["adjusted"] += 1
+            return float(safe)
+    else:
+        if target < best_ask:
+            safe = best_ask + tick
+            log.debug(
+                f"[GTX-Preflight] {sym} SELL {target:.8f} → {safe:.8f} "
+                f"(ask={best_ask:.8f}, tick={tick:.8f})"
+            )
+            _GTX_PREFLIGHT_STATS["adjusted"] += 1
+            return float(safe)
+
+    return target
+
+
+def _gtx_preflight_log_stats() -> None:
+    """Log pre-flight stats every 5 minutes."""
+    now = time.time()
+    if now - float(_GTX_PREFLIGHT_STATS.get("last_report_ts", 0.0)) < 300:
+        return
+    _GTX_PREFLIGHT_STATS["last_report_ts"] = now
+    s = _GTX_PREFLIGHT_STATS
+    if s["checked"] == 0:
+        return
+    log.info(
+        f"[GTX-Preflight] checked={s['checked']}, "
+        f"adjusted={s['adjusted']}, "
+        f"fetch_failed={s['fetch_failed']}"
+    )
+
+
+# ══ end FIX-25 helpers ══
+
+
 def place_pending_entry(exchange, sym: str, side: str, qty: float,
                         sig, timeout_s: float, leverage: int,
                         ad=None,
@@ -11461,6 +11567,17 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
 
     # ══ وضع الأمر النهائي ══
     if _exec_mode == "gtx":
+        # ══ [FIX-25] Pre-flight: adjust to safe side BEFORE sending ══
+        _tick_for_gtx = _get_tick_size(exchange, sym) or 0.0
+        _orig_target = target
+        target = _gtx_preflight(exchange, sym, side, target,
+                                  exchange_tick=_tick_for_gtx)
+        if target != _orig_target:
+            log.debug(
+                f"[FIX-25] {sym} GTX target adjusted "
+                f"{_orig_target:.8f} → {target:.8f}"
+            )
+
         try:
             o = exchange.create_order(
                 sym, 'limit', side, qty, target,
@@ -11468,24 +11585,38 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
             )
         except Exception as e:
             _emsg = str(e).lower()
-            # [FIX-4.1] عند رفض GTX (post-only would cross):
-            # انزلق بعيداً عن السوق بمقدار 1 tick إضافي ثم أعد المحاولة.
-            if '-2010' in _emsg or 'post only' in _emsg or 'gtx' in _emsg:
-                log.info(f"[Pending] {sym} GTX rejected — "
-                         f"falling back with wider offset")
+            # [FIX-25] GTX rejected even after pre-flight.
+            # Fetch book freshly and retry with the actual safe price.
+            if ('-2010' in _emsg or '-5022' in _emsg
+                    or 'post only' in _emsg or 'gtx' in _emsg):
+                log.info(
+                    f"[FIX-25] {sym} GTX rejected after pre-flight "
+                    f"- fetching fresh book"
+                )
                 try:
-                    _tick = _get_tick_size(exchange, sym) or target * 1e-5
+                    _ob2 = exchange.fetch_order_book(sym, limit=5)
+                    _rate_record(2.0)
+                    _bb2 = float(_ob2['bids'][0][0])
+                    _ba2 = float(_ob2['asks'][0][0])
+                    _tick2 = _tick_for_gtx or target * 1e-5
                     if side == 'buy':
-                        target2 = target - _tick
+                        target2 = _bb2 - _tick2
                     else:
-                        target2 = target + _tick
+                        target2 = _ba2 + _tick2
+                    log.info(
+                        f"[FIX-25] {sym} retry target "
+                        f"{target:.8f} → {target2:.8f} "
+                        f"(bid={_bb2:.8f}, ask={_ba2:.8f})"
+                    )
                     o = exchange.create_order(
                         sym, 'limit', side, qty, target2,
                         params={'timeInForce': 'GTX'}
                     )
-                    target = target2  # للـ rec
+                    target = target2
                 except Exception as e2:
-                    log.warning(f"[Pending] {sym} GTX fallback failed: {e2}")
+                    log.warning(
+                        f"[Pending] {sym} GTX fallback failed: {e2}"
+                    )
                     return None
             else:
                 log.debug(f"[Pending] {sym} order rejected @ "

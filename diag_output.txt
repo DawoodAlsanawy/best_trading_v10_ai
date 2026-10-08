@@ -1,201 +1,155 @@
-📖 Loaded 571,176 bytes from trading_2_fixed_v2.py
+📖 File: trading_2_complete4.py
+   Size: 596,733 chars
+   Encoding check passed
 
+═══ SECTION 1: Around 'top_syms = scan_top_assets(exchange)' ═══
+Marker found at offset 483657
 
-████████████████████████████████████████████████████████████████████████
-█  SECTION 1: place_pending_entry — final GTX block
-████████████████████████████████████████████████████████████████████████
+── Plain text (may look weird due to RTL) ──
+info(f"  [Prot] restored={_prot_ok} "
+                 f"deferred={_prot_deferred} "
+                 f"dropped={_prot_dropped_pending} "
+                 f"failed={_prot_fail}")
 
-========================================================================
-  GTX block + rec start (in place_pending_entry)
-  offsets: 446635 .. 448485
-========================================================================
-r(
-                    CFG, 'SING_PENDING_WAIT_ACTIVE', 1
-                ))
-                timeout_s = float(_bars * _tf_sec_u)
-                _sing_timeout_reason = f"active({_bars}bars)"
-                log.info(
-                    f"[Sing-Timing] {sym} {sig.action} ACTIVE "
-                    f"(rho={_sing_rho:+.3f}) — timeout → "
-                    f"{_bars} bars ({timeout_s:.0f}s)"
-                )
-    except Exception as _e:
-        log.debug(f"[Sing-Timing] place_pending hook failed: {_e}")
+    # ══ [RE-ENTRY COOLDOWN] track last exit time per symbol ══
+    last_exit_time: Dict[str, float] = {}
 
-    # [FIX-05b] Read capital from run_live's published snapshot.
-    # The original patch (FIX-05a) called fetch_balance() here on
-    # every placement, burning rate-limit weight unnecessarily.
-    # run_live() now publishes cap_live → _LAST_KNOWN_CAP after each
-    # balance fetch; we reuse it.
-    _cap_snapshot = float(globals().get('_LAST_KNOWN_CAP', 0.0) or 0.0)
-    if _cap_snapshot <= 0.0:
-        # One-time bootstrap (only on first call before run_live
-        # publishes anything). Cheap because it happens once.
-        try:
-            if ad is not None and not globals().get('_CAP_BOOTSTRAPPED', False):
-                _bal_snap = exchange.fetch_balance()
-                _cap_snapshot = float(
-                    _bal_snap['USDT'].get('free') or 0.0
-                )
-                globals()['_LAST_KNOWN_CAP'] = _cap_snapshot
-                globals()['_CAP_BOOTSTRAPPED'] = True
-        except Exception:
-            _cap_snapshot = 0.0
+    corr_cache: Dict = {}
 
-    # [FIX-15] Trail params 
-... [truncated]
+    log.info("⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...")
+    top_syms = scan_top_assets(exchange)
 
-  ───── repr (first 400 chars) ─────
-'r(\n                    CFG, \'SING_PENDING_WAIT_ACTIVE\', 1\n                ))\n                timeout_s = float(_bars * _tf_sec_u)\n                _sing_timeout_reason = f"active({_bars}bars)"\n                log.info(\n                    f"[Sing-Timing] {sym} {sig.action} ACTIVE "\n                    f"(rho={_sing_rho:+.3f}) — timeout → "\n                    f"{_bars} bars ({timeout_s:.0f}s)"\n    '
+    # ══ [DATA-LENGTH-FIX] Live needs real history, not 60 days ══
+    # Backtest uses 730 days; live used 60 → KMeans collapsed (H_train ≈ 0.2).
+    # 365 days o
 
-████████████████████████████████████████████████████████████████████████
-█  SECTION 2: All 'GTX' occurrences in place_pending_entry
-████████████████████████████████████████████████████████████████████████
-place_pending_entry body: 18000 chars
-  • GTX at relative offset 6480 (abs 439347)
-      ... '"\n              f"target={target:.6f}")\n\n    # ══ [SING-TIMING Layer 2] القرار: GTX أم Marketable ══\n    # المنطق:\n    #   - إذا SING_TIMING_ENABLED=False → GTX عادي (لا شيء يتغير).\n    #   - إذا SING'
-  • GTX at relative offset 6557 (abs 439424)
-      ... 'ر: GTX أم Marketable ══\n    # المنطق:\n    #   - إذا SING_TIMING_ENABLED=False → GTX عادي (لا شيء يتغير).\n    #   - إذا SING_TIMING_ENABLED=True و SING_ACTIVE_MARKETABLE=False\n    #     → GTX عادي (Lay'
-  • GTX at relative offset 6664 (abs 439531)
-      ... '  #   - إذا SING_TIMING_ENABLED=True و SING_ACTIVE_MARKETABLE=False\n    #     → GTX عادي (Layer 1 فقط يعمل).\n    #   - إذا SING_TIMING_ENABLED=True و SING_ACTIVE_MARKETABLE=True\n    #     و _sing_stat'
-  • GTX at relative offset 6838 (abs 439705)
-      ... 'rue\n    #     و _sing_state == "ACTIVE" → Marketable Limit.\n    #   - غير ذلك → GTX عادي.\n    _exec_mode = "gtx"\n    _marketable_px = None\n\n    if (getattr(CFG, \'SING_TIMING_ENABLED\', False)\n         '
-  • GTX at relative offset 8179 (abs 441046)
-      ... 'p {_slip_bps:.1f}bps > {_max_slip:.1f}bps "\n                    f"— fallback to GTX"\n                )\n            else:\n                o = exchange.create_order(\n                    sym, \'limit\', si'
-  • GTX at relative offset 8362 (abs 441229)
-      ... ' sym, \'limit\', side, qty, _marketable_px,\n                    params={}  # بدون GTX → يقطع السبريد كـ taker\n                )\n                _exec_mode = "marketable"\n                target = _market'
-  • GTX at relative offset 8933 (abs 441800)
-      ... '-Timing-L2] {sym} marketable failed: {_e} "\n                f"— falling back to GTX"\n            )\n            _exec_mode = "gtx"\n\n    # ══ وضع الأمر النهائي ══\n    if _exec_mode == "gtx":\n        try'
-  • GTX at relative offset 9183 (abs 442050)
-      ... "       sym, 'limit', side, qty, target,\n                params={'timeInForce': 'GTX'}\n            )\n        except Exception as e:\n            _emsg = str(e).lower()\n            # [FIX-4.1] عند رفض GT"
-  • GTX at relative offset 9301 (abs 442168)
-      ... "eption as e:\n            _emsg = str(e).lower()\n            # [FIX-4.1] عند رفض GTX (post-only would cross):\n            # انزلق بعيداً عن السوق بمقدار 1 tick إضافي ثم أعد المحاولة.\n            if '-2"
-  • GTX at relative offset 9521 (abs 442388)
-      ... 'st only\' in _emsg or \'gtx\' in _emsg:\n                log.info(f"[Pending] {sym} GTX rejected — "\n                         f"falling back with wider offset")\n                try:\n                    _t'
-  • GTX at relative offset 10009 (abs 442876)
-      ... "m, 'limit', side, qty, target2,\n                        params={'timeInForce': 'GTX'}\n                    )\n                    target = target2  # للـ rec\n                except Exception as e2:\n    "
-  • GTX at relative offset 10175 (abs 443042)
-      ... '      except Exception as e2:\n                    log.warning(f"[Pending] {sym} GTX fallback failed: {e2}")\n                    return None\n            else:\n                log.debug(f"[Pending] {sym'
+── Python repr (exact chars) ──
+'info(f"  [Prot] restored={_prot_ok} "\n                 f"deferred={_prot_deferred} "\n                 f"dropped={_prot_dropped_pending} "\n                 f"failed={_prot_fail}")\n\n    # ══ [RE-ENTRY COOLDOWN] track last exit time per symbol ══\n    last_exit_time: Dict[str, float] = {}\n\n    corr_cache: Dict = {}\n\n    log.info("⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...")\n    top_syms = scan_top_assets(exchange)\n\n    # ══ [DATA-LENGTH-FIX] Live needs real history, not 60 days ══\n    # Backtest uses 730 days; live used 60 → KMeans collapsed (H_train ≈ 0.2).\n    # 365 days o'
 
-████████████████████████████████████████████████████████████████████████
-█  SECTION 3: Exit no-fill block in run_live
-████████████████████████████████████████████████████████████████████████
-  • '[Exit]' log found at offset 503572
+═══ SECTION 2: Anchor pattern tests ═══
 
-========================================================================
-  Exit block (before ⬛ [Exit] log)
-  offsets: 501072 .. 503672
-========================================================================
- قبل الحذف ══
-                    try:
-                        # [FIX-10.1] احسب net_pnl مع الرسوم
-                        _entry_px_lg = float(pos.get('entry') or 0)
-                        _exit_px_lg  = float(exec_price or 0)
-                        _qty_lg      = float(pos.get('qty') or 0)
-                        _partial_lg  = float(pos.get('_partial_pnl', 0.0))
-                        if pos.get('action') == 'BUY':
-                            _gross_lg = (_exit_px_lg - _entry_px_lg) * _qty_lg
-                        else:
-                            _gross_lg = (_entry_px_lg - _exit_px_lg) * _qty_lg
-                        # [FIX-10b] Entry is always maker (GTX).
-                        # Exit fee depends on reason:
-                        #   SL / TP / LiqProximity → taker
-                        #   Apex / Topo / MaxHold / EndOfData → maker
-                        _entry_fee_lg = _qty_lg * _entry_px_lg * CFG.MAKER_FEE
-                        _is_taker_exit = _exit_is_taker(exit_reason)
-                        _exit_fee_rate = (CFG.TAKER_FEE
-                                          if _is_taker_exit
-                                          else CFG.MAKER_FEE)
-                        _exit_fee_lg = _qty_lg * _exit_px_lg * _exit_fee_rate
-                        # Funding (best-effort estimate)
-                        _hold_s_lg = time.time() - float(pos.get('entry_ts') or time.time())
-                        _fund_pays_lg = max(0, int(_hold_s_lg // 28800))  # 8h
-      
-... [truncated]
+Pattern A (original from script):
+   ❌ NO MATCH
+   Found prefix '    log.info("⏳' at offset 483571
+   First 100 chars after prefix:
+   '    log.info("⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...")\n    top_syms = scan_top_assets(exchange)\n\n    # ══ [DATA-LENGTH-FIX] Live needs real history, not 60 days ══\n    # Bac'
 
-  ───── repr (first 400 chars) ─────
-" قبل الحذف ══\n                    try:\n                        # [FIX-10.1] احسب net_pnl مع الرسوم\n                        _entry_px_lg = float(pos.get('entry') or 0)\n                        _exit_px_lg  = float(exec_price or 0)\n                        _qty_lg      = float(pos.get('qty') or 0)\n                        _partial_lg  = float(pos.get('_partial_pnl', 0.0))\n                        if pos"
+Pattern B (just top_syms line):
+   ✅ MATCH
 
-████████████████████████████████████████████████████████████████████████
-█  SECTION 4: All 'no fill' and '[Exit]' occurrences
-████████████████████████████████████████████████████████████████████████
+Pattern C (with newline):
+   ✅ MATCH
 
-  'no fill' occurrences:
-    • offset 415815: ...'ressively bring the order closer ══\n        # Applied when: no fills yet, order still open.\n        # Stage 0 → 1 → 2 → '
-    • offset 499903: ...'ning(\n                                    f"⚠️ [Exit] {sym} no fill "\n                                    f"({result[\'re'
+═══ SECTION 3: Line-by-line byte analysis ═══
 
-  '[Exit]' occurrences:
-    • offset 495584: ...'ept Exception as e:\n                            log.error(f"[Exit] market failed {sym}: {e}")\n                    else:\n'
-    • offset 497382: ...'      log.info(\n                                        f"✅ [Exit] {sym} position already "\n                            '
-    • offset 498140: ...'xception as _e:\n                                log.debug(f"[Exit] position check "\n                                    '
-    • offset 498575: ...'         log.warning(\n                                    f"[Exit] {sym} forcing MARKET after "\n                        '
-    • offset 499665: ...'ion as _em:\n                                    log.error(f"[Exit] forced market "\n                                     '
-    • offset 499890: ...'      log.warning(\n                                    f"⚠️ [Exit] {sym} no fill "\n                                    f'
-    • offset 503574: ...'it_time[sym] = time.time()\n                    log.info(f"⬛ [Exit] {sym} @ {exec_price:.6f} [{exit_reason}]")\n          '
+Line 12132:
+  repr  : '    top_syms = scan_top_assets(exchange)'
+  bytes : [32, 32, 32, 32, 116, 111, 112, 95, 115, 121, 109, 115, 32, 61, 32, 115, 99, 97, 110, 95, 116, 111, 112, 95, 97, 115, 115, 101, 116, 115, 40, 101, 120, 99, 104, 97, 110, 103, 101, 41]...
+  len   : 40 chars
 
-████████████████████████████████████████████████████████████████████████
-█  SECTION 5: _exit_ok / _exit_retry context
-████████████████████████████████████████████████████████████████████████
+Line 12131 (previous):
+  repr  : '    log.info("⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...")'
+  len   : 81 chars
+  char-by-char (last 80 chars):
+    [   1] U+0020 ' '
+    [   2] U+0020 ' '
+    [   3] U+0020 ' '
+    [   4] U+006C 'l'
+    [   5] U+006F 'o'
+    [   6] U+0067 'g'
+    [   7] U+002E '.'
+    [   8] U+0069 'i'
+    [   9] U+006E 'n'
+    [  10] U+0066 'f'
+    [  11] U+006F 'o'
+    [  12] U+0028 '('
+    [  13] U+0022 '"'
+    [  14] U+23F3 U+23F3
+    [  15] U+0020 ' '
+    [  16] U+062C U+062C
+    [  17] U+0644 U+0644
+    [  18] U+0628 U+0628
+    [  19] U+0020 ' '
+    [  20] U+0627 U+0627
+    [  21] U+0644 U+0644
+    [  22] U+0632 U+0632
+    [  23] U+0645 U+0645
+    [  24] U+0643 U+0643
+    [  25] U+0627 U+0627
+    [  26] U+0646 U+0646
+    [  27] U+0020 ' '
+    [  28] U+0627 U+0627
+    [  29] U+0644 U+0644
+    [  30] U+0645 U+0645
+    [  31] U+0627 U+0627
+    [  32] U+0644 U+0644
+    [  33] U+064A U+064A
+    [  34] U+0020 ' '
+    [  35] U+0627 U+0627
+    [  36] U+0644 U+0644
+    [  37] U+062A U+062A
+    [  38] U+0627 U+0627
+    [  39] U+0631 U+0631
+    [  40] U+064A U+064A
+    [  41] U+062E U+062E
+    [  42] U+064A U+064A
+    [  43] U+0020 ' '
+    [  44] U+0028 '('
+    [  45] U+0647 U+0647
+    [  46] U+0630 U+0630
+    [  47] U+0647 U+0647
+    [  48] U+0020 ' '
+    [  49] U+0627 U+0627
+    [  50] U+0644 U+0644
+    [  51] U+0639 U+0639
+    [  52] U+0645 U+0645
+    [  53] U+0644 U+0644
+    [  54] U+064A U+064A
+    [  55] U+0629 U+0629
+    [  56] U+0020 ' '
+    [  57] U+062A U+062A
+    [  58] U+062D U+062D
+    [  59] U+062F U+062F
+    [  60] U+062B U+062B
+    [  61] U+0020 ' '
+    [  62] U+0645 U+0645
+    [  63] U+0631 U+0631
+    [  64] U+0629 U+0629
+    [  65] U+0020 ' '
+    [  66] U+0648 U+0648
+    [  67] U+0627 U+0627
+    [  68] U+062D U+062D
+    [  69] U+062F U+062F
+    [  70] U+0629 U+0629
+    [  71] U+0020 ' '
+    [  72] U+0641 U+0641
+    [  73] U+0642 U+0642
+    [  74] U+0637 U+0637
+    [  75] U+0029 ')'
+    [  76] U+002E '.'
+    [  77] U+002E '.'
+    [  78] U+002E '.'
+    [  79] U+0022 '"'
+    [  80] U+0029 ')'
 
-  '_exit_ok' occurrences:
-    • offset 494683: ...'            or \'LiqProximity\' in rsn\n                    )\n\n                    _exit_ok = False\n                    exec_price = 0.0\n                    exit_reason = ""\n\n                    if \'Emer'
-    • offset 495481: ...'                    exit_reason = f"{rsn} (market)"\n                            _exit_ok = True\n                        except Exception as e:\n                            log.error(f"[Exit] market fai'
-    • offset 499472: ...' exit_reason = f"{rsn} (forced-market)"\n                                        _exit_ok = True\n                                        # Fall through to cleanup below\n                                '
-    • offset 499794: ...'                    f"failed {sym}: {_em}")\n\n                            if not _exit_ok:\n                                log.warning(\n                                    f"⚠️ [Exit] {sym} no fill "\n '
-    • offset 500262: ...'            exit_reason = f"{rsn} ({result[\'reason\']})"\n                        _exit_ok = True\n\n                    if not _exit_ok:\n                        continue\n\n                    # ══ Positio'
-    • offset 500306: ...'reason\']})"\n                        _exit_ok = True\n\n                    if not _exit_ok:\n                        continue\n\n                    # ══ Position now closed. Clean any leftover protective\n'
+═══ SECTION 4: Suggested safe anchor ═══
 
-  '_exit_retry' occurrences:
-    • offset 498362: ..."ed attempts, force market\n                            _retry_cnt = int(pos.get('_exit_retry', 0)) + 1\n                            pos['_exit_retry'] = _retry_cnt\n                            if _retry_"
-    • offset 498417: ..."retry_cnt = int(pos.get('_exit_retry', 0)) + 1\n                            pos['_exit_retry'] = _retry_cnt\n                            if _retry_cnt >= 3:\n                                log.warning(\n"
+Suggested anchor (exact lines to copy):
+```python
+# line 12130: ''
+# line 12131: '    log.info("⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...")'
+# line 12132: '    top_syms = scan_top_assets(exchange)'
+# line 12133: ''
+# line 12134: '    # ══ [DATA-LENGTH-FIX] Live needs real history, not 60 days ══'
+```
 
-  'forcing MARKET after' occurrences:
-    • offset 498588: ...'                log.warning(\n                                    f"[Exit] {sym} forcing MARKET after "\n                                    f"{_retry_cnt} failed post-only attempts"\n                   '
+Suggested pattern to use (multi-line, avoid Arabic):
+```python
+anchor = (
+    '    top_syms = scan_top_assets(exchange)\n'
+    '\n'
+    '    # ══ [DATA-LENGTH-FIX]'
+)
+```
 
-████████████████████████████████████████████████████████████████████████
-█  SECTION 6: monitor_pending_orders timeout block
-████████████████████████████████████████████████████████████████████████
-
-========================================================================
-  timeout block in monitor_pending_orders
-  offsets: 418723 .. 421023
-========================================================================
-            rec['decay_stage'] = int(_target_stage)
-                        log.info(
-                            f"[TimeDecay] {sym} stage={_target_stage} "
-                            f"dip {_base_dip:.6f}→{_new_dip:.6f} "
-                            f"({_mult*100:.0f}%) target={_new_target:.6f}"
-                        )
-                    except Exception as _e:
-                        log.debug(f"[TimeDecay] {sym} reprice failed: {_e}")
-                        # If reprice fails, keep old order — safer than nothing
-                        rec['decay_stage'] = int(_target_stage)
-                    # Fall through (don't continue) — timeout check below
-                    # may still fire if we've passed stage 4.
-
-        # ── Timeout → Stage 2 (إن مُفعَّل) أو cancel + drop ──
-        timeout_s = float(rec.get('timeout_s') or CFG.PO_MAX_WAIT_S)
-        elapsed = now - float(rec.get('placed_at') or now)
-
-        if elapsed > timeout_s:
-            # ══ [UNIFIED STAGE 2] ══
-            _did_stage2 = False
-            if getattr(CFG, 'UNIFIED_ENTRY_ENABLED', True):
-                try:
-                    _ad = rec.get('ad_ref')
-                    _filled = float(rec.get('filled') or 0.0)
-                    if _ad is not None and _filled <= 0.0:
-                        _current_ci = len(_ad.closes) - 2  # آخر شمعة مغلقة
-                        _current_fi = _current_ci - _ad.feat_start
-                        if 0 <= _current_fi < len(_ad.score):
-                          
-... [truncated]
-
-  ───── repr (first 400 chars) ─────
-'            rec[\'decay_stage\'] = int(_target_stage)\n                        log.info(\n                            f"[TimeDecay] {sym} stage={_target_stage} "\n                            f"dip {_base_dip:.6f}→{_new_dip:.6f} "\n                            f"({_mult*100:.0f}%) target={_new_target:.6f}"\n                        )\n                    except Exception as _e:\n                        log.de'
-
-████████████████████████████████████████████████████████████████████████
-█  END OF DIAGNOSTIC
-████████████████████████████████████████████████████████████████████████
-
-📋 أرسل المخرجات كاملة (من أول SECTION 1 حتى النهاية)
+Verification: ✅ MATCH
