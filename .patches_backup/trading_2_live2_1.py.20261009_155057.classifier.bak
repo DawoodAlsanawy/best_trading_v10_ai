@@ -8078,68 +8078,10 @@ _PROTECTIVE_ORDER_TYPES = {"STOP_MARKET", "TAKE_PROFIT_MARKET",
 
 
 def _is_protective_order(o: Dict) -> bool:
-    """
-    True if the order is a protective SL/TP placed by this bot.
-
-    [ccxt-NORMALIZATION FIX]
-    ccxt maps Binance's STOP_MARKET to unified type='market' and stores
-    the truth only in info.orderType / info.algoType.
-    """
+    """True if the order is a protective SL/TP placed by this bot."""
     try:
-        # 1. Unified type (works when ccxt keeps the original)
         t = str(o.get('type') or '').lower()
-        if 'stop_market' in t or 'take_profit_market' in t:
-            return True
-        if t in ('stop', 'take_profit', 'stop_loss'):
-            return True
-
-        # 2. ccxt-normalized top-level fields
-        if (o.get('triggerPrice')
-                or o.get('stopPrice')
-                or o.get('stopLossPrice')
-                or o.get('takeProfitPrice')):
-            return True
-
-        # 3. Raw Binance info fields (source of truth)
-        info = o.get('info') or {}
-        raw_type = str(
-            info.get('orderType') or info.get('type') or ''
-        ).lower()
-        if 'stop_market' in raw_type or 'take_profit_market' in raw_type:
-            return True
-        if 'stop' in raw_type or 'take_profit' in raw_type:
-            return True
-
-        # 4. Algo Order Service marker
-        if str(info.get('algoType') or '').upper() == 'CONDITIONAL':
-            return True
-
-        # 5. Last resort: any stop/trigger price in raw info
-        if (info.get('stopPrice')
-                or info.get('triggerPrice')
-                or info.get('stopLossPrice')
-                or info.get('takeProfitPrice')):
-            return True
-    except Exception:
-        pass
-    return False
-
-
-def _is_tp_protective(o: Dict) -> bool:
-    """
-    [NEW] True if the protective order is a TAKE_PROFIT (vs SL).
-    Uses raw info.orderType first.
-    """
-    try:
-        info = o.get('info') or {}
-        raw_t = str(info.get('orderType') or '').lower()
-        if 'take_profit' in raw_t:
-            return True
-        if 'stop_market' in raw_t or raw_t == 'stop':
-            return False
-        # Fallback to unified type
-        t = str(o.get('type') or '').lower()
-        return 'take_profit' in t
+        return ('stop_market' in t or 'take_profit_market' in t)
     except Exception:
         return False
 
@@ -8224,8 +8166,8 @@ def _lv_check_protective_on_exchange(exchange, sym: str,
         )
         if sp <= 0:
             continue
-        # [CLASSIFIER-FIX] use raw orderType via helper
-        if _is_tp_protective(o):
+        ot = str(o.get('type') or '').lower()
+        if 'take_profit' in ot:
             if abs(sp - tp) < tol_tp:
                 has_tp = True
         else:
@@ -8310,8 +8252,7 @@ def _place_protective_orders(exchange, sym: str, pos: Dict) -> bool:
             )
 
         def _is_tp(o):
-            # [CLASSIFIER-FIX] delegate to global helper
-            return _is_tp_protective(o)
+            return 'take_profit' in str(o.get('type') or '').lower()
 
         tol = 1e-4
         _ex_sl = None
@@ -12652,14 +12593,9 @@ def _lv_ensure_protection(exchange, sym, pos, now) -> None:
         try:
             _rate_record(2.0)
             orders = _lv_open_orders_all(exchange, sym)
-            # [CLASSIFIER-FIX] helper-based check (ccxt normalizes type)
-            prot_orders = [o for o in orders if _is_protective_order(o)]
-            has_sl = any(not _is_tp_protective(o) for o in prot_orders)
+            has_sl = any('stop' in str(o.get('type') or '').lower() for o in orders)
             if not has_sl:
-                log.critical(
-                    f"[Prot] {sym} STOP order NOT FOUND on exchange "
-                    f"-- re-placing"
-                )
+                log.critical(f"[Prot] {sym} STOP order NOT FOUND on exchange — re-placing")
                 stale = True
         except Exception as e:
             log.debug(f"[LV] verify protection {sym} failed: {e}")
@@ -12703,17 +12639,13 @@ def _lv_get_exchange_sl(exchange, sym, pos):
         log.debug(f"[SmartBE] {sym} fetch orders failed: {e}")
         return None
     for o in orders:
-        if not _is_protective_order(o):
+        ot = str(o.get('type') or '').lower()
+        if 'take_profit' in ot:
             continue
-        # [CLASSIFIER-FIX] use helper for TP detection
-        if _is_tp_protective(o):
-            continue
-        _info = o.get('info') or {}
         sp = float(
             o.get('stopPrice')
             or o.get('triggerPrice')
-            or _info.get('stopPrice')
-            or _info.get('triggerPrice')
+            or (o.get('info') or {}).get('stopPrice')
             or 0
         )
         if sp > 0:
@@ -12777,12 +12709,6 @@ def _lv_breakeven(exchange, sym, pos, now) -> None:
             time.sleep(0.5)
         except Exception as _e:
             log.warning(f"[Breakeven] {sym} cancel before replace failed: {_e}")
-        # ══ [BREAKEVEN-FIX] Force _lv_ensure_protection to re-place
-        # immediately, bypassing the LIVE_PROT_RETRY_S cooldown.
-        # Without this line, if _prot_try_ts was set < 20s ago (which
-        # happens right after ANY protective placement), the position
-        # stays NAKED until the cooldown expires. This closes the window.
-        pos['_prot_try_ts'] = 0
 
     pos['sl'] = _target_sl
     pos['_be_ts'] = now

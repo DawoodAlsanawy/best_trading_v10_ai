@@ -312,6 +312,31 @@ class Config:
     LIVE_ASSET_CACHE_MAX: int = 40           # max entries (safety)
     # ══ [FIXED PRICE ENTRY — no chasing] ══
     PO_FIXED_PRICE: bool = False              # use sig.price, hold it fixed
+
+    # ══ [ORDER-BOOK-AWARE ENTRY] ══
+    # Master switch for the OB-aware entry execution (live) and its
+    # backtest simulation. When True, the bot places a small σ-anchored
+    # ladder around _compute_entry_target() and monitors it.
+    ORDER_BOOK_ENTRY_ENABLED: bool = False
+
+    # Max wait for OB entry (seconds, live only)
+    OB_MAX_WAIT_S: int = 60
+
+    # Sanity: anchor must be within this many bps of live mid
+    OB_ANCHOR_MAX_GAP_BPS: float = 20.0
+
+    # Abort if mid drifts more than this many bps during flight
+    OB_REPRICE_DRIFT_BPS: float = 5.0
+
+    # Toxic-flow abort threshold (signed toxicity)
+    OB_TOXIC_THRESHOLD: float = 0.65
+
+    # Number of levels in the ladder
+    OB_LADDER_MAX_LEVELS: int = 5
+
+    # Backtest: how many bars to give the ladder to fill
+    # (live is 60s; bar granularity forces a larger window)
+    OB_BT_MAX_WAIT_BARS: int = 3
     # ══ [TF-UNIFIED SCALING] ══
     # كل المسافات بوحدة σ_price = E_therm[fi] × price.
     # كل النوافذ بالساعات الحقيقية (تُحوَّل إلى شموع عند الإقلاع).
@@ -425,6 +450,12 @@ class Config:
     PROTECTIVE_WORKING_TYPE: str = "MARK_PRICE"
     PROTECTIVE_SYNC_MIN_STEP_FRAC: float = 0.001   # 0.1% SL movement → resync
     PROTECTIVE_MAX_RETRIES: int = 2
+    # ══ [PLACE-FIRST] Minimum distance from mark for a STOP_MARKET
+    # Binance USDT-M Futures rejects STOP_MARKET orders whose
+    # stopPrice is too close to markPrice. The exact minimum varies
+    # by symbol (usually 0.5% for majors, sometimes less for alts).
+    # 50 bps = 0.5% is a safe conservative default.
+    MIN_STOP_DISTANCE_BPS: float = 50.0
     # ══ [LAYER 4 — Live price feed for SL/TP checks] ══
     # ad.closes[-1] only refreshes on new bar; on 1h it's frozen for up to
     # 60 min. Ticker gives fresh price every poll (weight=2). Physics
@@ -696,6 +727,16 @@ class Config:
     SELL_MAJOR_PAIRS: Tuple = ("BTC/USDT", "ETH/USDT",
                                 "SOL/USDT", "BNB/USDT")
 
+
+
+    # ══ [SMALL-CAPITAL POST-ONLY] ══
+    # تحت هذه العتبة، كل أوامر الدخول والخروج غير الطارئة إلزامية Post-Only.
+    SMALL_CAPITAL_THRESHOLD: float = 100.0
+    FORCE_POST_ONLY_BELOW_CAPITAL: bool = True
+    PO_MAX_ATTEMPTS_SMALLCAP: int = 5
+    PO_MAX_WAIT_S_SMALLCAP: int = 90
+    SMALLCAP_DISABLE_PARTIAL_TP: bool = True
+    SMALLCAP_DISABLE_SING_MARKETABLE: bool = True
 CFG = Config()
 
 
@@ -4900,11 +4941,132 @@ def _backtest_entry_target(sig, ad) -> float:
 # § 14.5  Precompute Realistic Entry Fills (Backtest Only)
 # ════════════════════════════════════════════════════════════════
 
+def _backtest_ob_entry(sig, ad, first_bar, max_bars, anchor_px,
+                        mid_ref=None):
+    """
+    [BACKTEST-OB] Simulate order-book-aware entry in backtest.
+
+    Mirrors the live _execute_anchored_entry() but uses bar data:
+
+      Live                          Backtest proxy
+      ----------------------------  ----------------------------
+      live mid / fair_price    →    close[sig.close_idx]
+      live sigma_fast (bps)    →    E_therm[feat_idx] * 1e4
+      live tick_size           →    1 bps of anchor
+      book sweep every 300ms   →    bar low/high per iteration
+      drift check on live mid  →    drift check on close[bar]
+
+    Returns:
+        ('OB', fill_ci, avg_price, fill_frac)  |  None
+    """
+    if anchor_px <= 0:
+        return None
+    if mid_ref is None or mid_ref <= 0:
+        try:
+            mid_ref = float(ad.closes[int(sig.close_idx)])
+        except Exception:
+            mid_ref = anchor_px
+
+    # ── 1. Sanity check (same gate as live) ──
+    _max_gap = float(getattr(CFG, 'OB_ANCHOR_MAX_GAP_BPS', 20.0))
+    gap_bps = abs(anchor_px - mid_ref) / mid_ref * 1e4
+    if gap_bps > _max_gap:
+        log.debug(
+            f"[BT-OB] {sig.symbol} anchor {anchor_px:.6f} is "
+            f"{gap_bps:.1f}bps from mid {mid_ref:.6f} "
+            f"(> {_max_gap:.1f}) — skip"
+        )
+        return None
+
+    # ── 2. Sigma estimate (bps) ──
+    try:
+        _sig_frac = float(ad.E_therm[int(sig.feat_idx)])
+        if not np.isfinite(_sig_frac) or _sig_frac <= 1e-6:
+            _sig_frac = 0.01
+    except Exception:
+        _sig_frac = 0.01
+    sigma_bps = max(_sig_frac * 1e4, 2.0)
+
+    # ── 3. Tick proxy: 1 bps of anchor (approximates live PRICE_FILTER) ──
+    tick = max(anchor_px * 1e-4, 1e-9)
+
+    # ── 4. Build ladder (reuses the live ladder builder) ──
+    _side = 'buy' if sig.action == 'BUY' else 'sell'
+    try:
+        ladder = _ob_build_ladder(_side, anchor_px, 1.0, tick, sigma_bps)
+    except Exception as _e:
+        log.debug(f"[BT-OB] {sig.symbol} ladder failed: {_e}")
+        return None
+    if not ladder:
+        return None
+
+    # Extract normalized weights and prices
+    total_w = sum(l['qty'] for l in ladder)
+    if total_w <= 0:
+        return None
+    weights = [l['qty'] / total_w for l in ladder]
+    prices = [l['price'] for l in ladder]
+    n_levels = len(prices)
+
+    # ── 5. Iterate bars, detect fills + drift abort ──
+    drift_thr = float(getattr(CFG, 'OB_REPRICE_DRIFT_BPS', 5.0))
+    filled = [False] * n_levels
+    total_w_filled = 0.0
+    weighted_px_sum = 0.0
+    last_fill_bar = first_bar
+    n_bars = len(ad.closes)
+
+    for bar in range(first_bar, min(first_bar + max_bars, n_bars)):
+        # Drift check on close
+        try:
+            close_bar = float(ad.closes[bar])
+        except Exception:
+            break
+        drift_bps = abs(close_bar - mid_ref) / mid_ref * 1e4
+        if drift_bps > drift_thr:
+            log.debug(
+                f"[BT-OB] {sig.symbol} drift {drift_bps:.1f}bps "
+                f"> {drift_thr} at bar {bar} — abort"
+            )
+            break
+
+        low_bar = float(ad.lows[bar])
+        high_bar = float(ad.highs[bar])
+
+        for i in range(n_levels):
+            if filled[i]:
+                continue
+            px = prices[i]
+            if sig.action == 'BUY':
+                hit = low_bar <= px
+            else:
+                hit = high_bar >= px
+            if hit:
+                filled[i] = True
+                total_w_filled += weights[i]
+                weighted_px_sum += weights[i] * px
+                last_fill_bar = bar
+
+        if total_w_filled >= 0.98:
+            break
+
+    if total_w_filled <= 0:
+        return None
+
+    _min_accept = float(getattr(CFG, 'PO_MIN_ACCEPT_RATIO', 0.10))
+    if total_w_filled < _min_accept:
+        return None
+
+    avg_px = weighted_px_sum / total_w_filled
+    return ('OB', int(last_fill_bar), float(avg_px), float(total_w_filled))
+
+
 def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps,
                            time_decay_enabled=False,
                            time_decay_bars=(5, 10, 15),
                            time_decay_mults=(0.7, 0.5, 0.3),
-                           use_time_decay_price=False):
+                           use_time_decay_price=False,
+                           use_ob_entry=False):
     """
     [UNIFIED] لكل إشارة:
       - Stage 1: حاول ملء Limit عند sig.price خلال UNIFIED_WAIT_BARS_1H.
@@ -4943,6 +5105,41 @@ def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps,
         n_bars = len(ad.closes)
 
         for j, (sig_i, sig) in enumerate(sig_list):
+            # ══ [BACKTEST-OB] Order-book-aware entry simulation ══
+            # When enabled, replaces the entire S1/S2 pipeline with a
+            # single anchor-based ladder simulation. The anchor comes
+            # from _compute_entry_target (same function used in live).
+            if use_ob_entry:
+                try:
+                    _anchor = _compute_entry_target(
+                        sig, ad,
+                        'buy' if sig.action == 'BUY' else 'sell',
+                        exchange=None,
+                    )
+                except Exception as _ae:
+                    log.debug(
+                        f"[BT-OB] {sig.symbol} anchor failed: {_ae}"
+                    )
+                    result[sig_i] = None
+                    continue
+
+                _mid_ref = float(ad.closes[int(sig.close_idx)]) \
+                    if 0 <= int(sig.close_idx) < len(ad.closes) \
+                    else _anchor
+
+                _ob_bt_bars = int(getattr(
+                    CFG, 'OB_BT_MAX_WAIT_BARS', 3))
+
+                _ob_res = _backtest_ob_entry(
+                    sig, ad,
+                    first_bar=int(sig.close_idx) + 1,
+                    max_bars=_ob_bt_bars,
+                    anchor_px=float(_anchor),
+                    mid_ref=_mid_ref,
+                )
+                result[sig_i] = _ob_res
+                continue
+
             # ══ [SING-TIMING Layer 1] حالة الرنين لهذه الإشارة ══
             _sing_state = "DORMANT"
             _sing_rho = 0.0
@@ -5853,6 +6050,11 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
                               CFG.ENTRY_TIME_DECAY_MULT_2,
                               CFG.ENTRY_TIME_DECAY_MULT_3),
             use_time_decay_price=_td_enabled,
+            # [OPTION-A] Mirror the live restriction exactly:
+            # OB backtest runs only when the live would run it too.
+            use_ob_entry=bool(
+                getattr(CFG, 'ORDER_BOOK_ENTRY_ENABLED', False)
+                and not getattr(CFG, 'PO_FIXED_PRICE', True)),
         )
     n_total_sigs = len(signals)
     n_would_fill = sum(1 for v in fill_map.values() if v is not None)
@@ -6028,6 +6230,8 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
             continue
 
         _is_stage2 = False
+        _is_ob_entry = False
+        _ob_fill_frac = 1.0
         _stage2_sl = _stage2_tp = _stage2_sl_dist = None
 
         if len(fill_info) >= 2 and isinstance(fill_info[0], str):
@@ -6037,6 +6241,9 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
                 _, opt_ci, opt_px, _stage2_sl, _stage2_tp, _stage2_sl_dist \
                     = fill_info
                 _is_stage2 = True
+            elif fill_info[0] == 'OB':
+                _, opt_ci, opt_px, _ob_fill_frac = fill_info
+                _is_ob_entry = True
             else:
                 continue
         else:
@@ -6237,6 +6444,22 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
 
         # ══ [NOTIONAL CAP] ══
         qty = cap_notional(qty, eff_px)
+
+        # [BT-OB] Apply fill fraction (partial fills shrink the position)
+        if _is_ob_entry and _ob_fill_frac < 0.999:
+            qty *= float(_ob_fill_frac)
+            not_ = qty * eff_px
+            if not_ < CFG.MIN_NOTIONAL:
+                log.debug(
+                    f"[BT-OB] {sym} partial fill {_ob_fill_frac*100:.1f}% "
+                    f"makes notional ${not_:.2f} < MIN_NOTIONAL "
+                    f"${CFG.MIN_NOTIONAL:.2f} — skip"
+                )
+                continue
+            log.debug(
+                f"[BT-OB] {sym} partial fill {_ob_fill_frac*100:.1f}% "
+                f"→ qty={qty:.6f}, notional=${not_:.2f}"
+            )
 
         not_ = qty * eff_px
 
@@ -7813,6 +8036,7 @@ def _get_tick_size(exchange, symbol: str) -> Optional[float]:
             pass
     return None
 
+
 # ════════════════════════════════════════════════════════════════
 # [LIQ AWARENESS] — MMR fetching + liquidation math
 # ════════════════════════════════════════════════════════════════
@@ -8078,68 +8302,10 @@ _PROTECTIVE_ORDER_TYPES = {"STOP_MARKET", "TAKE_PROFIT_MARKET",
 
 
 def _is_protective_order(o: Dict) -> bool:
-    """
-    True if the order is a protective SL/TP placed by this bot.
-
-    [ccxt-NORMALIZATION FIX]
-    ccxt maps Binance's STOP_MARKET to unified type='market' and stores
-    the truth only in info.orderType / info.algoType.
-    """
+    """True if the order is a protective SL/TP placed by this bot."""
     try:
-        # 1. Unified type (works when ccxt keeps the original)
         t = str(o.get('type') or '').lower()
-        if 'stop_market' in t or 'take_profit_market' in t:
-            return True
-        if t in ('stop', 'take_profit', 'stop_loss'):
-            return True
-
-        # 2. ccxt-normalized top-level fields
-        if (o.get('triggerPrice')
-                or o.get('stopPrice')
-                or o.get('stopLossPrice')
-                or o.get('takeProfitPrice')):
-            return True
-
-        # 3. Raw Binance info fields (source of truth)
-        info = o.get('info') or {}
-        raw_type = str(
-            info.get('orderType') or info.get('type') or ''
-        ).lower()
-        if 'stop_market' in raw_type or 'take_profit_market' in raw_type:
-            return True
-        if 'stop' in raw_type or 'take_profit' in raw_type:
-            return True
-
-        # 4. Algo Order Service marker
-        if str(info.get('algoType') or '').upper() == 'CONDITIONAL':
-            return True
-
-        # 5. Last resort: any stop/trigger price in raw info
-        if (info.get('stopPrice')
-                or info.get('triggerPrice')
-                or info.get('stopLossPrice')
-                or info.get('takeProfitPrice')):
-            return True
-    except Exception:
-        pass
-    return False
-
-
-def _is_tp_protective(o: Dict) -> bool:
-    """
-    [NEW] True if the protective order is a TAKE_PROFIT (vs SL).
-    Uses raw info.orderType first.
-    """
-    try:
-        info = o.get('info') or {}
-        raw_t = str(info.get('orderType') or '').lower()
-        if 'take_profit' in raw_t:
-            return True
-        if 'stop_market' in raw_t or raw_t == 'stop':
-            return False
-        # Fallback to unified type
-        t = str(o.get('type') or '').lower()
-        return 'take_profit' in t
+        return ('stop_market' in t or 'take_profit_market' in t)
     except Exception:
         return False
 
@@ -8193,6 +8359,86 @@ def _cancel_all_protective_orders(exchange, sym: str,
     return n
 
 
+def _cleanup_symbol_orders(exchange, sym: str,
+                            include_entries: bool = True,
+                            include_protective: bool = True,
+                            reason: str = "unknown") -> Dict:
+    """
+    [ORDER-HYGIENE] إلغاء شامل ومنظم لكل أوامر الرمز.
+    """
+    stats = {'protective': 0, 'entries': 0, 'failed': 0,
+             'passes': 0, 'reason': reason}
+    if not sym:
+        return stats
+
+    for pass_idx in range(2):
+        stats['passes'] = pass_idx + 1
+        try:
+            _rate_record(2.0)
+            orders = _lv_open_orders_all(exchange, sym)
+        except Exception as e:
+            log.debug(f"[OrderHygiene:{reason}] {sym} fetch failed: {e}")
+            try:
+                orders = exchange.fetch_open_orders(sym)
+            except Exception as e2:
+                log.debug(f"[OrderHygiene:{reason}] {sym} fallback failed: {e2}")
+                break
+        if not orders:
+            break
+
+        _cancelled_this_pass = 0
+        for o in orders:
+            try:
+                _is_prot = _is_protective_order(o)
+                if _is_prot and not include_protective:
+                    continue
+                if (not _is_prot) and not include_entries:
+                    continue
+                _cat = 'protective' if _is_prot else 'entries'
+                _oid = o.get('id')
+                if not _oid:
+                    continue
+                _done = False
+                for _prm in ({'trigger': True}, {}):
+                    try:
+                        exchange.cancel_order(_oid, sym, params=_prm)
+                        _rate_record(1.0)
+                        _done = True
+                        break
+                    except Exception as _e:
+                        _m = str(_e).lower()
+                        if ('-2011' in _m or 'unknown order' in _m
+                                or 'not found' in _m
+                                or 'order does not exist' in _m):
+                            _done = True
+                            break
+                        continue
+                if _done:
+                    stats[_cat] += 1
+                    _cancelled_this_pass += 1
+                else:
+                    stats['failed'] += 1
+            except Exception as _e:
+                log.debug(f"[OrderHygiene:{reason}] {sym} item error: {_e}")
+                stats['failed'] += 1
+
+        if _cancelled_this_pass == 0:
+            break
+        time.sleep(0.25)
+
+    if stats['protective'] or stats['entries']:
+        log.info(
+            f"[OrderHygiene:{reason}] {sym}: "
+            f"protective={stats['protective']} "
+            f"entries={stats['entries']} "
+            f"failed={stats['failed']} "
+            f"passes={stats['passes']}"
+        )
+    return stats
+
+
+
+
 def _lv_check_protective_on_exchange(exchange, sym: str,
                                        sl: float, tp: float
                                        ) -> Tuple[bool, bool]:
@@ -8224,8 +8470,8 @@ def _lv_check_protective_on_exchange(exchange, sym: str,
         )
         if sp <= 0:
             continue
-        # [CLASSIFIER-FIX] use raw orderType via helper
-        if _is_tp_protective(o):
+        ot = str(o.get('type') or '').lower()
+        if 'take_profit' in ot:
             if abs(sp - tp) < tol_tp:
                 has_tp = True
         else:
@@ -8234,26 +8480,115 @@ def _lv_check_protective_on_exchange(exchange, sym: str,
     return has_sl, has_tp
 
 
+def _lv_preflight_check(exchange, sym: str, side: str,
+                         target_price: float, qty: float,
+                         mark_price: Optional[float] = None
+                         ) -> Tuple[bool, str]:
+    """
+    [PRE-FLIGHT] Validate that a STOP_MARKET / TAKE_PROFIT_MARKET
+    order can be placed on the exchange for `target_price` without
+    being rejected.
+
+    Checks (in order of cost):
+      1. price > 0
+      2. side matches direction (BUY: target < mark, SELL: target > mark)
+      3. distance from mark >= min_dist_bps (Binance rejects too-close)
+      4. qty * target >= MIN_NOTIONAL
+
+    Returns (ok, reason).
+    """
+    if target_price <= 0 or qty <= 0:
+        return False, "invalid_args"
+    if mark_price is None or mark_price <= 0:
+        try:
+            _tk = exchange.fetch_ticker(sym)
+            _rate_record(float(getattr(CFG, 'LIVE_PRICE_RATE_WEIGHT', 2.0)))
+            mark_price = float(_tk.get('last') or 0)
+        except Exception as _e:
+            log.debug(f"[PreFlight] {sym} ticker failed: {_e}")
+            return True, "ticker_unavailable_fail_open"
+
+    if mark_price <= 0:
+        return True, "mark_unavailable_fail_open"
+
+    # ── 2. Side check ──
+    if side == 'buy':
+        if target_price >= mark_price:
+            return False, (f"BUY_sl_above_mark"
+                           f"(tgt={target_price:.6f}>=m={mark_price:.6f})")
+    else:
+        if target_price <= mark_price:
+            return False, (f"SELL_sl_below_mark"
+                           f"(tgt={target_price:.6f}<=m={mark_price:.6f})")
+
+    # ── 3. Distance check ──
+    _min_bps = float(getattr(CFG, 'MIN_STOP_DISTANCE_BPS', 50.0))
+    dist_bps = abs(target_price - mark_price) / mark_price * 1e4
+    if dist_bps < _min_bps:
+        return False, (f"too_close_to_mark"
+                       f"({dist_bps:.1f}bps<{_min_bps:.0f}bps)")
+
+    # ── 4. Notional check ──
+    try:
+        _min_notional = float(_get_min_notional(exchange, sym)) \
+            if '_get_min_notional' in globals() else 5.0
+    except Exception:
+        _min_notional = 5.0
+    notional = qty * target_price
+    if notional < _min_notional:
+        return False, f"notional({notional:.2f}<{_min_notional:.2f})"
+
+    return True, "OK"
+
+
+def _lv_cancel_stale_legs(exchange, sym: str, stale_order_ids: List[str]) -> int:
+    """
+    [SURGICAL-CANCEL] Cancel a specific list of order IDs (not "all").
+    Uses trigger=True first (Algo Orders), falls back to default.
+    Returns count cancelled.
+    """
+    n = 0
+    for _oid in stale_order_ids:
+        _done = False
+        for _prm in ({'trigger': True}, {}):
+            try:
+                exchange.cancel_order(_oid, sym, params=_prm)
+                _done = True
+                n += 1
+                break
+            except Exception as _e:
+                _m = str(_e).lower()
+                if '-2011' in _m or 'unknown order' in _m:
+                    _done = True
+                    break
+                continue
+        if not _done:
+            log.debug(f"[StaleCancel] {sym} oid={_oid} failed")
+    return n
+
+
 def _place_protective_orders(exchange, sym: str, pos: Dict) -> bool:
     """
-    Place STOP_MARKET at SL and TAKE_PROFIT_MARKET at TP for the position.
+    [PLACE-FIRST] Surgical, pre-flight-validated SL/TP placement.
 
-    [SURGICAL-PLACEMENT] This version handles each leg independently:
+    Order of operations (the critical difference from cancel-then-place):
 
-      1. Fetch current protective orders (via _lv_open_orders_all which
-         includes Algo Orders / conditional orders on Binance Futures).
-      2. Classify each existing order:
-           - SL at pos['sl']           -> kept as-is
-           - Full-TP at pos['tp1']     -> kept as-is
-           - Partial-TP at partial_px  -> kept as-is
-           - anything else             -> STALE -> cancelled
-      3. Place ONLY the legs that are missing.
+      1. Compute target prices (SL, TP, partial-TP if enabled).
+      2. PRE-FLIGHT validate every target BEFORE touching the exchange.
+         If a target is invalid (too close to mark, wrong side, etc.),
+         log the reason and DO NOT touch the corresponding existing leg.
+      3. Read existing protective orders, classify by price match.
+      4. PLACE missing legs first (reduceOnly=True).
+      5. ONLY AFTER all desired legs are placed, cancel stale legs.
 
-    Never cancels a leg that already exists at the correct price. This
-    eliminates the SL-stacking bug that occurred when the SL was a
-    closePosition order that fetch_open_orders could not see.
+    This guarantees that at no point does an existing leg disappear
+    before its replacement is confirmed on the exchange.
 
-    Returns True on success.
+    SL uses reduceOnly=True (not closePosition=True) so that multiple
+    SLs can coexist briefly during the swap. Binance auto-cancels
+    reduceOnly orders when the position reaches zero.
+
+    Returns True iff all desired legs exist on the exchange.
     """
     if not getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
         return False
@@ -8269,7 +8604,7 @@ def _place_protective_orders(exchange, sym: str, pos: Dict) -> bool:
         wt = str(getattr(CFG, 'PROTECTIVE_WORKING_TYPE', 'MARK_PRICE'))
         max_retries = int(getattr(CFG, 'PROTECTIVE_MAX_RETRIES', 2))
 
-        # ── Compute partial-TP target price (needed for stale detection) ──
+        # ── 1. Partial-TP target price ──
         _partial_pct = float(getattr(CFG, 'PARTIAL_TP_PCT', 0.0))
         _partial_enabled = (
             bool(getattr(CFG, 'PARTIAL_TP_ENABLED', False))
@@ -8293,7 +8628,40 @@ def _place_protective_orders(exchange, sym: str, pos: Dict) -> bool:
         if pos.get('_partial_taken'):
             _partial_enabled = False
 
-        # ── Fetch existing protective orders ──
+        _partial_qty = qty * _partial_pct if _partial_enabled else 0.0
+        _full_qty = (qty * (1.0 - _partial_pct)
+                     if _partial_enabled else qty)
+
+        # ── 2. PRE-FLIGHT validation (before ANY exchange mutation) ──
+        _mark = None
+        try:
+            _tk = exchange.fetch_ticker(sym)
+            _rate_record(float(getattr(CFG, 'LIVE_PRICE_RATE_WEIGHT', 2.0)))
+            _mark = float(_tk.get('last') or 0) or None
+        except Exception:
+            _mark = None
+
+        _sl_ok, _sl_reason = _lv_preflight_check(
+            exchange, sym, close_side, sl, qty, mark_price=_mark
+        )
+        if not _sl_ok:
+            log.warning(
+                f"[Prot] {sym} SL pre-flight FAILED ({_sl_reason}) — "
+                f"existing SL left intact, no mutation"
+            )
+            return False
+
+        _tp_ok = True
+        _tp_reason = "OK"
+        if tp > 0:
+            _tp_ok, _tp_reason = _lv_preflight_check(
+                exchange, sym, close_side, tp,
+                _partial_qty if False else qty, mark_price=_mark
+            )
+            if not _tp_ok:
+                log.debug(f"[Prot] {sym} TP pre-flight soft-fail: {_tp_reason}")
+
+        # ── 3. Read + classify existing protective orders ──
         try:
             _existing = _lv_open_orders_all(exchange, sym)
         except Exception as _e:
@@ -8310,15 +8678,13 @@ def _place_protective_orders(exchange, sym: str, pos: Dict) -> bool:
             )
 
         def _is_tp(o):
-            # [CLASSIFIER-FIX] delegate to global helper
-            return _is_tp_protective(o)
+            return 'take_profit' in str(o.get('type') or '').lower()
 
         tol = 1e-4
         _ex_sl = None
         _ex_tp_full = None
         _ex_tp_partial = None
         _stale_ids = []
-
         for o in _prot:
             p = _px(o)
             if p <= 0:
@@ -8338,82 +8704,39 @@ def _place_protective_orders(exchange, sym: str, pos: Dict) -> bool:
                 else:
                     _stale_ids.append(o['id'])
 
-        # ── Cancel ONLY the stale legs ──
-        for _oid in _stale_ids:
-            _done = False
-            for _prm in ({'trigger': True}, {}):
-                try:
-                    exchange.cancel_order(_oid, sym, params=_prm)
-                    _done = True
-                    break
-                except Exception as _ce:
-                    _m = str(_ce).lower()
-                    if '-2011' in _m or 'unknown order' in _m:
-                        _done = True
-                        break
-            if not _done:
-                log.warning(f"[Prot] {sym} stale cancel oid={_oid} failed")
-        if _stale_ids:
-            log.info(f"[Prot] {sym} cancelled {len(_stale_ids)} stale "
-                     f"protective order(s) before placement")
-            time.sleep(0.4)
-
-        # ── Early return if everything is already in place ──
-        if (_ex_sl is not None
-                and _ex_tp_full is not None
-                and (not _partial_enabled or _ex_tp_partial is not None)):
-            log.debug(f"[Prot] {sym} all legs present -- no action")
-            pos['_broker_partial'] = bool(_ex_tp_partial is not None)
-            return True
-
         placed = {
             'sl': _ex_sl is not None,
             'tp': _ex_tp_full is not None,
             'partial_tp': _ex_tp_partial is not None,
         }
 
-        # ══════════════════════════════════════════════════════════════
-        # SL — place only if missing
-        # ══════════════════════════════════════════════════════════════
+        # ── 4. PLACE missing legs (all BEFORE any cancel) ──
+
+        # 4a. SL — reduceOnly (not closePosition) so place-first is safe
         if not placed['sl']:
             for attempt in range(max_retries):
                 try:
                     exchange.create_order(
-                        sym, 'STOP_MARKET', close_side, None, None,
+                        sym, 'STOP_MARKET', close_side, qty, None,
                         params={'stopPrice': sl,
-                                'closePosition': True,
+                                'reduceOnly': True,
                                 'workingType': wt})
                     placed['sl'] = True
                     log.info(f"[Prot] {sym} SL placed @ {sl:.6f} "
-                             f"(closePosition)")
+                             f"(reduceOnly, place-first)")
                     break
                 except Exception as e:
-                    log.debug(f"[Prot] {sym} SL closePosition "
-                              f"attempt {attempt+1} failed: {e}")
-                    try:
-                        exchange.create_order(
-                            sym, 'STOP_MARKET', close_side, qty, None,
-                            params={'stopPrice': sl,
-                                    'reduceOnly': True,
-                                    'workingType': wt})
-                        placed['sl'] = True
-                        log.info(f"[Prot] {sym} SL placed @ {sl:.6f} "
-                                 f"(reduceOnly)")
-                        break
-                    except Exception as e2:
-                        log.debug(f"[Prot] {sym} SL reduceOnly "
-                                  f"attempt {attempt+1} failed: {e2}")
-        else:
-            log.debug(f"[Prot] {sym} SL already present @ "
-                      f"{_ex_sl:.6f} -- kept")
+                    log.debug(f"[Prot] {sym} SL attempt {attempt+1} "
+                              f"failed: {e}")
+            if not placed['sl']:
+                log.warning(
+                    f"[Prot] {sym} SL placement FAILED — "
+                    f"existing stale SL (if any) PRESERVED"
+                )
+                # لا نلغي أي شيء — SL القديم قد لا يكون بسعرنا لكنه أفضل من لا شيء
+                return False
 
-        # ══════════════════════════════════════════════════════════════
-        # Partial TP — place only if enabled and missing
-        # ══════════════════════════════════════════════════════════════
-        _partial_qty = qty * _partial_pct if _partial_enabled else 0.0
-        _full_qty = (qty * (1.0 - _partial_pct)
-                     if _partial_enabled else qty)
-
+        # 4b. Partial TP
         if _partial_enabled and not placed['partial_tp'] and _partial_qty > 0:
             for attempt in range(max_retries):
                 try:
@@ -8425,25 +8748,19 @@ def _place_protective_orders(exchange, sym: str, pos: Dict) -> bool:
                                 'workingType': wt})
                     placed['partial_tp'] = True
                     log.info(f"[Prot] {sym} PARTIAL-TP placed @ "
-                             f"{_partial_price:.6f} qty={_partial_qty:.6f} "
-                             f"({_partial_pct*100:.0f}%)")
+                             f"{_partial_price:.6f} qty={_partial_qty:.6f}")
                     break
                 except Exception as e:
                     log.debug(f"[Prot] {sym} partial-TP attempt "
                               f"{attempt+1} failed: {e}")
             if not placed['partial_tp']:
-                log.warning(f"[Prot] {sym} partial-TP rejected -- "
-                            f"falling back to full-qty TP only")
+                log.warning(f"[Prot] {sym} partial-TP rejected — "
+                            f"continuing with full-qty TP only")
                 _partial_enabled = False
-        elif _partial_enabled and placed['partial_tp']:
-            log.debug(f"[Prot] {sym} PARTIAL-TP already present @ "
-                      f"{_ex_tp_partial:.6f} -- kept")
 
         pos['_broker_partial'] = bool(placed['partial_tp'])
 
-        # ══════════════════════════════════════════════════════════════
-        # Full TP — place only if missing
-        # ══════════════════════════════════════════════════════════════
+        # 4c. Full TP
         if not placed['tp']:
             _tp_close_pos = (not _partial_enabled)
             _tp_qty = None if _tp_close_pos else _full_qty
@@ -8458,22 +8775,32 @@ def _place_protective_orders(exchange, sym: str, pos: Dict) -> bool:
                         sym, 'TAKE_PROFIT_MARKET', close_side,
                         _tp_qty, None, params=params_tp)
                     placed['tp'] = True
-                    log.info(f"[Prot] {sym} FULL-TP placed @ {tp:.6f} "
-                             f"({'closePosition' if _tp_close_pos else 'reduceOnly'})")
+                    log.info(f"[Prot] {sym} FULL-TP placed @ {tp:.6f}")
                     break
                 except Exception as e:
                     log.debug(f"[Prot] {sym} full-TP attempt "
                               f"{attempt+1} failed: {e}")
-        else:
-            log.debug(f"[Prot] {sym} FULL-TP already present @ "
-                      f"{_ex_tp_full:.6f} -- kept")
+
+        # ── 5. NOW cancel stale legs (all desired legs confirmed) ──
+        if _stale_ids:
+            n_cancelled = _lv_cancel_stale_legs(exchange, sym, _stale_ids)
+            if n_cancelled > 0:
+                log.info(f"[Prot] {sym} cancelled {n_cancelled} stale "
+                         f"protective order(s) after placement")
 
         _ok = (placed['sl'] and placed['tp']
                and (placed['partial_tp'] or not _partial_enabled))
+        if not placed['sl']:
+            log.critical(
+                f"🚨 [PROT-FAIL] {sym} STOP LOSS FAILED TO PLACE -- "
+                f"position is UNPROTECTED on exchange. "
+                f"qty={qty} entry={pos.get('entry')} sl={sl} tp={tp}."
+            )
         if _ok:
             return True
-        log.warning(f"[Prot] {sym} incomplete: sl={placed['sl']} "
-                    f"tp={placed['tp']} partial={placed['partial_tp']}")
+        log.warning(f"[Prot] {sym} incomplete after place-first: "
+                    f"sl={placed['sl']} tp={placed['tp']} "
+                    f"partial={placed['partial_tp']}")
         return _ok
     except Exception as e:
         log.warning(f"[Prot] {sym} place_protective_orders fatal: {e}")
@@ -8900,6 +9227,24 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
 
     # ══ [ADAPTIVE FIX #3] Fetch tick size once ══
     _tick = _get_tick_size(exchange, symbol)
+
+    # ══ [SMALL-CAPITAL OVERRIDE] ══
+    _po_forced = bool(_LIVE_CAPITAL_STATE.get('post_only_forced', False))
+    _is_emergency = (
+        bool(fallback_market) and bool(cross_spread) and bool(reduce_only)
+    )
+    if _po_forced and not _is_emergency:
+        if cross_spread or fallback_market:
+            _LIVE_CAPITAL_STATE['rejected_cross_attempts'] = int(
+                _LIVE_CAPITAL_STATE.get('rejected_cross_attempts', 0)
+            ) + 1
+        cross_spread = False
+        fallback_market = False
+        _new_wait = int(getattr(CFG, 'PO_MAX_WAIT_S_SMALLCAP', 90))
+        if max_wait_s is None or int(max_wait_s) < _new_wait:
+            max_wait_s = _new_wait
+        if not reduce_only:
+            max_attempts = int(getattr(CFG, 'PO_MAX_ATTEMPTS_SMALLCAP', 5))
 
     def _refresh_active():
         """Fetch latest order state; update total_filled via DELTA only."""
@@ -10100,6 +10445,51 @@ _LIQ_EMERGENCY_STATS: Dict = {
     'triggers': 0,
     'last_warned_at': 0.0,
 }
+
+# ══ [SMALL-CAPITAL STATE] ══
+_LIVE_CAPITAL_STATE: Dict = {
+    'capital': 0.0,
+    'post_only_forced': False,
+    'forced_since_ts': 0.0,
+    'forced_transitions': 0,
+    'rejected_cross_attempts': 0,
+}
+
+
+def _is_post_only_forced(capital: float) -> bool:
+    if not getattr(CFG, 'FORCE_POST_ONLY_BELOW_CAPITAL', True):
+        return False
+    try:
+        return float(capital) < float(CFG.SMALL_CAPITAL_THRESHOLD)
+    except Exception:
+        return False
+
+
+def _refresh_post_only_state(capital: float) -> None:
+    _forced_now = _is_post_only_forced(capital)
+    _was_forced = bool(_LIVE_CAPITAL_STATE.get('post_only_forced', False))
+    _LIVE_CAPITAL_STATE['capital'] = float(capital)
+
+    if _forced_now and not _was_forced:
+        _LIVE_CAPITAL_STATE['post_only_forced'] = True
+        _LIVE_CAPITAL_STATE['forced_since_ts'] = time.time()
+        _LIVE_CAPITAL_STATE['forced_transitions'] += 1
+        log.warning(
+            f"[SmallCap] POST-ONLY MODE ENGAGED -- capital "
+            f"${capital:.2f} < ${CFG.SMALL_CAPITAL_THRESHOLD:.0f}. "
+            f"All non-emergency orders -> GTX (maker)."
+        )
+    elif not _forced_now and _was_forced:
+        _LIVE_CAPITAL_STATE['post_only_forced'] = False
+        _LIVE_CAPITAL_STATE['forced_transitions'] += 1
+        log.info(
+            f"[SmallCap] POST-ONLY MODE RELEASED -- capital "
+            f"${capital:.2f} >= ${CFG.SMALL_CAPITAL_THRESHOLD:.0f}. "
+            f"Transitions: {_LIVE_CAPITAL_STATE['forced_transitions']}"
+        )
+    else:
+        _LIVE_CAPITAL_STATE['post_only_forced'] = _forced_now
+
 
 
 def _degenerate_get(sym: str, tf: str, last_closed_ts: int) -> bool:
@@ -11786,10 +12176,18 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
     #   - إذا SING_TIMING_ENABLED=True و SING_ACTIVE_MARKETABLE=True
     #     و _sing_state == "ACTIVE" → Marketable Limit.
     #   - غير ذلك → GTX عادي.
+    # ══ [SMALL-CAPITAL] منع Marketable تحت رأس مال صغير ══
+    _po_forced_pp = bool(_LIVE_CAPITAL_STATE.get('post_only_forced', False))
+    _sing_marketable_disabled = (
+        _po_forced_pp
+        and getattr(CFG, 'SMALLCAP_DISABLE_SING_MARKETABLE', True)
+    )
+
     _exec_mode = "gtx"
     _marketable_px = None
 
-    if (getattr(CFG, 'SING_TIMING_ENABLED', False)
+    if (not _sing_marketable_disabled
+            and getattr(CFG, 'SING_TIMING_ENABLED', False)
             and getattr(CFG, 'SING_ACTIVE_MARKETABLE', False)
             and _sing_state == "ACTIVE"):
         try:
@@ -12121,16 +12519,22 @@ def _kill_switch_trigger(reason: str, exchange,
         except Exception as e:
             log.error(f"[KillSwitch] flatten {sym} failed: {e}")
 
-    # Cancel all pending
-    for sym in list(_PENDING_ORDERS.keys()):
-        rec = _PENDING_ORDERS[sym]
-        oid = rec.get('order_id')
-        if oid:
-            try:
-                exchange.cancel_order(oid, sym)
-            except Exception:
-                pass
-        _PENDING_ORDERS.pop(sym, None)
+    # ══ [ORDER-HYGIENE] تنظيف كامل قبل الإغلاق الجماعي ══
+    _all_syms_ks = set(list(open_pos_live.keys())
+                        + list(_PENDING_ORDERS.keys())
+                        + list(_WATCHED_SIGNALS.keys()))
+    for sym in _all_syms_ks:
+        try:
+            _cleanup_symbol_orders(
+                exchange, sym,
+                include_entries=True,
+                reason="kill-switch"
+            )
+        except Exception as _e:
+            log.debug(f"[OrderHygiene:kill-switch] {sym} failed: {_e}")
+
+    _PENDING_ORDERS.clear()
+    _WATCHED_SIGNALS.clear()
 
     try:
         _lv_kill_flatten_all(exchange)
@@ -12244,6 +12648,15 @@ def _lv_atomic_json(path, obj) -> None:
         except Exception:
             pass
     os.replace(tmp, path)
+    try:
+        _dir = os.path.dirname(os.path.abspath(path)) or "."
+        _dfd = os.open(_dir, os.O_RDONLY)
+        try:
+            os.fsync(_dfd)
+        finally:
+            os.close(_dfd)
+    except Exception:
+        pass
 
 
 def _lv_save_state(path, obj) -> None:
@@ -12388,9 +12801,13 @@ def _lv_on_exchange_closed(exchange, sym, pos, rsn_hint="ExchangeClosed") -> Non
     except Exception as e:
         log.debug(f"[TradeLog] exchange-closed hook failed: {e}")
     try:
-        _cancel_all_protective_orders(exchange, sym)
-    except Exception:
-        pass
+        _cleanup_symbol_orders(
+            exchange, sym,
+            include_entries=True,
+            reason="exchange-closed"
+        )
+    except Exception as _e:
+        log.debug(f"[OrderHygiene:exchange-closed] {sym} failed: {_e}")
     _LV_LAST_EXIT[sym] = time.time()
 
 
@@ -12652,14 +13069,9 @@ def _lv_ensure_protection(exchange, sym, pos, now) -> None:
         try:
             _rate_record(2.0)
             orders = _lv_open_orders_all(exchange, sym)
-            # [CLASSIFIER-FIX] helper-based check (ccxt normalizes type)
-            prot_orders = [o for o in orders if _is_protective_order(o)]
-            has_sl = any(not _is_tp_protective(o) for o in prot_orders)
+            has_sl = any('stop' in str(o.get('type') or '').lower() for o in orders)
             if not has_sl:
-                log.critical(
-                    f"[Prot] {sym} STOP order NOT FOUND on exchange "
-                    f"-- re-placing"
-                )
+                log.critical(f"[Prot] {sym} STOP order NOT FOUND on exchange — re-placing")
                 stale = True
         except Exception as e:
             log.debug(f"[LV] verify protection {sym} failed: {e}")
@@ -12672,6 +13084,22 @@ def _lv_ensure_protection(exchange, sym, pos, now) -> None:
         # the partial leg may already have fired: re-placing it would take a SECOND partial
         _lv_sync_with_exchange(exchange, sym, pos)
         pos['_sync_ts'] = now
+
+    # ══ [PRE-FLIGHT GATE] ══
+    # Before calling _place_protective_orders, verify that the SL is
+    # placeable. If not, skip entirely — leave whatever exists on the
+    # exchange untouched instead of starting a cancel-then-fail cycle.
+    _close_side = 'sell' if pos.get('action') == 'BUY' else 'buy'
+    _pf_ok, _pf_reason = _lv_preflight_check(
+        exchange, sym, _close_side,
+        float(pos.get('sl') or 0.0), float(pos.get('qty') or 0.0)
+    )
+    if not _pf_ok:
+        log.debug(
+            f"[Prot] {sym} re-place SKIP: pre-flight {_pf_reason}"
+        )
+        return
+
     try:
         ok = _place_protective_orders(exchange, sym, pos)
     except Exception as e:
@@ -12703,17 +13131,13 @@ def _lv_get_exchange_sl(exchange, sym, pos):
         log.debug(f"[SmartBE] {sym} fetch orders failed: {e}")
         return None
     for o in orders:
-        if not _is_protective_order(o):
+        ot = str(o.get('type') or '').lower()
+        if 'take_profit' in ot:
             continue
-        # [CLASSIFIER-FIX] use helper for TP detection
-        if _is_tp_protective(o):
-            continue
-        _info = o.get('info') or {}
         sp = float(
             o.get('stopPrice')
             or o.get('triggerPrice')
-            or _info.get('stopPrice')
-            or _info.get('triggerPrice')
+            or (o.get('info') or {}).get('stopPrice')
             or 0
         )
         if sp > 0:
@@ -12725,11 +13149,13 @@ def _lv_breakeven(exchange, sym, pos, now) -> None:
     """
     Live twin of the backtest BREAKEVEN-SL.
 
-    [SMART-BE] The exchange SL is read first. Behaviour:
-      * Exchange SL at the same price as our target → NO-OP (do nothing)
-      * Exchange SL at a different price            → cancel it, then
-                                                      place the new SL
-      * No exchange SL                              → place the new SL
+    [PLACE-FIRST + PRE-FLIGHT] Behaviour:
+      1. Read the exchange SL.
+      2. If same as target → no-op.
+      3. PRE-FLIGHT: check target SL is far enough from mark.
+         If not → SKIP entirely, existing SL preserved.
+      4. PLACE new SL (reduceOnly).
+      5. Only after confirmation, cancel the old SL (surgically).
     """
     if getattr(CFG, 'TRAIL_ENABLED', True) or not getattr(CFG, 'BREAKEVEN_ENABLED', True):
         return
@@ -12746,47 +13172,98 @@ def _lv_breakeven(exchange, sym, pos, now) -> None:
         return
     cur = float(pos['sl'])
     better = (entry > cur) if pos['action'] == 'BUY' else (entry < cur)
-    pos['_be_done'] = True
     if not better:
+        pos['_be_done'] = True
         return
 
     _target_sl = entry
+    _close_side = 'sell' if pos['action'] == 'BUY' else 'buy'
 
-    # ══ [SMART-BE] Read the actual SL that's on the exchange ══
+    # ── 2. Same-price no-op ──
     _exch_sl = _lv_get_exchange_sl(exchange, sym, pos)
-
     if _exch_sl is not None:
         _same = abs(_exch_sl - _target_sl) / max(abs(_target_sl), 1e-9) < 1e-4
         if _same:
-            # Same price -> no-op, just record it as placed
             pos['sl'] = _target_sl
             pos['_prot_last_sl'] = _exch_sl
             pos['_be_ts'] = now
+            pos['_be_done'] = True
             log.info(
                 f"[Breakeven] {sym} exchange SL already at "
                 f"{_exch_sl:.6f} -- no-op"
             )
             return
-        # Different price -> cancel the existing SL first (explicit replace)
+
+    # ── 3. PRE-FLIGHT: can we place the new SL? ──
+    _qty = float(pos.get('qty') or 0.0)
+    _pf_ok, _pf_reason = _lv_preflight_check(
+        exchange, sym, _close_side, _target_sl, _qty
+    )
+    if not _pf_ok:
         log.info(
-            f"[Breakeven] {sym} replacing exchange SL "
-            f"{_exch_sl:.6f} -> {_target_sl:.6f}"
+            f"[Breakeven] {sym} SKIP: pre-flight failed ({_pf_reason}) "
+            f"— existing SL preserved"
         )
+        pos['_be_skipped'] = True
+        # لا نضع _be_done=True لنسمح بمحاولة لاحقة إذا تحرك السوق
+        return
+
+    # ── 4. PLACE new SL (reduceOnly) — before touching the old one ──
+    _placed = False
+    for attempt in range(3):
         try:
-            _cancel_all_protective_orders(exchange, sym)
-            time.sleep(0.5)
+            exchange.create_order(
+                sym, 'STOP_MARKET', _close_side, _qty, None,
+                params={'stopPrice': _target_sl,
+                        'reduceOnly': True,
+                        'workingType': str(getattr(
+                            CFG, 'PROTECTIVE_WORKING_TYPE', 'MARK_PRICE'))}
+            )
+            _placed = True
+            log.info(
+                f"[Breakeven] {sym} new SL placed @ {_target_sl:.6f} "
+                f"(reduceOnly, place-first)"
+            )
+            break
         except Exception as _e:
-            log.warning(f"[Breakeven] {sym} cancel before replace failed: {_e}")
-        # ══ [BREAKEVEN-FIX] Force _lv_ensure_protection to re-place
-        # immediately, bypassing the LIVE_PROT_RETRY_S cooldown.
-        # Without this line, if _prot_try_ts was set < 20s ago (which
-        # happens right after ANY protective placement), the position
-        # stays NAKED until the cooldown expires. This closes the window.
-        pos['_prot_try_ts'] = 0
+            log.debug(f"[Breakeven] {sym} place attempt {attempt+1}: {_e}")
+
+    if not _placed:
+        log.warning(
+            f"[Breakeven] {sym} FAILED to place new SL — "
+            f"existing SL at {_exch_sl if _exch_sl else 'None'} preserved"
+        )
+        pos['_be_skipped'] = True
+        return
+
+    # ── 5. Cancel old SL surgically ──
+    if _exch_sl is not None:
+        _stale = []
+        for o in _lv_open_orders_all(exchange, sym):
+            if not _is_protective_order(o):
+                continue
+            _ot = str(o.get('type') or '').lower()
+            if 'take_profit' in _ot:
+                continue
+            _sp = float(
+                o.get('stopPrice')
+                or o.get('triggerPrice')
+                or (o.get('info') or {}).get('stopPrice')
+                or 0
+            )
+            if _sp > 0 and abs(_sp - _exch_sl) / max(abs(_exch_sl), 1e-9) < 1e-4:
+                _stale.append(o['id'])
+        if _stale:
+            _n = _lv_cancel_stale_legs(exchange, sym, _stale)
+            log.info(
+                f"[Breakeven] {sym} cancelled {_n} old SL(s) after "
+                f"new placement confirmed"
+            )
 
     pos['sl'] = _target_sl
     pos['_be_ts'] = now
-    pos['_prot_last_sl'] = None
+    pos['_be_done'] = True
+    pos['_prot_last_sl'] = _target_sl
     log.info(
         f"[Breakeven] {sym} {pos['action']} MFE={mfe:.6f} >= {r}R "
         f"({d0 * r:.6f}) -> SL moved to {_target_sl:.6f}"
@@ -13131,6 +13608,15 @@ def _lv_exit_partial_remainder(exchange, sym, pos, result, rsn):
     pos['qty'] = left
     pos['_partial_taken'] = True
     pos['_prot_last_sl'] = None
+    try:
+        _cleanup_symbol_orders(
+            exchange, sym,
+            include_entries=True,
+            include_protective=False,
+            reason="partial-exit"
+        )
+    except Exception as _e:
+        log.debug(f"[OrderHygiene:partial-exit] {sym} failed: {_e}")
     log.warning(f"⚠️ [Exit] {sym} PARTIAL exit fill {filled}/{total} → remainder {left} stays "
                 f"open and protected; retrying next cycle")
     return True
@@ -13264,6 +13750,298 @@ def _lv_upgrade_adopted(exchange, sym, pos, ad) -> None:
         log.debug(f"[LV] upgrade adopted {sym} failed: {e}")
 # [/LIVE-PARITY v1]
 
+
+
+def _ob_micro_lite(exchange, sym):
+    """
+    Read a light version of the order book and compute the key metrics
+    needed for anchor-based entry. Returns dict or None on failure.
+    """
+    try:
+        ob = exchange.fetch_order_book(sym, limit=20)
+        bids = ob.get('bids') or []
+        asks = ob.get('asks') or []
+        if not bids or not asks:
+            return None
+        bid = float(bids[0][0])
+        ask = float(asks[0][0])
+        bid_sz = float(bids[0][1])
+        ask_sz = float(asks[0][1])
+        if bid <= 0 or ask <= 0 or ask < bid:
+            return None
+        mid = (bid + ask) / 2.0
+        spread = ask - bid
+        spread_bps = spread / mid * 1e4
+        denom = bid_sz + ask_sz + 1e-12
+        imbalance = (bid_sz - ask_sz) / denom
+        depth_bid = sum(float(x[1]) for x in bids[:5]) * bid
+        depth_ask = sum(float(x[1]) for x in asks[:5]) * ask
+        book_pressure = (depth_bid - depth_ask) / (depth_bid + depth_ask + 1e-12)
+        return {
+            'bid': bid, 'ask': ask, 'bid_sz': bid_sz, 'ask_sz': ask_sz,
+            'mid': mid, 'spread': spread, 'spread_bps': spread_bps,
+            'imbalance': imbalance, 'book_pressure': book_pressure,
+            'depth_bid_usd': depth_bid, 'depth_ask_usd': depth_ask,
+        }
+    except Exception as e:
+        log.debug(f"[OB-Lite] {sym} book failed: {e}")
+        return None
+
+
+def _ob_build_ladder(side, target, qty, tick, sigma_bps,
+                     max_levels=None):
+    """
+    Build a ladder anchored at target price.
+
+    BUY:
+      L0 = target          (primary)
+      L1 = target - 1*sigma_bps (deeper, better price)
+      L2 = target - 2*sigma_bps (very deep)
+      L3 = target + 1*sigma_bps (aggressive, ensures some fill)
+      L4 = target - 3*sigma_bps (lottery ticket)
+
+    SELL: mirror.
+
+    Weights decrease away from target but L3 is special: it is the
+    "safety net" level that fills if the market never reaches the
+    primary. Its weight is modest (5-10%).
+    """
+    if max_levels is None:
+        max_levels = int(getattr(CFG, 'OB_LADDER_MAX_LEVELS', 5))
+    if sigma_bps <= 0:
+        sigma_bps = 5.0   # sane default
+    sigma_price = target * sigma_bps * 1e-4
+
+    sign = 1.0 if side == 'buy' else -1.0
+
+    # Offsets in units of sigma_price (positive = deeper in the favorable direction)
+    offsets_sigma = [0.0, 1.0, 2.0, 3.0]   # primary, then progressively deeper
+    # Plus one aggressive level on the opposite side (towards the market)
+    aggressive_sigma = -1.0
+
+    # Weights: primary 0.50, L1 0.25, L2 0.12, L3 0.05, safety 0.08
+    weights = [0.50, 0.25, 0.12, 0.05, 0.08]
+
+    levels = []
+
+    # Primary + deep levels
+    for i, osig in enumerate(offsets_sigma):
+        if len(levels) >= max_levels - 1:
+            break
+        price = target - sign * osig * sigma_price
+        price = round(price / tick) * tick
+        if price <= 0:
+            continue
+        levels.append({'price': price, 'weight': weights[i]})
+
+    # Safety level (crossing towards market)
+    safety_price = target + sign * abs(aggressive_sigma) * sigma_price
+    safety_price = round(safety_price / tick) * tick
+    if safety_price > 0:
+        levels.append({'price': safety_price, 'weight': weights[4]})
+
+    # Normalize weights and compute quantities
+    total_w = sum(l['weight'] for l in levels)
+    if total_w <= 0:
+        return []
+    for l in levels:
+        l['qty'] = qty * (l['weight'] / total_w)
+    return levels
+
+
+def _execute_anchored_entry(exchange, sym, side, qty, anchor_price,
+                             sig=None, ad=None):
+    """
+    Order-book-aware entry execution anchored at `anchor_price`.
+
+    Pipeline:
+      1. Fetch tick size for GTX-safe price rounding.
+      2. Fetch book + validate sanity (anchor within X bps of fair).
+      3. Detect toxic flow in the wrong direction -> abort.
+      4. Build a small ladder around anchor.
+      5. Place each level as GTX (post-only).
+      6. Monitor for up to OB_MAX_WAIT_S seconds.
+         - Sweep fills every FILL_RECHECK_MS.
+         - Reprice if the market moves away by > OB_REPRICE_DRIFT_BPS.
+      7. Cancel remaining orders at the end.
+      8. Return {'filled_qty', 'avg_price', 'reason', 'levels_used'}.
+
+    Returns a dict shaped like execute_post_only() so callers can reuse
+    the same post-processing (fill_ratio check, position registration).
+    """
+    result = {
+        'filled_qty': 0.0, 'avg_price': 0.0, 'fill_ratio': 0.0,
+        'reason': 'not_started', 'market_price': 0.0,
+        'attempts': 0, 'levels_used': 0,
+    }
+    if anchor_price <= 0 or qty <= 0:
+        result['reason'] = 'invalid_args'
+        return result
+
+    # ── 1. Tick size ──
+    tick = _get_tick_size(exchange, sym)
+    if not tick or tick <= 0:
+        tick = anchor_price * 1e-6
+
+    # ── 2. Sanity check ──
+    micro = _ob_micro_lite(exchange, sym)
+    if micro is None:
+        result['reason'] = 'book_unavailable'
+        return result
+
+    mid = micro['mid']
+    gap_bps = abs(anchor_price - mid) / mid * 1e4
+    max_gap = float(getattr(CFG, 'OB_ANCHOR_MAX_GAP_BPS', 20.0))
+    if gap_bps > max_gap:
+        log.info(f"[OB-Entry] {sym} anchor {anchor_price:.6f} is "
+                 f"{gap_bps:.1f}bps from mid {mid:.6f} "
+                 f"(> {max_gap:.1f}) -- skip")
+        result['reason'] = f'anchor_too_far({gap_bps:.1f}bps)'
+        return result
+
+    # ── 3. Toxic gate ──
+    # signed_toxicity: positive = aggressive buying, negative = aggressive selling
+    signed_tox = micro['imbalance'] * (0.5 + 0.5 * abs(micro['book_pressure']))
+    toxic_threshold = float(getattr(CFG, 'OB_TOXIC_THRESHOLD', 0.65))
+    if side == 'buy' and signed_tox < -toxic_threshold:
+        log.info(f"[OB-Entry] {sym} BUY aborted: toxic sell flow "
+                 f"(signed_tox={signed_tox:.2f})")
+        result['reason'] = 'toxic_flow'
+        return result
+    if side == 'sell' and signed_tox > toxic_threshold:
+        log.info(f"[OB-Entry] {sym} SELL aborted: toxic buy flow "
+                 f"(signed_tox={signed_tox:.2f})")
+        result['reason'] = 'toxic_flow'
+        return result
+
+    # ── 4. Build ladder ──
+    # Estimate sigma_bps from spread and book pressure as a proxy
+    # (we do not have live 1m bars here; use spread * a factor + small floor)
+    est_sigma_bps = max(micro['spread_bps'] * 1.5, 2.0)
+    levels = _ob_build_ladder(side, anchor_price, qty, tick, est_sigma_bps)
+    if not levels:
+        result['reason'] = 'no_viable_levels'
+        return result
+
+    # ── 5. Place each level as GTX ──
+    _wait = int(getattr(CFG, 'OB_MAX_WAIT_S',
+                        getattr(CFG, 'FILL_MAX_WAIT_S', 60)))
+    _recheck_ms = int(getattr(CFG, 'FILL_RECHECK_MS', 300))
+    _drift_bps = float(getattr(CFG, 'OB_REPRICE_DRIFT_BPS', 5.0))
+    _recheck_s = max(_recheck_ms / 1000.0, 0.15)
+
+    active = []   # list of {'id', 'price', 'qty', 'counted_fill', 'counted_cost'}
+    for lvl in levels:
+        try:
+            o = exchange.create_order(
+                sym, 'limit', side, lvl['qty'], lvl['price'],
+                params={'timeInForce': 'GTX'}
+            )
+            active.append({
+                'id': o['id'], 'price': lvl['price'], 'qty': lvl['qty'],
+                'counted_fill': 0.0, 'counted_cost': 0.0,
+            })
+            log.debug(f"[OB-Entry] {sym} {side} L@{lvl['price']:.6f} "
+                      f"qty={lvl['qty']:.6f}")
+        except Exception as e:
+            log.debug(f"[OB-Entry] {sym} level rejected "
+                      f"@ {lvl['price']:.6f}: {e}")
+
+    result['levels_used'] = len(active)
+    if not active:
+        result['reason'] = 'all_levels_rejected'
+        return result
+
+    # ── 6. Monitor loop ──
+    t0 = time.time()
+    total_filled = 0.0
+    total_cost = 0.0
+
+    def _sweep():
+        nonlocal total_filled, total_cost, active
+        still = []
+        for o in active:
+            try:
+                st = exchange.fetch_order(o['id'], sym)
+            except Exception:
+                still.append(o)
+                continue
+            status = st.get('status')
+            fq = float(st.get('filled') or 0.0)
+            fp = float(st.get('average') or st.get('price') or o['price'])
+            prev_f = float(o.get('counted_fill', 0.0))
+            prev_c = float(o.get('counted_cost', 0.0))
+            delta_f = fq - prev_f
+            if delta_f > 0:
+                cur_cost = fq * fp
+                delta_c = max(0.0, cur_cost - prev_c)
+                total_filled += delta_f
+                total_cost += delta_c
+                o['counted_fill'] = fq
+                o['counted_cost'] = cur_cost
+            if status == 'closed':
+                continue   # drop
+            if status in ('canceled', 'expired', 'rejected'):
+                continue   # drop
+            still.append(o)
+        active = still
+
+    aborted = False
+    while time.time() - t0 < _wait:
+        _sweep()
+
+        # Completion?
+        if total_filled >= qty * 0.98:
+            break
+        if not active:
+            break
+
+        # Periodic checks (every 2s): toxicity + drift
+        if int((time.time() - t0) / 2) != int((time.time() - t0 - _recheck_s) / 2):
+            micro2 = _ob_micro_lite(exchange, sym)
+            if micro2 is not None:
+                # Toxicity escalated?
+                signed_tox2 = (micro2['imbalance']
+                               * (0.5 + 0.5 * abs(micro2['book_pressure'])))
+                if ((side == 'buy' and signed_tox2 < -toxic_threshold)
+                        or (side == 'sell' and signed_tox2 > toxic_threshold)):
+                    log.info(f"[OB-Entry] {sym} abort mid-flight: toxicity")
+                    aborted = True
+                    break
+
+                # Fair drifted?
+                fair_mid = micro2['mid']
+                drift_bps = abs(fair_mid - mid) / mid * 1e4
+                if drift_bps > _drift_bps:
+                    log.info(f"[OB-Entry] {sym} market drifted "
+                             f"{drift_bps:.1f}bps -- abort")
+                    aborted = True
+                    break
+
+        time.sleep(_recheck_s)
+
+    # ── 7. Cancel remaining ──
+    for o in active:
+        try:
+            exchange.cancel_order(o['id'], sym)
+        except Exception:
+            pass
+    time.sleep(0.2)
+    _sweep()   # final sweep to catch fills during cancel
+
+    # ── 8. Result ──
+    if total_filled <= 0:
+        result['reason'] = 'aborted_no_fill' if aborted else 'timeout_no_fill'
+        return result
+
+    result['filled_qty'] = total_filled
+    result['avg_price'] = total_cost / max(total_filled, 1e-12)
+    result['fill_ratio'] = total_filled / qty
+    result['reason'] = ('aborted_partial' if aborted
+                        else 'filled' if result['fill_ratio'] >= 0.98
+                        else 'partial')
+    result['market_price'] = micro['mid']
+    return result
 
 
 def run_live(cfg, exchange):
@@ -13522,6 +14300,7 @@ def run_live(cfg, exchange):
                 _LV_STATE['free'] = _bal_free
                 _LV_STATE['bal_ok'] = True
                 _last_known_cap = cap_live
+                _refresh_post_only_state(cap_live)
             except Exception as e:
                 log.warning(f"[Balance] fetch failed: {e}; "
                             f"using last known ${_last_known_cap:.2f}")
@@ -13813,7 +14592,12 @@ def run_live(cfg, exchange):
                             log.debug(f"[Prot] {sym} sync error: {_e}")
 
                 # ── [FIX 4] Partial TP ──
+                _partial_disabled_smallcap = (
+                    bool(_LIVE_CAPITAL_STATE.get('post_only_forced', False))
+                    and getattr(CFG, 'SMALLCAP_DISABLE_PARTIAL_TP', True)
+                )
                 if (not ex
+                        and not _partial_disabled_smallcap
                         and getattr(CFG, 'PARTIAL_TP_ENABLED', False)
                         and not pos.get('_broker_partial', False)
                         and not pos.get('_partial_taken', False)):
@@ -14004,6 +14788,20 @@ def run_live(cfg, exchange):
                             if _urgent
                             else int(CFG.PO_EXIT_MAX_WAIT_S)
                         )
+                        _po_forced_exit = bool(_LIVE_CAPITAL_STATE.get(
+                            'post_only_forced', False))
+                        if _po_forced_exit and 'Emergency LiqProximity' not in rsn:
+                            if _cross:
+                                _LIVE_CAPITAL_STATE['rejected_cross_attempts'] = int(
+                                    _LIVE_CAPITAL_STATE.get(
+                                        'rejected_cross_attempts', 0)) + 1
+                                log.info(
+                                    f"[SmallCap] {sym} blocking cross_spread "
+                                    f"for exit: {rsn}"
+                                )
+                            _cross = False
+                            _wait = int(max(_wait, getattr(
+                                CFG, 'PO_MAX_WAIT_S_SMALLCAP', 90)))
                         result = execute_post_only(
                             exchange, sym, s, pos['qty'],
                             max_wait_s=_wait,
@@ -14032,17 +14830,15 @@ def run_live(cfg, exchange):
                         _lv_save_state(state_file, open_pos_live)
                         continue
 
-                    # ══ Position now closed. Clean any leftover protective
-                    # orders. With closePosition=True, Binance auto-cancels
-                    # them; this is defensive for edge cases (partial fills,
-                    # exchange lag). ══
+                    # ══ [ORDER-HYGIENE] إلغاء كامل عند إغلاق المركز ══
                     try:
-                        _leftovers = _cancel_all_protective_orders(exchange, sym)
-                        if _leftovers > 0:
-                            log.debug(f"[Prot] {sym} cleaned "
-                                      f"{_leftovers} leftover order(s)")
+                        _hygiene = _cleanup_symbol_orders(
+                            exchange, sym,
+                            include_entries=True,
+                            reason=f"exit:{exit_reason[:30]}"
+                        )
                     except Exception as _e:
-                        log.debug(f"[Prot] {sym} post-exit cleanup: {_e}")
+                        log.warning(f"[OrderHygiene] {sym} failed: {_e}")
 
                     # ══ [TradeLog] سجّل الصفقة قبل الحذف ══
                     try:
@@ -14535,6 +15331,138 @@ def run_live(cfg, exchange):
                                 f"({_max_sl_frac_live*100:.1f}% cap)"
                             )
 
+                        # ══ [OB-ENTRY] Order-book-aware entry ══
+                        # [OPTION-A] Restricted to --no-fixed-price mode:
+                        # When PO_FIXED_PRICE=True, the tunnel-based S1/S2
+                        # path is used (its precision is the whole point of
+                        # the fixed-price design). OB's σ-anchored ladder
+                        # only overrides when the caller has explicitly
+                        # opted into dynamic pricing (--no-fixed-price).
+                        if (getattr(CFG, 'ORDER_BOOK_ENTRY_ENABLED', False)
+                                and getattr(CFG, 'FILL_ENGINE_ENABLED', True)
+                                and not getattr(CFG, 'PO_FIXED_PRICE', True)):
+                            _anchor = _compute_entry_target(
+                                sig, ad, sd, exchange=exchange)
+                            log.info(f"[OB-Entry] {sym} anchor "
+                                     f"{_anchor:.6f} (sig.price="
+                                     f"{sig.price:.6f})")
+                            _ob = _execute_anchored_entry(
+                                exchange, sym, sd, qty, _anchor,
+                                sig=sig, ad=ad)
+                            _filled = float(_ob.get('filled_qty') or 0.0)
+                            if _filled <= 0:
+                                log.info(f"[OB-Entry] {sym} no fill "
+                                         f"({_ob.get('reason')}) -- skip")
+                                continue
+
+                            _fr = _filled / qty
+                            _entry_px = float(_ob['avg_price'])
+                            _min_acc = float(getattr(
+                                CFG, 'PO_MIN_ACCEPT_RATIO', 0.50))
+                            if _fr < _min_acc:
+                                log.warning(
+                                    f"[OB-Entry] {sym} partial "
+                                    f"{_fr*100:.1f}% < {_min_acc*100:.0f}% "
+                                    f"-- closing tiny partial")
+                                try:
+                                    _s_c = ('sell' if sig.action == 'BUY'
+                                            else 'buy')
+                                    exchange.create_order(
+                                        sym, 'market', _s_c, _filled)
+                                except Exception as _ce:
+                                    log.error(
+                                        f"[OB-Entry] close partial "
+                                        f"failed: {_ce}")
+                                continue
+
+                            # Adapt SL/TP from actual fill
+                            _orig_sl = abs(sig.price - sig.sl)
+                            _orig_tp = abs(sig.tp1 - sig.price)
+                            if _orig_sl <= 1e-12:
+                                continue
+                            _rr = _orig_tp / _orig_sl
+                            _max_sl_frac = 0.015 * float(
+                                getattr(CFG, 'SL_WIDEN_MULT', 1.0))
+                            if _orig_sl > _entry_px * _max_sl_frac:
+                                _orig_sl = _entry_px * _max_sl_frac
+                                _orig_tp = _orig_sl * _rr
+                            if sig.action == "BUY":
+                                _sl_adapt = _entry_px - _orig_sl
+                                _tp_adapt = _entry_px + _orig_tp
+                            else:
+                                _sl_adapt = _entry_px + _orig_sl
+                                _tp_adapt = _entry_px - _orig_tp
+
+                            _entry_fi_ob = max(0, min(
+                                sig.feat_idx, len(ad.E_therm) - 1))
+                            _td_ob, _ta_ob = compute_trail_params(
+                                ad, _entry_fi_ob)
+
+                            _lev_reg = int(
+                                _SYMBOL_META.get(sym, {}).get(
+                                    'leverage', dynamic_leverage))
+                            _mmr_reg = float(_mmr_sig or getattr(
+                                CFG, 'LIQ_FALLBACK_MMR', 0.02))
+                            _liq_est = None
+                            if getattr(CFG, 'LIQ_ENABLED', True):
+                                _liq_est = compute_liquidation_price(
+                                    _entry_px, sig.action,
+                                    _lev_reg, _mmr_reg)
+
+                            open_pos_live[sym] = {
+                                'action': sig.action,
+                                'entry': _entry_px,
+                                'qty': _filled,
+                                'sl': _sl_adapt,
+                                'tp1': _tp_adapt,
+                                'T_info': sig.T_info_val,
+                                'dyn_risk': sig.dynamic_risk,
+                                'entry_ts': time.time(),
+                                'fill_ratio': _fr,
+                                'leverage': _lev_reg,
+                                'trail_dist_frac': _td_ob,
+                                'trail_activate_frac': _ta_ob,
+                                'liq_price_estimated': _liq_est,
+                                'mmr': _mmr_reg,
+                                'sl_dist_initial': float(
+                                    abs(_entry_px - _sl_adapt)),
+                                '_entry_ci': int(sig.close_idx),
+                                '_trail_bars_held': 0,
+                                '_trail_peak_R': 0.0,
+                                '_trail_last_update_ts': 0.0,
+                                '_sym': sym,
+                                '_orig_score': float(sig.score),
+                            }
+
+                            log.info(
+                                f"✅ [OB-Entry] {sig.action} {sym} "
+                                f"@ {_entry_px:.6f} qty={_filled:.6f} "
+                                f"(fill={_fr*100:.1f}%, "
+                                f"levels={_ob.get('levels_used')}, "
+                                f"reason={_ob.get('reason')}) "
+                                f"sl={_sl_adapt:.6f} tp={_tp_adapt:.6f}")
+
+                            try:
+                                _lv_save_state(state_file, open_pos_live)
+                            except Exception:
+                                pass
+
+                            # Optionally place protective orders
+                            if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
+                                try:
+                                    if _place_protective_orders(
+                                            exchange, sym,
+                                            open_pos_live[sym]):
+                                        open_pos_live[sym]['_prot_last_sl'] = (
+                                            float(_sl_adapt))
+                                        open_pos_live[sym]['_prot_last_tp'] = (
+                                            float(_tp_adapt))
+                                except Exception as _pe:
+                                    log.warning(
+                                        f"[OB-Entry] prot order "
+                                        f"failed: {_pe}")
+                            continue
+
                         # ══ 3. Entry — Watch mode (or legacy pending) ══
                         if getattr(CFG, 'PENDING_ENABLED', True):
                             _total_exposure = (len(_PENDING_ORDERS)
@@ -14997,6 +15925,17 @@ def main():
                    help="Disable online learning")
     p.add_argument("--mfal-weights", type=str, default=None,
                    help="Path to MFAL weights JSON")
+    # ══ [OB-ENTRY] order-book-aware entry ══
+    p.add_argument("--order-book-entry", action="store_true",
+                   help="Enable order-book-aware entry (anchored ladder). "
+                        "Designed for --no-fixed-price mode.")
+    p.add_argument("--ob-wait-s", type=int, default=None,
+                   help="Order-book entry max wait (default 60s)")
+    p.add_argument("--ob-anchor-gap-bps", type=float, default=None,
+                   help="Max distance from mid to anchor "
+                        "(default 20.0 bps)")
+    p.add_argument("--ob-toxic-threshold", type=float, default=None,
+                   help="Toxicity abort threshold (default 0.65)")
     args = p.parse_args()
 
     # ══ [MFAL] CLI wiring ══
@@ -15022,6 +15961,31 @@ def main():
             log.info("[MFAL] Disabled (use --mfal to enable)")
     except Exception as _e:
         log.warning(f"[MFAL] CLI wiring failed: {_e}")
+
+    # ══ [OB-ENTRY] CLI wiring ══
+    try:
+        if getattr(args, 'order_book_entry', False):
+            CFG.ORDER_BOOK_ENTRY_ENABLED = True
+            _effective_ob = (
+                bool(CFG.ORDER_BOOK_ENTRY_ENABLED)
+                and not bool(getattr(CFG, 'PO_FIXED_PRICE', True))
+            )
+            log.info(
+                "[OB-Entry] ENABLED (order-book-aware entry); "
+                f"effective={_effective_ob} "
+                f"(PO_FIXED_PRICE={getattr(CFG, 'PO_FIXED_PRICE', True)}, "
+                f"PO_FIXED_PRICE must be False for OB to run)"
+            )
+        else:
+            CFG.ORDER_BOOK_ENTRY_ENABLED = False
+        if getattr(args, 'ob_wait_s', None) is not None:
+            CFG.OB_MAX_WAIT_S = int(args.ob_wait_s)
+        if getattr(args, 'ob_anchor_gap_bps', None) is not None:
+            CFG.OB_ANCHOR_MAX_GAP_BPS = float(args.ob_anchor_gap_bps)
+        if getattr(args, 'ob_toxic_threshold', None) is not None:
+            CFG.OB_TOXIC_THRESHOLD = float(args.ob_toxic_threshold)
+    except Exception as _e:
+        log.warning(f"[OB-Entry] CLI wiring failed: {_e}")
 
     CFG.mode = args.mode
     CFG.api_key = args.api_key

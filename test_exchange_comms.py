@@ -1,0 +1,967 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+═══════════════════════════════════════════════════════════════════════════
+Exchange Communication Test Suite
+═══════════════════════════════════════════════════════════════════════════
+Tests every API call made by trading_live_v2.py:
+  • Market metadata
+  • Public data (tickers, OHLCV, order book, trades)
+  • Account (balance, positions, leverage tiers)
+  • Setup (margin mode, leverage)
+  • Order lifecycle (limit GTX, fetch, cancel)
+  • Conditional orders (STOP_MARKET, TAKE_PROFIT_MARKET)
+  • Algo order endpoints (trigger=True)
+  • Trade history
+
+Usage:
+    python test_exchange_comms.py --mode testnet \\
+        --api-key KEY --api-secret SECRET
+
+    python test_exchange_comms.py --mode testnet \\
+        --api-key KEY --api-secret SECRET --full
+
+    python test_exchange_comms.py --mode testnet \\
+        --api-key KEY --api-secret SECRET --symbol ETH/USDT
+
+Options:
+    --mode        testnet | live  (default: testnet)
+    --symbol      symbol to test (default: BTC/USDT)
+    --full        run full trade cycle (real market order + close)
+    --cleanup     only cancel orders + close positions, then exit
+    --verbose     show ccxt request/response debug
+═══════════════════════════════════════════════════════════════════════════
+"""
+
+import argparse
+import os
+import sys
+import time
+import traceback
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+try:
+    import ccxt
+except ImportError:
+    print("ERROR: pip install ccxt")
+    sys.exit(1)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Test result tracking
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class TestResult:
+    name: str
+    category: str
+    status: str            # PASS | FAIL | SKIP | WARN
+    duration_ms: float
+    detail: str = ""
+    error: str = ""
+
+
+RESULTS: List[TestResult] = []
+CLEANUP_ACTIONS: List[Callable[[], None]] = []
+
+
+def _color(status: str) -> str:
+    if not sys.stdout.isatty():
+        return status
+    return {
+        "PASS": "\033[92mPASS\033[0m",
+        "FAIL": "\033[91mFAIL\033[0m",
+        "SKIP": "\033[93mSKIP\033[0m",
+        "WARN": "\033[95mWARN\033[0m",
+    }.get(status, status)
+
+
+def record(name: str, category: str, status: str,
+           duration_ms: float, detail: str = "",
+           error: str = "") -> TestResult:
+    r = TestResult(name=name, category=category, status=status,
+                   duration_ms=duration_ms, detail=detail, error=error)
+    RESULTS.append(r)
+    _line = (f"  [{_color(status)}] {name:35s} "
+             f"{duration_ms:7.0f}ms  {detail}")
+    if error:
+        _line += f"\n         └─ {error}"
+    print(_line, flush=True)
+    return r
+
+
+def section(title: str) -> None:
+    print(f"\n{'═' * 72}")
+    print(f"  {title}")
+    print(f"{'═' * 72}")
+
+
+def run_test(name: str, category: str,
+             fn: Callable[[], Tuple[str, str]]) -> Optional[TestResult]:
+    t0 = time.time()
+    try:
+        status, detail = fn()
+        return record(name, category, status,
+                      (time.time() - t0) * 1000.0, detail)
+    except Exception as e:
+        err = f"{type(e).__name__}: {str(e)[:200]}"
+        return record(name, category, "FAIL",
+                      (time.time() - t0) * 1000.0,
+                      detail="", error=err)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Helpers
+# ═══════════════════════════════════════════════════════════════════
+
+def _lv_open_orders_all(exchange, sym):
+    """
+    Exact copy of bot's helper: fetch regular + trigger, merge by id.
+    """
+    seen, out = set(), []
+    for prm in (None, {'trigger': True}):
+        try:
+            lst = (exchange.fetch_open_orders(sym) if prm is None
+                   else exchange.fetch_open_orders(sym, params=prm))
+        except Exception:
+            continue
+        for o in lst or []:
+            k = str(o.get('id'))
+            if k not in seen:
+                seen.add(k)
+                out.append(o)
+    return out
+
+
+def _cancel_order_robust(exchange, oid, sym, is_protective=None):
+    """
+    Robust cancel that respects Binance's split between regular orders
+    and Algo (conditional) orders.
+
+    Rule:
+      - Regular limit order  -> plain cancel works
+      - STOP_MARKET / TP     -> needs params={'trigger': True}
+
+    Sending trigger=True on a regular order returns a SUCCESS response
+    from Binance but does NOT actually cancel it (silent no-op).
+    Therefore: for regular orders, try plain FIRST.
+    """
+    if is_protective is True:
+        params_order = ({'trigger': True}, {})
+    else:
+        # Regular or unknown: plain first (this is the fix)
+        params_order = ({}, {'trigger': True})
+
+    for prm in params_order:
+        try:
+            exchange.cancel_order(oid, sym, params=prm)
+            return True, (prm if prm else 'plain')
+        except Exception as e:
+            m = str(e).lower()
+            if ('-2011' in m or 'unknown order' in m
+                    or 'not found' in m or 'does not exist' in m):
+                return True, "already_cancelled"
+            continue
+    return False, None
+
+
+def _is_protective_order(o):
+    t = str(o.get('type') or '').lower()
+    return 'stop_market' in t or 'take_profit_market' in t
+
+
+def _get_min_qty(exchange, sym):
+    try:
+        m = exchange.market(sym)
+        min_amt = ((m.get('limits') or {}).get('amount') or {}).get('min')
+        if min_amt:
+            return float(min_amt) * 1.05
+    except Exception:
+        pass
+    return None
+
+
+def _get_tick_size(exchange, sym):
+    try:
+        m = exchange.market(sym)
+        info = m.get('info') or {}
+        for f in (info.get('filters') or []):
+            if isinstance(f, dict) and f.get('filterType') == 'PRICE_FILTER':
+                ts = float(f.get('tickSize', 0))
+                if ts > 0:
+                    return ts
+    except Exception:
+        pass
+    return None
+
+
+def _round_to_tick(price, tick):
+    if not tick or tick <= 0:
+        return price
+    return round(round(price / tick) * tick, 10)
+
+
+def _cleanup_all(exchange, symbols, verbose=True):
+    """Kill switch: cancel ALL orders + close ALL positions."""
+    if verbose:
+        print(f"\n{'─' * 72}")
+        print("  CLEANUP")
+        print(f"{'─' * 72}")
+    n_cancelled = 0
+    n_closed = 0
+
+    # 1. Cancel all orders per symbol
+    for sym in symbols:
+        try:
+            orders = _lv_open_orders_all(exchange, sym)
+        except Exception as e:
+            if verbose:
+                print(f"  ! {sym}: fetch_open_orders failed: {e}")
+            continue
+        for o in orders:
+            ok, _ = _cancel_order_robust(exchange, o['id'], sym)
+            if ok:
+                n_cancelled += 1
+                if verbose:
+                    print(f"  ✓ cancelled {sym} {o.get('type')} "
+                          f"id={o['id']}")
+
+    # 2. Close all positions
+    try:
+        positions = exchange.fetch_positions()
+    except Exception as e:
+        if verbose:
+            print(f"  ! fetch_positions failed: {e}")
+        positions = []
+    for p in positions or []:
+        try:
+            info = p.get('info') or {}
+            amt = float(info.get('positionAmt', 0) or 0)
+            if abs(amt) < 1e-12:
+                continue
+            sym = str(p.get('symbol') or '')
+            sym_clean = sym.split(':')[0] if ':' in sym else sym
+            side = 'sell' if amt > 0 else 'buy'
+            exchange.create_order(sym, 'market', side, abs(amt), None,
+                                   params={'reduceOnly': True})
+            n_closed += 1
+            if verbose:
+                print(f"  ✓ closed {sym_clean} qty={abs(amt)}")
+        except Exception as e:
+            if verbose:
+                print(f"  ! close {p.get('symbol')} failed: {e}")
+
+    if verbose:
+        print(f"  Summary: cancelled={n_cancelled} closed={n_closed}")
+    return n_cancelled, n_closed
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Exchange setup
+# ═══════════════════════════════════════════════════════════════════
+
+def build_exchange(args):
+    exchange = ccxt.binance({
+        'apiKey': args.api_key,
+        'secret': args.api_secret,
+        'enableRateLimit': True,
+        'options': {'defaultType': 'future'},
+        'verbose': args.verbose,
+    })
+    if args.mode == "testnet":
+        try:
+            exchange.enable_demo_trading(True)
+        except AttributeError:
+            # Older ccxt
+            exchange.set_sandbox_mode(True)
+    return exchange
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Category 1: Metadata (public, no auth)
+# ═══════════════════════════════════════════════════════════════════
+
+def test_market_info(exchange, symbol):
+    def run():
+        m = exchange.market(symbol)
+        if not m:
+            return "FAIL", "market() returned None"
+        info = m.get('info') or {}
+        contract = info.get('contractType', '?')
+        return "PASS", f"type={m.get('type')} contract={contract}"
+    return run
+
+
+def test_tick_size(exchange, symbol):
+    def run():
+        ts = _get_tick_size(exchange, symbol)
+        if ts is None:
+            return "FAIL", "no PRICE_FILTER.tickSize"
+        return "PASS", f"tick={ts}"
+    return run
+
+
+def test_parse_timeframe(exchange, symbol):
+    def run():
+        secs = exchange.parse_timeframe("1h")
+        if secs != 3600:
+            return "FAIL", f"1h → {secs} (expected 3600)"
+        return "PASS", f"1h={secs}s  5m={exchange.parse_timeframe('5m')}s"
+    return run
+
+
+def test_amount_to_precision(exchange, symbol):
+    def run():
+        q = exchange.amount_to_precision(symbol, 0.123456789)
+        return "PASS", f"0.123456789 → {q}"
+    return run
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Category 2: Public data
+# ═══════════════════════════════════════════════════════════════════
+
+def test_server_time(exchange, symbol):
+    def run():
+        t0 = time.time() * 1000.0
+        server_ms = exchange.fetch_time()
+        drift = abs(t0 - float(server_ms))
+        if drift > 5000:
+            return "WARN", f"drift={drift:.0f}ms — enable NTP"
+        return "PASS", f"drift={drift:.0f}ms"
+    return run
+
+
+def test_tickers(exchange, symbol):
+    def run():
+        t = exchange.fetch_ticker(symbol)
+        last = float(t.get('last') or 0)
+        if last <= 0:
+            return "FAIL", "last=0"
+        return "PASS", f"last={last}  vol={t.get('quoteVolume', 0):.0f}"
+    return run
+
+
+def test_scan_tickers(exchange, symbol):
+    def run():
+        tickers = exchange.fetch_tickers()
+        n = len(tickers)
+        usdt_spot = sum(1 for s in tickers if s.endswith('/USDT'))
+        usdt_fut = sum(1 for s in tickers
+                       if '/USDT:' in s and s.split(':')[1] == 'USDT')
+        return "PASS", (f"total={n} spot_usdt={usdt_spot} "
+                        f"fut_usdt={usdt_fut}")
+    return run
+
+
+def test_ohlcv_main(exchange, symbol):
+    def run():
+        candles = exchange.fetch_ohlcv(symbol, "1h", limit=3)
+        if not candles or len(candles) < 3:
+            return "FAIL", f"got {len(candles)} candles"
+        # Verify shape [ts, o, h, l, c, v]
+        c = candles[-1]
+        if len(c) != 6:
+            return "FAIL", f"bad shape: {len(c)}"
+        return "PASS", f"3 candles last_close={c[4]}"
+    return run
+
+
+def test_ohlcv_since(exchange, symbol):
+    def run():
+        # Test with since (used by cache fill)
+        since = exchange.parse8601("2025-01-01T00:00:00Z")
+        candles = exchange.fetch_ohlcv(symbol, "1h", since=since, limit=100)
+        if not candles:
+            return "FAIL", "no candles returned for since="
+        return "PASS", f"returned {len(candles)} candles from since"
+    return run
+
+
+def test_order_book(exchange, symbol):
+    def run():
+        ob = exchange.fetch_order_book(symbol, limit=20)
+        bids = ob.get('bids') or []
+        asks = ob.get('asks') or []
+        if not bids or not asks:
+            return "FAIL", f"bids={len(bids)} asks={len(asks)}"
+        spread_bps = (asks[0][0] - bids[0][0]) / asks[0][0] * 1e4
+        return "PASS", f"bid={bids[0][0]} ask={asks[0][0]} spread={spread_bps:.2f}bps"
+    return run
+
+
+def test_trades(exchange, symbol):
+    def run():
+        trades = exchange.fetch_trades(symbol, limit=10)
+        return "PASS", f"got {len(trades)} recent trades"
+    return run
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Category 3: Account
+# ═══════════════════════════════════════════════════════════════════
+
+def test_balance(exchange, symbol):
+    def run():
+        bal = exchange.fetch_balance()
+        usdt = bal.get('USDT') or {}
+        free = float(usdt.get('free') or 0)
+        total = float(usdt.get('total') or 0)
+        # Try wallet balance from info
+        info = bal.get('info') or {}
+        wallet = 0.0
+        for a in info.get('assets') or []:
+            if str(a.get('asset')) == 'USDT':
+                wallet = float(a.get('walletBalance') or 0)
+                break
+        if total <= 0 and wallet <= 0:
+            return "WARN", f"USDT balance=0 (testnet may need funding)"
+        return "PASS", f"free={free:.2f} total={total:.2f} wallet={wallet:.2f}"
+    return run
+
+
+def test_positions(exchange, symbol):
+    def run():
+        positions = exchange.fetch_positions([symbol])
+        open_count = 0
+        for p in positions or []:
+            amt = float((p.get('info') or {}).get('positionAmt', 0) or 0)
+            if abs(amt) > 1e-12:
+                open_count += 1
+        return "PASS", f"returned {len(positions)} rows, {open_count} non-zero"
+    return run
+
+
+def test_positions_all(exchange, symbol):
+    def run():
+        positions = exchange.fetch_positions()
+        return "PASS", f"returned {len(positions)} total positions"
+    return run
+
+
+def test_leverage_tiers(exchange, symbol):
+    def run():
+        raw = exchange.fetch_leverage_tiers([symbol])
+
+        def _sym_match(a, b):
+            if not a or not b:
+                return False
+            return a.split(':')[0] == b.split(':')[0]
+
+        def _wrap(v):
+            if isinstance(v, dict):
+                return v
+            if isinstance(v, list):
+                return {'symbol': symbol, 'tiers': v}
+            return None
+
+        entry = None
+        if isinstance(raw, list):
+            if raw:
+                for e in raw:
+                    if isinstance(e, dict) and _sym_match(
+                            e.get('symbol', ''), symbol):
+                        entry = e
+                        break
+                if entry is None and isinstance(raw[0], dict):
+                    entry = raw[0]
+        elif isinstance(raw, dict):
+            if symbol in raw:
+                entry = _wrap(raw[symbol])
+            else:
+                for k, v in raw.items():
+                    if _sym_match(k, symbol):
+                        entry = _wrap(v)
+                        break
+                if entry is None and len(raw) > 0:
+                    entry = _wrap(next(iter(raw.values())))
+
+        if not entry:
+            return "FAIL", f"unexpected shape: {type(raw).__name__}"
+
+        tiers = entry.get('tiers') or []
+        if not tiers:
+            return "FAIL", f"no tiers (keys: {list(entry.keys())})"
+
+        first = tiers[0]
+        if not isinstance(first, dict):
+            return "FAIL", f"tier[0] is {type(first).__name__}"
+
+        max_lev = int(first.get('maxLeverage', 0))
+        mmr = float(first.get('maintenanceMarginRate', 0))
+        return "PASS", f"tiers={len(tiers)} max_lev={max_lev}x mmr={mmr*100:.3f}%"
+    return run
+
+
+def test_fetch_leverage(exchange, symbol):
+    def run():
+        try:
+            li = exchange.fetch_leverage(symbol)
+        except Exception as e:
+            return "WARN", f"not supported: {str(e)[:60]}"
+        if li is None:
+            return "WARN", "returned None (testnet quirk)"
+        if not hasattr(li, 'get'):
+            return "WARN", f"non-dict return: {type(li).__name__}"
+        lev = li.get('leverage')
+        return "PASS", f"leverage={lev}x"
+    return run
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Category 4: Setup (state-changing, reversible)
+# ═══════════════════════════════════════════════════════════════════
+
+def test_set_margin_mode(exchange, symbol):
+    def run():
+        try:
+            exchange.set_margin_mode('isolated', symbol)
+            return "PASS", "isolated set"
+        except Exception as e:
+            m = str(e).lower()
+            if 'no need' in m or 'already' in m or '-4046' in m:
+                return "PASS", "already isolated (idempotent)"
+            return "FAIL", str(e)[:120]
+    return run
+
+
+def test_set_leverage(exchange, symbol):
+    def run():
+        # Only set if no position (otherwise -4046)
+        try:
+            pos = exchange.fetch_positions([symbol])
+            for p in pos:
+                if abs(float((p.get('info') or {}).get('positionAmt', 0) or 0)) > 0:
+                    return "SKIP", "position exists — cannot change"
+        except Exception:
+            pass
+        try:
+            exchange.set_leverage(5, symbol)
+            return "PASS", "set 5x"
+        except Exception as e:
+            return "FAIL", str(e)[:120]
+    return run
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Category 5: Order lifecycle
+# ═══════════════════════════════════════════════════════════════════
+
+def test_limit_gtx_place(exchange, symbol):
+    """Place a limit GTX far from market (should stay open)."""
+    state = {}
+
+    def run():
+        tick = _get_tick_size(exchange, symbol) or 0.01
+        ticker = exchange.fetch_ticker(symbol)
+        last = float(ticker['last'])
+        if last <= 0:
+            return "FAIL", "no last price"
+
+        # MIN_NOTIONAL from exchange filters
+        m = exchange.market(symbol)
+        min_notional = 5.0
+        info = m.get('info') or {}
+        for f in (info.get('filters') or []):
+            if isinstance(f, dict) and f.get('filterType') == 'MIN_NOTIONAL':
+                try:
+                    min_notional = float(f.get('notional', 5.0))
+                except Exception:
+                    pass
+                break
+        if min_notional <= 0:
+            min_notional = 5.0
+
+        # qty = (min_notional x 1.2) / price
+        qty_raw = (min_notional * 1.2) / last
+        qty = float(exchange.amount_to_precision(symbol, qty_raw))
+
+        actual_notional = qty * last
+        if actual_notional < min_notional:
+            qty_raw = (min_notional * 1.5) / last
+            qty = float(exchange.amount_to_precision(symbol, qty_raw))
+            actual_notional = qty * last
+
+        if qty <= 0:
+            return "FAIL", f"computed qty=0 (min_notional={min_notional})"
+
+        price = _round_to_tick(last * 0.95, tick)
+        try:
+            o = exchange.create_order(
+                symbol, 'limit', 'buy', qty, price,
+                params={'timeInForce': 'GTX'}
+            )
+        except Exception as e:
+            return "FAIL", (f"create_order failed: {str(e)[:120]} "
+                            f"(qty={qty} price={price} "
+                            f"notional={actual_notional:.2f})")
+
+        state['order'] = o
+        state['id'] = o['id']
+        state['symbol'] = symbol
+        CLEANUP_ACTIONS.append(
+            lambda: _cancel_order_robust(exchange, state['id'], symbol)
+        )
+        return "PASS", (f"id={o['id']} @ {price} qty={qty} "
+                        f"notional=${actual_notional:.2f}")
+    return run
+
+
+def test_open_orders_default(exchange, symbol):
+    def run():
+        orders = exchange.fetch_open_orders(symbol)
+        return "PASS", f"returned {len(orders)} orders"
+    return run
+
+
+def test_open_orders_trigger(exchange, symbol):
+    def run():
+        try:
+            orders = exchange.fetch_open_orders(symbol,
+                                                  params={'trigger': True})
+            return "PASS", f"returned {len(orders)} trigger orders"
+        except Exception as e:
+            return "WARN", f"trigger endpoint: {str(e)[:80]}"
+    return run
+
+
+def test_open_orders_merged(exchange, symbol):
+    def run():
+        orders = _lv_open_orders_all(exchange, symbol)
+        return "PASS", f"merged: {len(orders)} orders"
+    return run
+
+
+def test_fetch_order_status(exchange, symbol):
+    def run():
+        # Use the order placed in limit_gtx_place
+        orders = exchange.fetch_open_orders(symbol)
+        if not orders:
+            return "SKIP", "no open order to fetch"
+        oid = orders[0]['id']
+        o = exchange.fetch_order(oid, symbol)
+        return "PASS", f"status={o.get('status')} filled={o.get('filled')}"
+    return run
+
+
+def test_cancel_order(exchange, symbol):
+    def run():
+        orders = exchange.fetch_open_orders(symbol)
+        if not orders:
+            return "SKIP", "no open order to cancel"
+        oid = orders[0]['id']
+        ok, how = _cancel_order_robust(exchange, oid, symbol)
+        if not ok:
+            return "FAIL", f"cancel failed for {oid}"
+        # Verify gone
+        time.sleep(0.3)
+        still = exchange.fetch_open_orders(symbol)
+        if any(str(o['id']) == str(oid) for o in still):
+            return "FAIL", "order still visible after cancel"
+        return "PASS", f"cancelled id={oid} via {how}"
+    return run
+
+
+def test_cancel_all_orders(exchange, symbol):
+    def run():
+        try:
+            exchange.cancel_all_orders(symbol)
+            return "PASS", "cancel_all_orders ok"
+        except Exception as e:
+            return "WARN", f"cancel_all_orders: {str(e)[:80]}"
+    return run
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Category 6: Conditional orders (requires position)
+# ═══════════════════════════════════════════════════════════════════
+
+def test_stop_market_no_position(exchange, symbol):
+    """Expected to fail with -2021 'ReduceOnly Order is rejected'."""
+    def run():
+        tick = _get_tick_size(exchange, symbol) or 0.01
+        q = _get_min_qty(exchange, symbol) or 0.001
+        ticker = exchange.fetch_ticker(symbol)
+        last = float(ticker['last'])
+        stop_price = _round_to_tick(last * 0.95, tick)
+        try:
+            o = exchange.create_order(
+                symbol, 'STOP_MARKET', 'sell', q, None,
+                params={'stopPrice': stop_price,
+                        'reduceOnly': True,
+                        'workingType': 'MARK_PRICE'}
+            )
+            # If it succeeded, cancel it (no position, orphan)
+            _cancel_order_robust(exchange, o['id'], symbol)
+            return "WARN", "accepted WITHOUT position (unexpected)"
+        except Exception as e:
+            m = str(e).lower()
+            if 'reduceonly' in m or '-2021' in m or '-2022' in m:
+                return "PASS", "correctly rejected (no position)"
+            return "FAIL", str(e)[:120]
+    return run
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Category 7: Full trade cycle (opt-in)
+# ═══════════════════════════════════════════════════════════════════
+
+def test_full_trade_cycle(exchange, symbol):
+    """Open tiny position, place SL/TP, verify, close everything."""
+    state = {}
+
+    def run():
+        tick = _get_tick_size(exchange, symbol) or 0.01
+        q = _get_min_qty(exchange, symbol) or 0.001
+        ticker = exchange.fetch_ticker(symbol)
+        last = float(ticker['last'])
+
+        # 1. Open tiny position via market order
+        o = exchange.create_order(symbol, 'market', 'buy', q)
+        time.sleep(0.5)
+        state['entry_order_id'] = o['id']
+
+        # Verify position exists
+        time.sleep(1.0)
+        positions = exchange.fetch_positions([symbol])
+        pos_qty = 0.0
+        for p in positions:
+            amt = float((p.get('info') or {}).get('positionAmt', 0) or 0)
+            if abs(amt) > 0:
+                pos_qty = abs(amt)
+                break
+        if pos_qty <= 0:
+            return "FAIL", f"position not visible after market order"
+        state['qty'] = pos_qty
+
+        # 2. Place STOP_MARKET (SL)
+        stop_px = _round_to_tick(last * 0.90, tick)
+        sl = exchange.create_order(
+            symbol, 'STOP_MARKET', 'sell', pos_qty, None,
+            params={'stopPrice': stop_px,
+                    'reduceOnly': True,
+                    'workingType': 'MARK_PRICE'}
+        )
+        state['sl_id'] = sl['id']
+
+        # 3. Place TAKE_PROFIT_MARKET (TP)
+        tp_px = _round_to_tick(last * 1.10, tick)
+        tp = exchange.create_order(
+            symbol, 'TAKE_PROFIT_MARKET', 'sell', pos_qty, None,
+            params={'stopPrice': tp_px,
+                    'reduceOnly': True,
+                    'workingType': 'MARK_PRICE'}
+        )
+        state['tp_id'] = tp['id']
+
+        # 4. Verify both visible via merged fetch
+        time.sleep(0.5)
+        all_orders = _lv_open_orders_all(exchange, symbol)
+        sl_found = any(str(o['id']) == str(sl['id']) for o in all_orders)
+        tp_found = any(str(o['id']) == str(tp['id']) for o in all_orders)
+        if not (sl_found and tp_found):
+            return "FAIL", f"SL visible={sl_found} TP visible={tp_found}"
+
+        # 5. Close position (market reduceOnly)
+        close_o = exchange.create_order(
+            symbol, 'market', 'sell', pos_qty, None,
+            params={'reduceOnly': True}
+        )
+        state['close_order_id'] = close_o['id']
+        time.sleep(1.0)
+
+        # 6. Verify position closed
+        positions2 = exchange.fetch_positions([symbol])
+        still_open = False
+        for p in positions2:
+            amt = float((p.get('info') or {}).get('positionAmt', 0) or 0)
+            if abs(amt) > 1e-9:
+                still_open = True
+                break
+        if still_open:
+            return "FAIL", "position still open after close"
+
+        # 7. Cleanup SL/TP (they should be auto-cancelled)
+        time.sleep(1.0)
+        remaining = _lv_open_orders_all(exchange, symbol)
+        prot_remaining = [o for o in remaining if _is_protective_order(o)]
+        n_cleaned = 0
+        for o in prot_remaining:
+            ok, _ = _cancel_order_robust(exchange, o['id'], symbol)
+            if ok:
+                n_cleaned += 1
+
+        return "PASS", (f"qty={pos_qty} SL+TP placed+visible, "
+                        f"position closed, {n_cleaned} leftover cleaned")
+    return run
+
+
+def test_fetch_my_trades(exchange, symbol):
+    def run():
+        try:
+            trades = exchange.fetch_my_trades(symbol, limit=5)
+            return "PASS", f"returned {len(trades)} personal trades"
+        except Exception as e:
+            return "WARN", str(e)[:100]
+    return run
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Main
+# ═══════════════════════════════════════════════════════════════════
+
+def print_summary():
+    print(f"\n{'═' * 72}")
+    print("  SUMMARY")
+    print(f"{'═' * 72}")
+    n_pass = sum(1 for r in RESULTS if r.status == "PASS")
+    n_fail = sum(1 for r in RESULTS if r.status == "FAIL")
+    n_warn = sum(1 for r in RESULTS if r.status == "WARN")
+    n_skip = sum(1 for r in RESULTS if r.status == "SKIP")
+    print(f"  Total:  {len(RESULTS)}")
+    print(f"  PASS:   {n_pass}")
+    print(f"  WARN:   {n_warn}")
+    print(f"  SKIP:   {n_skip}")
+    print(f"  FAIL:   {n_fail}")
+    if n_fail:
+        print(f"\n  Failed tests:")
+        for r in RESULTS:
+            if r.status == "FAIL":
+                print(f"    ✗ {r.name}: {r.error or r.detail}")
+    print(f"{'═' * 72}\n")
+    return n_fail
+
+
+def main():
+    p = argparse.ArgumentParser(
+        description="Exchange Communication Test Suite")
+    p.add_argument("--mode", default="testnet",
+                   choices=["testnet", "live"])
+    p.add_argument("--api-key",
+                   default=os.environ.get("BINANCE_API_KEY", ""))
+    p.add_argument("--api-secret",
+                   default=os.environ.get("BINANCE_API_SECRET", ""))
+    p.add_argument("--symbol", default="BTC/USDT",
+                   help="symbol to test (default: BTC/USDT)")
+    p.add_argument("--full", action="store_true",
+                   help="run full trade cycle (real order + close)")
+    p.add_argument("--cleanup", action="store_true",
+                   help="only cleanup, then exit")
+    p.add_argument("--verbose", action="store_true",
+                   help="ccxt debug output")
+    args = p.parse_args()
+
+    if not args.api_key or not args.api_secret:
+        print("ERROR: --api-key and --api-secret required")
+        return 1
+
+    print(f"\n{'═' * 72}")
+    print(f"  Exchange Communication Test Suite")
+    print(f"  mode={args.mode}  symbol={args.symbol}  full={args.full}")
+    print(f"{'═' * 72}")
+
+    exchange = build_exchange(args)
+
+    # Load markets first (required for market()/tick_size)
+    print("\n  Loading markets...")
+    try:
+        exchange.load_markets()
+    except Exception as e:
+        print(f"  FATAL: load_markets failed: {e}")
+        return 1
+    print(f"  Loaded {len(exchange.markets)} markets")
+
+    if args.cleanup:
+        _cleanup_all(exchange, [args.symbol])
+        return 0
+
+    # ── Category 1: Metadata ──
+    section("Category 1: Metadata (public)")
+    run_test("market_info", "meta", test_market_info(exchange, args.symbol))
+    run_test("tick_size", "meta", test_tick_size(exchange, args.symbol))
+    run_test("parse_timeframe", "meta",
+             test_parse_timeframe(exchange, args.symbol))
+    run_test("amount_to_precision", "meta",
+             test_amount_to_precision(exchange, args.symbol))
+
+    # ── Category 2: Public data ──
+    section("Category 2: Public data")
+    run_test("server_time", "public", test_server_time(exchange, args.symbol))
+    run_test("ticker", "public", test_tickers(exchange, args.symbol))
+    run_test("scan_all_tickers", "public",
+             test_scan_tickers(exchange, args.symbol))
+    run_test("ohlcv_limit", "public", test_ohlcv_main(exchange, args.symbol))
+    run_test("ohlcv_since", "public",
+             test_ohlcv_since(exchange, args.symbol))
+    run_test("order_book", "public",
+             test_order_book(exchange, args.symbol))
+    run_test("recent_trades", "public",
+             test_trades(exchange, args.symbol))
+
+    # ── Category 3: Account ──
+    section("Category 3: Account (authenticated)")
+    run_test("balance", "account", test_balance(exchange, args.symbol))
+    run_test("positions_symbol", "account",
+             test_positions(exchange, args.symbol))
+    run_test("positions_all", "account",
+             test_positions_all(exchange, args.symbol))
+    run_test("leverage_tiers", "account",
+             test_leverage_tiers(exchange, args.symbol))
+    run_test("fetch_leverage", "account",
+             test_fetch_leverage(exchange, args.symbol))
+
+    # ── Category 4: Setup ──
+    section("Category 4: Setup (state-changing)")
+    run_test("set_margin_mode", "setup",
+             test_set_margin_mode(exchange, args.symbol))
+    run_test("set_leverage", "setup",
+             test_set_leverage(exchange, args.symbol))
+
+    # ── Category 5: Order lifecycle ──
+    section("Category 5: Order lifecycle")
+    r = run_test("limit_gtx_place", "order",
+                 test_limit_gtx_place(exchange, args.symbol))
+    if r is None or r.status != "PASS":
+        print("  ! Skipping downstream tests — GTX place failed")
+    else:
+        run_test("open_orders_default", "order",
+                 test_open_orders_default(exchange, args.symbol))
+        run_test("open_orders_trigger", "order",
+                 test_open_orders_trigger(exchange, args.symbol))
+        run_test("open_orders_merged", "order",
+                 test_open_orders_merged(exchange, args.symbol))
+        run_test("fetch_order_status", "order",
+                 test_fetch_order_status(exchange, args.symbol))
+        run_test("cancel_order", "order",
+                 test_cancel_order(exchange, args.symbol))
+    run_test("cancel_all_orders", "order",
+             test_cancel_all_orders(exchange, args.symbol))
+
+    # ── Category 6: Conditional orders ──
+    section("Category 6: Conditional orders (reduceOnly guard)")
+    run_test("stop_market_no_position", "conditional",
+             test_stop_market_no_position(exchange, args.symbol))
+
+    # ── Category 7: Full cycle (opt-in) ──
+    if args.full:
+        section("Category 7: Full trade cycle (--full)")
+        run_test("full_trade_cycle", "full",
+                 test_full_trade_cycle(exchange, args.symbol))
+        run_test("fetch_my_trades", "full",
+                 test_fetch_my_trades(exchange, args.symbol))
+    else:
+        section("Category 7: Full trade cycle (skipped — pass --full)")
+        record("full_trade_cycle", "full", "SKIP",
+               0.0, detail="requires --full flag")
+
+    # ── Cleanup ──
+    _cleanup_all(exchange, [args.symbol])
+
+    # ── Final summary ──
+    n_fail = print_summary()
+    return 0 if n_fail == 0 else 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

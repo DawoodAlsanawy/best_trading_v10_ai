@@ -1,0 +1,260 @@
+
+══════════════════════════════════════════════════════════════════════════
+  1. Environment
+══════════════════════════════════════════════════════════════════════════
+  ccxt version:  4.5.85
+  mode:          testnet
+  symbol:        BTC/USDT
+  markets loaded: 4516
+  urls.api:      {'dapiPublic': 'https://demo-dapi.binance.com/dapi/v1', 'dapiPrivate': 'https://demo-dapi.binance.com/dapi/v1', 'dapiPrivateV2': 'https://demo-dapi.binance.com/dapi/v2', 'fapiPublic': 'https://demo-fapi.binance.com/fapi/v1', 'fapiPublicV2': 'https://demo-fapi.binance.com/fapi/v2', 'fapiPublicV3': 'https://demo-fapi.binance.com/fapi/v3', 'fapiPrivate': 'https://demo-fapi.binance.com/fapi/v1', 'fapiPrivateV2': 'https://demo-fapi.binance.com/fapi/v2', 'fapiPrivateV3': 'https://demo-fapi.binance.com/fapi/v3', 'public': 'https://demo-api.binance.com/api/v3', 'private': 'https://demo-api.binance.com/api/v3', 'v1': 'https://demo-api.binance.com/api/v1'}
+
+══════════════════════════════════════════════════════════════════════════
+  2. Ensure position exists
+══════════════════════════════════════════════════════════════════════════
+  Opening test position: 0.0007 @ ~82904.6
+  Position qty = 0.0007 (opened)
+
+══════════════════════════════════════════════════════════════════════════
+  3. Place STOP_MARKET (protective SL)
+══════════════════════════════════════════════════════════════════════════
+  last=82904.6  tick=0.1  stopPrice=74614.1
+  ✓ STOP_MARKET placed
+  ─── create_order response ───
+{
+  "info": {
+    "algoId": 1000000234734230,
+    "clientAlgoId": "x-cvBPrNm9c2579c32abb28f68ad7b60",
+    "algoType": "CONDITIONAL",
+    "orderType": "STOP_MARKET",
+    "symbol": "BTCUSDT",
+    "side": "SELL",
+    "positionSide": "BOTH",
+    "timeInForce": "GTC",
+    "quantity": "0.0007",
+    "algoStatus": "NEW",
+    "triggerPrice": "74614.10",
+    "price": "0.00",
+    "icebergQuantity": null,
+    "selfTradePreventionMode": "EXPIRE_MAKER",
+    "workingType": "MARK_PRICE",
+    "priceMatch": "NONE",
+    "closePosition": false,
+    "priceProtect": false,
+    "reduceOnly": true,
+    "createTime": 1791560276899,
+    "updateTime": 1791560276903,
+    "triggerTime": 0,
+    "goodTillDate": 0
+  },
+  "id": "1000000234734230",
+  "clientOrderId": "x-cvBPrNm9c2579c32abb28f68ad7b60",
+  "timestamp": 1791560276899,
+  "datetime": "2026-10-09T15:37:56.899Z",
+  "lastTradeTimestamp": null,
+  "lastUpdateTimestamp": 1791560276903,
+  "symbol": "BTC/USDT:USDT",
+  "type": "market",
+  "timeInForce": "GTC",
+  "postOnly": false,
+  "reduceOnly": true,
+  "side": "sell",
+  "price": null,
+  "triggerPrice": 74614.1,
+  "takeProfitPrice": null,
+  "amount": 0.0007,
+  "cost": null,
+  "average": null,
+  "filled": 0.0,
+  "remaining": 0.0007,
+  "status": "open",
+  "fee": null,
+  "trades": [],
+  "fees": [],
+  "stopPrice": 74614.1,
+  "stopLossPrice": null
+}
+
+  SL order_id = 1000000234734230
+
+══════════════════════════════════════════════════════════════════════════
+  4. Query #1 — IMMEDIATE (0ms after place)
+══════════════════════════════════════════════════════════════════════════
+  A. fetch_open_orders (no params): list with 0 items, target_found=False, types=[]
+  B. fetch_open_orders (trigger=True): list with 1 items, target_found=True, types=['market']
+    → id=1000000234734230 type=market stopPrice=74614.1 reduceOnly=True
+  C. fetch_open_orders (stop=True): list with 1 items, target_found=True, types=['market']
+    → id=1000000234734230 type=market stopPrice=74614.1 reduceOnly=True
+  D. fetch_open_orders (type=stop_market): list with 0 items, target_found=False, types=[]
+  E. fetch_open_orders (stop=True, trigger=True): list with 1 items, target_found=True, types=['market']
+    → id=1000000234734230 type=market stopPrice=74614.1 reduceOnly=True
+  F. fapiPrivateGetOpenOrders (raw): EXCEPTION
+    BadSymbol: binance {"code":-1121,"msg":"Invalid symbol."}
+  G. fapiPrivateGetOpenAlgoOrders (raw algo): list with 1 items, target_found=False, types=[None]
+    → id=None type=None stopPrice=None reduceOnly=True
+  H. fetch_open_orders (all symbols): EXCEPTION
+    ExchangeError: binance fetchOpenOrders() WARNING: fetching open orders without specifying a symbol has stricter rate limits (10 times more for spot, 40 times more for other markets) compared to requesting with symbo
+
+══════════════════════════════════════════════════════════════════════════
+  5. Query #2 — after 2s delay
+══════════════════════════════════════════════════════════════════════════
+  A. fetch_open_orders (no params): list with 0 items, target_found=False, types=[]
+  B. fetch_open_orders (trigger=True): list with 1 items, target_found=True, types=['market']
+    → id=1000000234734230 type=market stopPrice=74614.1 reduceOnly=True
+  C. fetch_open_orders (stop=True): list with 1 items, target_found=True, types=['market']
+    → id=1000000234734230 type=market stopPrice=74614.1 reduceOnly=True
+  D. fetch_open_orders (type=stop_market): list with 0 items, target_found=False, types=[]
+  E. fetch_open_orders (stop=True, trigger=True): list with 1 items, target_found=True, types=['market']
+    → id=1000000234734230 type=market stopPrice=74614.1 reduceOnly=True
+  F. fapiPrivateGetOpenOrders (raw): EXCEPTION
+    BadSymbol: binance {"code":-1121,"msg":"Invalid symbol."}
+  G. fapiPrivateGetOpenAlgoOrders (raw algo): list with 1 items, target_found=False, types=[None]
+    → id=None type=None stopPrice=None reduceOnly=True
+  H. fetch_open_orders (all symbols): EXCEPTION
+    ExchangeError: binance fetchOpenOrders() WARNING: fetching open orders without specifying a symbol has stricter rate limits (10 times more for spot, 40 times more for other markets) compared to requesting with symbo
+
+══════════════════════════════════════════════════════════════════════════
+  6. Query #3 — after 7s total
+══════════════════════════════════════════════════════════════════════════
+  A. fetch_open_orders (no params): list with 0 items, target_found=False, types=[]
+  B. fetch_open_orders (trigger=True): list with 1 items, target_found=True, types=['market']
+    → id=1000000234734230 type=market stopPrice=74614.1 reduceOnly=True
+  C. fetch_open_orders (stop=True): list with 1 items, target_found=True, types=['market']
+    → id=1000000234734230 type=market stopPrice=74614.1 reduceOnly=True
+  D. fetch_open_orders (type=stop_market): list with 0 items, target_found=False, types=[]
+  E. fetch_open_orders (stop=True, trigger=True): list with 1 items, target_found=True, types=['market']
+    → id=1000000234734230 type=market stopPrice=74614.1 reduceOnly=True
+  F. fapiPrivateGetOpenOrders (raw): EXCEPTION
+    BadSymbol: binance {"code":-1121,"msg":"Invalid symbol."}
+  G. fapiPrivateGetOpenAlgoOrders (raw algo): list with 1 items, target_found=False, types=[None]
+    → id=None type=None stopPrice=None reduceOnly=True
+  H. fetch_open_orders (all symbols): EXCEPTION
+    ExchangeError: binance fetchOpenOrders() WARNING: fetching open orders without specifying a symbol has stricter rate limits (10 times more for spot, 40 times more for other markets) compared to requesting with symbo
+
+══════════════════════════════════════════════════════════════════════════
+  7. fetch_order by ID (direct)
+══════════════════════════════════════════════════════════════════════════
+  ✗ fetch_order failed: binance {"code":-2013,"msg":"Order does not exist."}
+
+══════════════════════════════════════════════════════════════════════════
+  8. fetch_order by ID with trigger=True
+══════════════════════════════════════════════════════════════════════════
+  ✓ returned
+{
+  "info": {
+    "algoId": 1000000234734230,
+    "clientAlgoId": "x-cvBPrNm9c2579c32abb28f68ad7b60",
+    "algoType": "CONDITIONAL",
+    "orderType": "STOP_MARKET",
+    "symbol": "BTCUSDT",
+    "side": "SELL",
+    "positionSide": "BOTH",
+    "timeInForce": "GTC",
+    "quantity": "0.0007",
+    "algoStatus": "NEW",
+    "actualOrderId": "",
+    "actualPrice": "0.000000",
+    "triggerPrice": "74614.10",
+    "price": "0.00",
+    "icebergQuantity": null,
+    "tpOrderType": "",
+    "selfTradePreventionMode": "EXPIRE_MAKER",
+    "workingType": "MARK_PRICE",
+    "priceMatch": "NONE",
+    "closePosition": false,
+    "priceProtect": false,
+    "reduceOnly": true,
+    "createTime": 1791560276899,
+    "updateTime": 1791560276903,
+    "triggerTime": 0,
+    "goodTillDate": 0,
+    "isActivated": false
+  },
+  "id": "1000000234734230",
+  "clientOrderId": "x-cvBPrNm9c2579c32abb28f68ad7b60",
+  "timestamp": 1791560276899,
+  "datetime": "2026-10-09T15:37:56.899Z",
+  "lastTradeTimestamp": null,
+  "lastUpdateTimestamp": 1791560276903,
+  "symbol": "BTC/USDT:USDT",
+  "type": "market",
+  "timeInForce": "GTC",
+  "postOnly": false,
+  "reduceOnly": true,
+  "side": "sell",
+  "price": null,
+  "triggerPrice": 74614.1,
+  "takeProfitPrice": null,
+  "amount": 0.0007,
+  "cost": null,
+  "average": null,
+  "filled": 0.0,
+  "remaining": 0.0007,
+  "status": "open",
+  "fee": null,
+  "trades": [],
+  "fees": [],
+  "stopPrice": 74614.1,
+  "stopLossPrice": null
+}
+
+══════════════════════════════════════════════════════════════════════════
+  9. fetch_orders (all recent)
+══════════════════════════════════════════════════════════════════════════
+  returned 4 orders
+    id=28624097146 type=limit status=canceled
+    id=28624099839 type=limit status=canceled
+    id=28624100236 type=limit status=canceled
+    id=28624602145 type=market status=closed
+
+══════════════════════════════════════════════════════════════════════════
+  10. Raw Binance API probes
+══════════════════════════════════════════════════════════════════════════
+  fapiPrivateGetOpenOrders: EXCEPTION BadSymbol: binance {"code":-1121,"msg":"Invalid symbol."}
+  fapiPrivateGetOpenAlgoOrders: list len=1
+    sample: {
+  "algoId": 1000000234734230,
+  "clientAlgoId": "x-cvBPrNm9c2579c32abb28f68ad7b60",
+  "algoType": "CONDITIONAL",
+  "orderType": "STOP_MARKET",
+  "symbol": "BTCUSDT",
+  "side": "SELL",
+  "positionSide": "BOTH",
+  "timeInForce": "GTC",
+  "quantity": "7.0E-4",
+  "algoStatus": "NEW",
+  "actualOrderId": "",
+  "actualQty": "0.0",
+  "triggerPrice": "74614.1",
+  "price": "0.0",
+  "icebergQuantity": null,
+  "selfTradePreventionMode": "EXPIRE_MAKER",
+  "workingType": "MARK_PRICE",
+  "priceMatch": "NONE",
+  "closePosition": false,
+  "priceProtect": false,
+  "reduceOnly": true,
+  "createTime": 1791560276899,
+  "updateTime": 1791560276903,
+  "triggerTime": 0,
+  "goodTillDate": 0,
+  "isActivated": false
+}
+  fapiPrivateGetAllOrders: EXCEPTION BadSymbol: binance {"code":-1121,"msg":"Invalid symbol."}
+
+══════════════════════════════════════════════════════════════════════════
+  11. DIAGNOSIS SUMMARY
+══════════════════════════════════════════════════════════════════════════
+  Testing visibility of SL order through each method:
+
+    [✗] fetch_open_orders()                           found=False  bot_classified=0  alt_classified=0
+    [✓] fetch_open_orders(trigger=True)               found=True  bot_classified=0  alt_classified=1
+    [✓] fetch_open_orders(stop=True)                  found=True  bot_classified=0  alt_classified=1
+    [✓] _lv_open_orders_all equivalent                found=True  bot_classified=0  alt_classified=1
+
+  ✓ The order IS visible via _lv_open_orders_all.
+    The warning in the bot is likely a TIMING issue.
+
+  ─── CLEANUP ───
+  Closed BTC/USDT qty=0.0007
+
+Done. Please share the FULL output.

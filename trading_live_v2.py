@@ -727,6 +727,16 @@ class Config:
     SELL_MAJOR_PAIRS: Tuple = ("BTC/USDT", "ETH/USDT",
                                 "SOL/USDT", "BNB/USDT")
 
+
+
+    # ══ [SMALL-CAPITAL POST-ONLY] ══
+    # تحت هذه العتبة، كل أوامر الدخول والخروج غير الطارئة إلزامية Post-Only.
+    SMALL_CAPITAL_THRESHOLD: float = 100.0
+    FORCE_POST_ONLY_BELOW_CAPITAL: bool = True
+    PO_MAX_ATTEMPTS_SMALLCAP: int = 5
+    PO_MAX_WAIT_S_SMALLCAP: int = 90
+    SMALLCAP_DISABLE_PARTIAL_TP: bool = True
+    SMALLCAP_DISABLE_SING_MARKETABLE: bool = True
 CFG = Config()
 
 
@@ -8026,6 +8036,7 @@ def _get_tick_size(exchange, symbol: str) -> Optional[float]:
             pass
     return None
 
+
 # ════════════════════════════════════════════════════════════════
 # [LIQ AWARENESS] — MMR fetching + liquidation math
 # ════════════════════════════════════════════════════════════════
@@ -8291,12 +8302,52 @@ _PROTECTIVE_ORDER_TYPES = {"STOP_MARKET", "TAKE_PROFIT_MARKET",
 
 
 def _is_protective_order(o: Dict) -> bool:
-    """True if the order is a protective SL/TP placed by this bot."""
+    """
+    True if the order is a protective SL/TP placed by this bot.
+
+    [ccxt-NORMALIZATION FIX]
+    ccxt maps Binance's STOP_MARKET to unified type='market' and stores
+    the truth only in info.orderType / info.algoType. We must check all
+    representations to avoid misclassifying.
+    """
     try:
+        # 1. Unified type (works only when ccxt keeps the original)
         t = str(o.get('type') or '').lower()
-        return ('stop_market' in t or 'take_profit_market' in t)
+        if 'stop_market' in t or 'take_profit_market' in t:
+            return True
+        if t in ('stop', 'take_profit', 'stop_loss'):
+            return True
+
+        # 2. ccxt-normalized top-level fields
+        if (o.get('triggerPrice')
+                or o.get('stopPrice')
+                or o.get('stopLossPrice')
+                or o.get('takeProfitPrice')):
+            return True
+
+        # 3. Raw Binance info fields (most reliable)
+        info = o.get('info') or {}
+        raw_type = str(
+            info.get('orderType')
+            or info.get('type')
+            or ''
+        ).lower()
+        if 'stop_market' in raw_type or 'take_profit_market' in raw_type:
+            return True
+
+        # 4. Algo Order Service marker
+        if str(info.get('algoType') or '').upper() == 'CONDITIONAL':
+            return True
+
+        # 5. Last resort: any trigger/stop price in raw info
+        if (info.get('stopPrice')
+                or info.get('triggerPrice')
+                or info.get('stopLossPrice')
+                or info.get('takeProfitPrice')):
+            return True
     except Exception:
-        return False
+        pass
+    return False
 
 
 def _cancel_all_protective_orders(exchange, sym: str,
@@ -8346,6 +8397,88 @@ def _cancel_all_protective_orders(exchange, sym: str,
         import time as _t
         _t.sleep(0.3)
     return n
+
+
+def _cleanup_symbol_orders(exchange, sym: str,
+                            include_entries: bool = True,
+                            include_protective: bool = True,
+                            reason: str = "unknown") -> Dict:
+    """
+    [ORDER-HYGIENE] إلغاء شامل ومنظم لكل أوامر الرمز.
+    """
+    stats = {'protective': 0, 'entries': 0, 'failed': 0,
+             'passes': 0, 'reason': reason}
+    if not sym:
+        return stats
+
+    for pass_idx in range(2):
+        stats['passes'] = pass_idx + 1
+        try:
+            _rate_record(2.0)
+            orders = _lv_open_orders_all(exchange, sym)
+        except Exception as e:
+            log.debug(f"[OrderHygiene:{reason}] {sym} fetch failed: {e}")
+            try:
+                orders = exchange.fetch_open_orders(sym)
+            except Exception as e2:
+                log.debug(f"[OrderHygiene:{reason}] {sym} fallback failed: {e2}")
+                break
+        if not orders:
+            break
+
+        _cancelled_this_pass = 0
+        for o in orders:
+            try:
+                # [CLASSIFIER-FIX] _is_protective_order now handles
+                # ccxt normalization (type='market' + info.orderType).
+                _is_prot = _is_protective_order(o)
+                if _is_prot and not include_protective:
+                    continue
+                if (not _is_prot) and not include_entries:
+                    continue
+                _cat = 'protective' if _is_prot else 'entries'
+                _oid = o.get('id')
+                if not _oid:
+                    continue
+                _done = False
+                for _prm in ({'trigger': True}, {}):
+                    try:
+                        exchange.cancel_order(_oid, sym, params=_prm)
+                        _rate_record(1.0)
+                        _done = True
+                        break
+                    except Exception as _e:
+                        _m = str(_e).lower()
+                        if ('-2011' in _m or 'unknown order' in _m
+                                or 'not found' in _m
+                                or 'order does not exist' in _m):
+                            _done = True
+                            break
+                        continue
+                if _done:
+                    stats[_cat] += 1
+                    _cancelled_this_pass += 1
+                else:
+                    stats['failed'] += 1
+            except Exception as _e:
+                log.debug(f"[OrderHygiene:{reason}] {sym} item error: {_e}")
+                stats['failed'] += 1
+
+        if _cancelled_this_pass == 0:
+            break
+        time.sleep(0.25)
+
+    if stats['protective'] or stats['entries']:
+        log.info(
+            f"[OrderHygiene:{reason}] {sym}: "
+            f"protective={stats['protective']} "
+            f"entries={stats['entries']} "
+            f"failed={stats['failed']} "
+            f"passes={stats['passes']}"
+        )
+    return stats
+
+
 
 
 def _lv_check_protective_on_exchange(exchange, sym: str,
@@ -8699,6 +8832,12 @@ def _place_protective_orders(exchange, sym: str, pos: Dict) -> bool:
 
         _ok = (placed['sl'] and placed['tp']
                and (placed['partial_tp'] or not _partial_enabled))
+        if not placed['sl']:
+            log.critical(
+                f"🚨 [PROT-FAIL] {sym} STOP LOSS FAILED TO PLACE -- "
+                f"position is UNPROTECTED on exchange. "
+                f"qty={qty} entry={pos.get('entry')} sl={sl} tp={tp}."
+            )
         if _ok:
             return True
         log.warning(f"[Prot] {sym} incomplete after place-first: "
@@ -9130,6 +9269,24 @@ def execute_post_only(exchange, symbol: str, side: str, qty: float,
 
     # ══ [ADAPTIVE FIX #3] Fetch tick size once ══
     _tick = _get_tick_size(exchange, symbol)
+
+    # ══ [SMALL-CAPITAL OVERRIDE] ══
+    _po_forced = bool(_LIVE_CAPITAL_STATE.get('post_only_forced', False))
+    _is_emergency = (
+        bool(fallback_market) and bool(cross_spread) and bool(reduce_only)
+    )
+    if _po_forced and not _is_emergency:
+        if cross_spread or fallback_market:
+            _LIVE_CAPITAL_STATE['rejected_cross_attempts'] = int(
+                _LIVE_CAPITAL_STATE.get('rejected_cross_attempts', 0)
+            ) + 1
+        cross_spread = False
+        fallback_market = False
+        _new_wait = int(getattr(CFG, 'PO_MAX_WAIT_S_SMALLCAP', 90))
+        if max_wait_s is None or int(max_wait_s) < _new_wait:
+            max_wait_s = _new_wait
+        if not reduce_only:
+            max_attempts = int(getattr(CFG, 'PO_MAX_ATTEMPTS_SMALLCAP', 5))
 
     def _refresh_active():
         """Fetch latest order state; update total_filled via DELTA only."""
@@ -10330,6 +10487,51 @@ _LIQ_EMERGENCY_STATS: Dict = {
     'triggers': 0,
     'last_warned_at': 0.0,
 }
+
+# ══ [SMALL-CAPITAL STATE] ══
+_LIVE_CAPITAL_STATE: Dict = {
+    'capital': 0.0,
+    'post_only_forced': False,
+    'forced_since_ts': 0.0,
+    'forced_transitions': 0,
+    'rejected_cross_attempts': 0,
+}
+
+
+def _is_post_only_forced(capital: float) -> bool:
+    if not getattr(CFG, 'FORCE_POST_ONLY_BELOW_CAPITAL', True):
+        return False
+    try:
+        return float(capital) < float(CFG.SMALL_CAPITAL_THRESHOLD)
+    except Exception:
+        return False
+
+
+def _refresh_post_only_state(capital: float) -> None:
+    _forced_now = _is_post_only_forced(capital)
+    _was_forced = bool(_LIVE_CAPITAL_STATE.get('post_only_forced', False))
+    _LIVE_CAPITAL_STATE['capital'] = float(capital)
+
+    if _forced_now and not _was_forced:
+        _LIVE_CAPITAL_STATE['post_only_forced'] = True
+        _LIVE_CAPITAL_STATE['forced_since_ts'] = time.time()
+        _LIVE_CAPITAL_STATE['forced_transitions'] += 1
+        log.warning(
+            f"[SmallCap] POST-ONLY MODE ENGAGED -- capital "
+            f"${capital:.2f} < ${CFG.SMALL_CAPITAL_THRESHOLD:.0f}. "
+            f"All non-emergency orders -> GTX (maker)."
+        )
+    elif not _forced_now and _was_forced:
+        _LIVE_CAPITAL_STATE['post_only_forced'] = False
+        _LIVE_CAPITAL_STATE['forced_transitions'] += 1
+        log.info(
+            f"[SmallCap] POST-ONLY MODE RELEASED -- capital "
+            f"${capital:.2f} >= ${CFG.SMALL_CAPITAL_THRESHOLD:.0f}. "
+            f"Transitions: {_LIVE_CAPITAL_STATE['forced_transitions']}"
+        )
+    else:
+        _LIVE_CAPITAL_STATE['post_only_forced'] = _forced_now
+
 
 
 def _degenerate_get(sym: str, tf: str, last_closed_ts: int) -> bool:
@@ -12016,10 +12218,18 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
     #   - إذا SING_TIMING_ENABLED=True و SING_ACTIVE_MARKETABLE=True
     #     و _sing_state == "ACTIVE" → Marketable Limit.
     #   - غير ذلك → GTX عادي.
+    # ══ [SMALL-CAPITAL] منع Marketable تحت رأس مال صغير ══
+    _po_forced_pp = bool(_LIVE_CAPITAL_STATE.get('post_only_forced', False))
+    _sing_marketable_disabled = (
+        _po_forced_pp
+        and getattr(CFG, 'SMALLCAP_DISABLE_SING_MARKETABLE', True)
+    )
+
     _exec_mode = "gtx"
     _marketable_px = None
 
-    if (getattr(CFG, 'SING_TIMING_ENABLED', False)
+    if (not _sing_marketable_disabled
+            and getattr(CFG, 'SING_TIMING_ENABLED', False)
             and getattr(CFG, 'SING_ACTIVE_MARKETABLE', False)
             and _sing_state == "ACTIVE"):
         try:
@@ -12351,16 +12561,22 @@ def _kill_switch_trigger(reason: str, exchange,
         except Exception as e:
             log.error(f"[KillSwitch] flatten {sym} failed: {e}")
 
-    # Cancel all pending
-    for sym in list(_PENDING_ORDERS.keys()):
-        rec = _PENDING_ORDERS[sym]
-        oid = rec.get('order_id')
-        if oid:
-            try:
-                exchange.cancel_order(oid, sym)
-            except Exception:
-                pass
-        _PENDING_ORDERS.pop(sym, None)
+    # ══ [ORDER-HYGIENE] تنظيف كامل قبل الإغلاق الجماعي ══
+    _all_syms_ks = set(list(open_pos_live.keys())
+                        + list(_PENDING_ORDERS.keys())
+                        + list(_WATCHED_SIGNALS.keys()))
+    for sym in _all_syms_ks:
+        try:
+            _cleanup_symbol_orders(
+                exchange, sym,
+                include_entries=True,
+                reason="kill-switch"
+            )
+        except Exception as _e:
+            log.debug(f"[OrderHygiene:kill-switch] {sym} failed: {_e}")
+
+    _PENDING_ORDERS.clear()
+    _WATCHED_SIGNALS.clear()
 
     try:
         _lv_kill_flatten_all(exchange)
@@ -12474,6 +12690,15 @@ def _lv_atomic_json(path, obj) -> None:
         except Exception:
             pass
     os.replace(tmp, path)
+    try:
+        _dir = os.path.dirname(os.path.abspath(path)) or "."
+        _dfd = os.open(_dir, os.O_RDONLY)
+        try:
+            os.fsync(_dfd)
+        finally:
+            os.close(_dfd)
+    except Exception:
+        pass
 
 
 def _lv_save_state(path, obj) -> None:
@@ -12618,9 +12843,13 @@ def _lv_on_exchange_closed(exchange, sym, pos, rsn_hint="ExchangeClosed") -> Non
     except Exception as e:
         log.debug(f"[TradeLog] exchange-closed hook failed: {e}")
     try:
-        _cancel_all_protective_orders(exchange, sym)
-    except Exception:
-        pass
+        _cleanup_symbol_orders(
+            exchange, sym,
+            include_entries=True,
+            reason="exchange-closed"
+        )
+    except Exception as _e:
+        log.debug(f"[OrderHygiene:exchange-closed] {sym} failed: {_e}")
     _LV_LAST_EXIT[sym] = time.time()
 
 
@@ -12855,18 +13084,24 @@ def _lv_open_orders_all(exchange, sym):
 
 
 def _lv_calibrate_visibility(exchange, sym) -> None:
-    # right after a SUCCESSFUL protective placement the STOP must be listable. If it is not, our
-    # verification / duplicate-cancel logic is blind (old ccxt vs Binance algo orders): say so loudly
-    # and stop the verification loop instead of re-placing orders forever.
+    """
+    After placing protective orders, verify they are listable.
+    Uses _is_protective_order (which handles ccxt normalization).
+    """
     try:
-        vis = any(_is_protective_order(o) for o in _lv_open_orders_all(exchange, sym))
+        orders = _lv_open_orders_all(exchange, sym)
+        prot_count = sum(1 for o in orders if _is_protective_order(o))
+        vis = prot_count > 0
     except Exception:
         return
     _LV_STATE['prot_visible'] = bool(vis)
     if not vis:
-        log.critical("[Prot] protective orders were accepted but are NOT visible in fetch_open_orders — "
-                     "upgrade ccxt / check Binance Algo-Order migration (params={'trigger': True}). "
-                     "Verification disabled; duplicates may accumulate. See LIVE_LIFECYCLE.md §L6.")
+        log.critical(
+            "[Prot] protective orders were accepted but are NOT visible "
+            "in fetch_open_orders. Check ccxt version / Binance Algo "
+            "Order migration. Verification disabled; duplicates may "
+            "accumulate."
+        )
 
 
 def _lv_ensure_protection(exchange, sym, pos, now) -> None:
@@ -12882,9 +13117,20 @@ def _lv_ensure_protection(exchange, sym, pos, now) -> None:
         try:
             _rate_record(2.0)
             orders = _lv_open_orders_all(exchange, sym)
-            has_sl = any('stop' in str(o.get('type') or '').lower() for o in orders)
+            # [CLASSIFIER-FIX] use _is_protective_order (handles ccxt
+            # normalization to type='market'). The old inline check
+            # ('stop' in type) never matched and caused SL re-placement
+            # every cycle.
+            prot_orders = [o for o in orders if _is_protective_order(o)]
+            has_sl = any(
+                'take_profit' not in str(
+                    (o.get('info') or {}).get('orderType')
+                    or o.get('type') or ''
+                ).lower()
+                for o in prot_orders
+            )
             if not has_sl:
-                log.critical(f"[Prot] {sym} STOP order NOT FOUND on exchange — re-placing")
+                log.critical(f"[Prot] {sym} STOP order NOT FOUND on exchange -- re-placing")
                 stale = True
         except Exception as e:
             log.debug(f"[LV] verify protection {sym} failed: {e}")
@@ -12944,13 +13190,20 @@ def _lv_get_exchange_sl(exchange, sym, pos):
         log.debug(f"[SmartBE] {sym} fetch orders failed: {e}")
         return None
     for o in orders:
-        ot = str(o.get('type') or '').lower()
-        if 'take_profit' in ot:
+        if not _is_protective_order(o):
+            continue
+        # [ccxt-NORMALIZATION FIX] raw info.orderType is the truth
+        info = o.get('info') or {}
+        raw_type = str(
+            info.get('orderType') or o.get('type') or ''
+        ).lower()
+        if 'take_profit' in raw_type:
             continue
         sp = float(
             o.get('stopPrice')
             or o.get('triggerPrice')
-            or (o.get('info') or {}).get('stopPrice')
+            or info.get('stopPrice')
+            or info.get('triggerPrice')
             or 0
         )
         if sp > 0:
@@ -13055,13 +13308,17 @@ def _lv_breakeven(exchange, sym, pos, now) -> None:
         for o in _lv_open_orders_all(exchange, sym):
             if not _is_protective_order(o):
                 continue
-            _ot = str(o.get('type') or '').lower()
-            if 'take_profit' in _ot:
+            _info = o.get('info') or {}
+            _raw_t = str(
+                _info.get('orderType') or o.get('type') or ''
+            ).lower()
+            if 'take_profit' in _raw_t:
                 continue
             _sp = float(
                 o.get('stopPrice')
                 or o.get('triggerPrice')
-                or (o.get('info') or {}).get('stopPrice')
+                or _info.get('stopPrice')
+                or _info.get('triggerPrice')
                 or 0
             )
             if _sp > 0 and abs(_sp - _exch_sl) / max(abs(_exch_sl), 1e-9) < 1e-4:
@@ -13421,6 +13678,15 @@ def _lv_exit_partial_remainder(exchange, sym, pos, result, rsn):
     pos['qty'] = left
     pos['_partial_taken'] = True
     pos['_prot_last_sl'] = None
+    try:
+        _cleanup_symbol_orders(
+            exchange, sym,
+            include_entries=True,
+            include_protective=False,
+            reason="partial-exit"
+        )
+    except Exception as _e:
+        log.debug(f"[OrderHygiene:partial-exit] {sym} failed: {_e}")
     log.warning(f"⚠️ [Exit] {sym} PARTIAL exit fill {filled}/{total} → remainder {left} stays "
                 f"open and protected; retrying next cycle")
     return True
@@ -14104,6 +14370,7 @@ def run_live(cfg, exchange):
                 _LV_STATE['free'] = _bal_free
                 _LV_STATE['bal_ok'] = True
                 _last_known_cap = cap_live
+                _refresh_post_only_state(cap_live)
             except Exception as e:
                 log.warning(f"[Balance] fetch failed: {e}; "
                             f"using last known ${_last_known_cap:.2f}")
@@ -14395,7 +14662,12 @@ def run_live(cfg, exchange):
                             log.debug(f"[Prot] {sym} sync error: {_e}")
 
                 # ── [FIX 4] Partial TP ──
+                _partial_disabled_smallcap = (
+                    bool(_LIVE_CAPITAL_STATE.get('post_only_forced', False))
+                    and getattr(CFG, 'SMALLCAP_DISABLE_PARTIAL_TP', True)
+                )
                 if (not ex
+                        and not _partial_disabled_smallcap
                         and getattr(CFG, 'PARTIAL_TP_ENABLED', False)
                         and not pos.get('_broker_partial', False)
                         and not pos.get('_partial_taken', False)):
@@ -14586,6 +14858,20 @@ def run_live(cfg, exchange):
                             if _urgent
                             else int(CFG.PO_EXIT_MAX_WAIT_S)
                         )
+                        _po_forced_exit = bool(_LIVE_CAPITAL_STATE.get(
+                            'post_only_forced', False))
+                        if _po_forced_exit and 'Emergency LiqProximity' not in rsn:
+                            if _cross:
+                                _LIVE_CAPITAL_STATE['rejected_cross_attempts'] = int(
+                                    _LIVE_CAPITAL_STATE.get(
+                                        'rejected_cross_attempts', 0)) + 1
+                                log.info(
+                                    f"[SmallCap] {sym} blocking cross_spread "
+                                    f"for exit: {rsn}"
+                                )
+                            _cross = False
+                            _wait = int(max(_wait, getattr(
+                                CFG, 'PO_MAX_WAIT_S_SMALLCAP', 90)))
                         result = execute_post_only(
                             exchange, sym, s, pos['qty'],
                             max_wait_s=_wait,
@@ -14614,17 +14900,15 @@ def run_live(cfg, exchange):
                         _lv_save_state(state_file, open_pos_live)
                         continue
 
-                    # ══ Position now closed. Clean any leftover protective
-                    # orders. With closePosition=True, Binance auto-cancels
-                    # them; this is defensive for edge cases (partial fills,
-                    # exchange lag). ══
+                    # ══ [ORDER-HYGIENE] إلغاء كامل عند إغلاق المركز ══
                     try:
-                        _leftovers = _cancel_all_protective_orders(exchange, sym)
-                        if _leftovers > 0:
-                            log.debug(f"[Prot] {sym} cleaned "
-                                      f"{_leftovers} leftover order(s)")
+                        _hygiene = _cleanup_symbol_orders(
+                            exchange, sym,
+                            include_entries=True,
+                            reason=f"exit:{exit_reason[:30]}"
+                        )
                     except Exception as _e:
-                        log.debug(f"[Prot] {sym} post-exit cleanup: {_e}")
+                        log.warning(f"[OrderHygiene] {sym} failed: {_e}")
 
                     # ══ [TradeLog] سجّل الصفقة قبل الحذف ══
                     try:
