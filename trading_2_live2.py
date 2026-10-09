@@ -4896,7 +4896,7 @@ def _compute_entry_target(sig, ad, side, exchange=None) -> float:
         exchange=exchange,
         symbol=(getattr(sig, 'symbol', None)
                 if exchange is not None else None),
-        qty=0.0,
+        qty=1.0,
     )
 
     # Direction: mean-reversion
