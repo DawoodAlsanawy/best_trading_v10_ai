@@ -1,0 +1,407 @@
+22:08:39 [INFO] [Backtest] end-date pinned to 2024-12-31
+22:08:40 [INFO] [Level-2] Numba kernels warm (JIT ready in 0.7s)
+22:08:40 [INFO] [Cache] LIVE_ASSET_CACHE_MAX adjusted to 150
+22:08:42 [INFO] [TF] timeframe=4h TF_SCALE=0.2500 TF_SECONDS=14400 TF_HOURS=4.000
+22:08:42 [INFO] [TF-Unified] N=24 W=20 L=10 ADV_BARS=6 (σ≈0.25× 1h)
+22:08:42 [INFO] [Data] mode=backtest | tf=4h | history=365d (2190 bars/symbol) | quality=degraded | source=user(365d)
+22:08:42 [WARNING] [Data] degraded quality: tail=2190 < strict_min/2=5012. Many assets may be skipped by degenerate detection. Recommended minimum for 4h: --history-days 2339.
+22:08:42 [INFO] [Trail] Trailing Stop Loss DISABLED — SL is fixed
+22:08:42 [INFO] [Backtest] --no-fixed-price: entry target will be derived from close[sig.close_idx] × (1 ± PO_PENETRATION_BPS)
+22:08:42 [INFO] [Watch] Watch-then-trigger DISABLED (Config default) — legacy immediate placement
+22:08:42 [INFO] [OppTP] Opposite-Signal Adaptive TP DISABLED
+22:08:42 [INFO] [TradeLog] Logging trades to results/sell_only_ablation/S1_baseline_2024.jsonl
+22:08:42 [INFO] §1  مسح أعلى 15 عملة...
+22:08:42 [INFO] §2  جلب البيانات (متوازٍ)...
+22:08:53 [INFO]   ✓ BTC/USDT      : 2,190 شمعة
+22:08:53 [INFO]   ✓ SOL/USDT      : 2,190 شمعة
+22:08:53 [INFO]   ✓ BNB/USDT      : 2,190 شمعة
+22:08:53 [INFO]   ✓ ETH/USDT      : 2,190 شمعة
+22:08:54 [INFO]   ✓ AVAX/USDT     : 2,190 شمعة
+22:08:54 [INFO]   ✓ ADA/USDT      : 2,190 شمعة
+22:08:54 [INFO]   ✓ LINK/USDT     : 2,190 شمعة
+22:08:54 [INFO]   ✓ DOT/USDT      : 2,190 شمعة
+22:08:54 [INFO]   ✓ LTC/USDT      : 2,190 شمعة
+22:08:54 [INFO]   ✓ ATOM/USDT     : 2,190 شمعة
+22:08:54 [INFO]   ✓ TRX/USDT      : 2,190 شمعة
+22:08:54 [INFO]   ✓ UNI/USDT      : 2,190 شمعة
+22:08:54 [INFO]   ✓ ETC/USDT      : 2,190 شمعة
+22:08:55 [INFO]   ✓ BCH/USDT      : 2,190 شمعة
+22:08:55 [INFO]   ✓ HBAR/USDT     : 2,190 شمعة
+22:08:55 [INFO]   ✓ APT/USDT      : 2,190 شمعة
+22:08:55 [INFO]   ✓ NEAR/USDT     : 2,190 شمعة
+22:08:55 [INFO]   ✓ TON/USDT      : 1,833 شمعة
+22:08:55 [INFO]   ✓ STX/USDT      : 2,190 شمعة
+22:08:55 [INFO]   ✓ AAVE/USDT     : 2,190 شمعة
+22:08:55 [INFO]   ✓ OP/USDT       : 2,190 شمعة
+22:08:55 [INFO]   ✓ ARB/USDT      : 2,190 شمعة
+22:08:55 [INFO]   ✓ SUI/USDT      : 2,190 شمعة
+22:08:56 [INFO]   ✓ SEI/USDT      : 2,190 شمعة
+22:08:56 [INFO]   ✓ GRT/USDT      : 2,190 شمعة
+22:08:56 [INFO]   ✓ TIA/USDT      : 2,190 شمعة
+22:08:56 [INFO]   ✓ ALGO/USDT     : 2,190 شمعة
+22:08:56 [INFO]   ✓ FET/USDT      : 2,190 شمعة
+22:08:56 [INFO]   ✓ LDO/USDT      : 2,190 شمعة
+22:08:56 [INFO]   ✓ THETA/USDT    : 2,190 شمعة
+22:08:56 [INFO]   ✓ KAS/USDT      : 2,190 شمعة
+22:08:57 [INFO]   ✓ SAND/USDT     : 2,190 شمعة
+22:08:57 [INFO]   ✓ MANA/USDT     : 2,190 شمعة
+22:08:57 [INFO]   ✓ AXS/USDT      : 2,190 شمعة
+22:08:57 [INFO]   ✓ RENDER/USDT   : 952 شمعة
+22:08:57 [INFO]   ✓ WIF/USDT      : 2,091 شمعة
+22:08:57 [INFO]   ✓ XLM/USDT      : 2,190 شمعة
+22:08:57 [INFO]   ✓ CHZ/USDT      : 2,190 شمعة
+22:08:58 [INFO]   ✓ FIL/USDT      : 2,190 شمعة
+22:08:58 [INFO]   ✓ QNT/USDT      : 2,190 شمعة
+22:08:58 [INFO]   ✓ DASH/USDT     : 2,190 شمعة
+22:08:58 [INFO]   ✓ POL/USDT      : 657 شمعة
+22:08:58 [INFO]   ✓ FLOW/USDT     : 2,190 شمعة
+22:08:58 [INFO]   ✓ IOTA/USDT     : 2,190 شمعة
+22:08:58 [INFO]   ✓ CAKE/USDT     : 2,190 شمعة
+22:08:58 [INFO]   ✓ ROSE/USDT     : 2,190 شمعة
+22:08:58 [INFO]   ✓ NEO/USDT      : 2,190 شمعة
+22:08:59 [INFO]   ✓ KAVA/USDT     : 2,190 شمعة
+22:08:59 [INFO]   ✓ COMP/USDT     : 2,190 شمعة
+22:08:59 [INFO]   ✓ CRV/USDT      : 2,190 شمعة
+22:08:59 [INFO]   ✓ SNX/USDT      : 2,190 شمعة
+22:08:59 [INFO]   ✓ SUSHI/USDT    : 2,190 شمعة
+22:08:59 [INFO]   ✓ YFI/USDT      : 2,190 شمعة
+22:08:59 [INFO]   ✓ BAT/USDT      : 2,190 شمعة
+22:08:59 [INFO]   ✓ ANKR/USDT     : 2,190 شمعة
+22:08:59 [INFO]   ✓ ZRX/USDT      : 2,190 شمعة
+22:08:59 [INFO]   ✓ BAND/USDT     : 2,190 شمعة
+22:09:00 [INFO]   ✓ NMR/USDT      : 2,190 شمعة
+22:09:00 [INFO]   ✓ ZEN/USDT      : 2,190 شمعة
+22:09:00 [INFO]   ✓ KSM/USDT      : 2,190 شمعة
+22:09:00 [INFO]   ✓ CELO/USDT     : 2,190 شمعة
+22:09:00 [INFO]   ✓ STORJ/USDT    : 2,190 شمعة
+22:09:00 [INFO]   ✓ MASK/USDT     : 2,190 شمعة
+22:09:00 [INFO]   ✓ MAGIC/USDT    : 2,190 شمعة
+22:09:00 [INFO]   ✓ DYDX/USDT     : 2,190 شمعة
+22:09:00 [INFO]   ✓ GMX/USDT      : 2,190 شمعة
+22:09:00 [INFO]   ✓ ENS/USDT      : 2,190 شمعة
+22:09:01 [INFO]   ✓ HIGH/USDT     : 2,190 شمعة
+22:09:01 [INFO]   ✓ JOE/USDT      : 2,190 شمعة
+22:09:01 [INFO]   ✓ PENDLE/USDT   : 2,190 شمعة
+22:09:01 [INFO]   ✓ CYBER/USDT    : 2,190 شمعة
+22:09:01 [INFO]   ✓ ARKM/USDT     : 2,190 شمعة
+22:09:01 [INFO]   ✓ WLD/USDT      : 2,190 شمعة
+22:09:01 [INFO]   ✓ ID/USDT       : 2,190 شمعة
+22:09:01 [INFO]   ✓ EDU/USDT      : 2,190 شمعة
+22:09:01 [INFO]   ✓ ORDI/USDT     : 2,190 شمعة
+22:09:01 [INFO]   ✓ BLUR/USDT     : 2,190 شمعة
+22:09:02 [INFO]   ✓ JTO/USDT      : 2,190 شمعة
+22:09:02 [INFO]   ✓ PYTH/USDT     : 2,190 شمعة
+22:09:02 [INFO]   ✓ JUP/USDT      : 2,012 شمعة
+22:09:03 [INFO]   ✓ DYM/USDT      : 1,973 شمعة
+22:09:03 [INFO]   ✓ STRK/USDT     : 1,892 شمعة
+22:09:03 [INFO]   ✓ ALT/USDT      : 2,049 شمعة
+22:09:03 [INFO]   ✓ MANTA/USDT    : 2,091 شمعة
+22:09:03 [INFO]   ✓ AEVO/USDT     : 1,761 شمعة
+22:09:04 [INFO]   ✓ W/USDT        : 1,635 شمعة
+22:09:04 [INFO]   ✓ ETHFI/USDT    : 1,731 شمعة
+22:09:05 [INFO]   ✓ SAGA/USDT     : 1,600 شمعة
+22:09:05 [INFO]   ✓ IO/USDT       : 1,221 شمعة
+22:09:05 [INFO]   ✓ BB/USDT       : 1,395 شمعة
+22:09:05 [INFO]   ✓ ZK/USDT       : 1,186 شمعة
+22:09:05 [INFO]   ✓ LISTA/USDT    : 1,167 شمعة
+22:09:06 [WARNING]   ✗ TAIKO/USDT
+22:09:06 [INFO]   ✓ ZRO/USDT      : 1,167 شمعة
+22:09:06 [INFO]   ✓ RARE/USDT     : 831 شمعة
+22:09:06 [INFO]   ✓ G/USDT        : 831 شمعة
+22:09:06 [INFO]   ✓ SYN/USDT      : 825 شمعة
+22:09:07 [INFO]   ✓ MEW/USDT      : 1,185 شمعة
+22:09:07 [WARNING]   ✗ MERL/USDT
+22:09:07 [INFO]   ✓ BANANA/USDT   : 834 شمعة
+22:09:08 [INFO]   ✓ AVAX/USDT     : 35,040 شمعة 15m
+22:09:08 [INFO]   ✓ ETH/USDT      : 35,040 شمعة 15m
+22:09:08 [INFO]   ✓ SOL/USDT      : 35,040 شمعة 15m
+22:09:08 [INFO]   ✓ BTC/USDT      : 35,040 شمعة 15m
+22:09:09 [INFO]   ✓ ADA/USDT      : 35,040 شمعة 15m
+22:09:09 [INFO]   ✓ LTC/USDT      : 35,040 شمعة 15m
+22:09:09 [INFO]   ✓ DOT/USDT      : 35,040 شمعة 15m
+22:09:09 [INFO]   ✓ LINK/USDT     : 35,040 شمعة 15m
+22:09:09 [INFO]   ✓ ATOM/USDT     : 35,040 شمعة 15m
+22:09:10 [INFO]   ✓ TRX/USDT      : 35,040 شمعة 15m
+22:09:10 [INFO]   ✓ ETC/USDT      : 35,040 شمعة 15m
+22:09:10 [INFO]   ✓ UNI/USDT      : 35,040 شمعة 15m
+22:09:10 [INFO]   ✓ BCH/USDT      : 35,040 شمعة 15m
+22:09:10 [INFO]   ✓ HBAR/USDT     : 35,040 شمعة 15m
+22:09:11 [INFO]   ✓ NEAR/USDT     : 35,040 شمعة 15m
+22:09:11 [INFO]   ✓ APT/USDT      : 35,040 شمعة 15m
+22:09:11 [INFO]   ✓ STX/USDT      : 35,040 شمعة 15m
+22:09:12 [INFO]   ✓ AAVE/USDT     : 35,040 شمعة 15m
+22:09:12 [INFO]   ✓ OP/USDT       : 35,040 شمعة 15m
+22:09:12 [INFO]   ✓ ARB/USDT      : 35,040 شمعة 15m
+22:09:12 [INFO]   ✓ SUI/USDT      : 35,040 شمعة 15m
+22:09:12 [INFO]   ✓ SEI/USDT      : 35,040 شمعة 15m
+22:09:13 [INFO]   ✓ GRT/USDT      : 35,040 شمعة 15m
+22:09:13 [INFO]   ✓ TIA/USDT      : 35,040 شمعة 15m
+22:09:13 [INFO]   ✓ ALGO/USDT     : 35,040 شمعة 15m
+22:09:13 [INFO]   ✓ FET/USDT      : 35,040 شمعة 15m
+22:09:14 [INFO]   ✓ LDO/USDT      : 35,040 شمعة 15m
+22:09:14 [INFO]   ✓ THETA/USDT    : 35,040 شمعة 15m
+22:09:14 [INFO]   ✓ KAS/USDT      : 35,040 شمعة 15m
+22:09:15 [INFO]   ✓ SAND/USDT     : 35,040 شمعة 15m
+22:09:15 [INFO]   ✓ MANA/USDT     : 35,040 شمعة 15m
+22:09:15 [INFO]   ✓ AXS/USDT      : 35,040 شمعة 15m
+22:09:16 [INFO]   ✓ RENDER/USDT   : 15,224 شمعة 15m
+22:09:16 [INFO]   ✓ XLM/USDT      : 35,040 شمعة 15m
+22:09:16 [INFO]   ✓ WIF/USDT      : 33,447 شمعة 15m
+22:09:16 [INFO]   ✓ CHZ/USDT      : 35,040 شمعة 15m
+22:09:16 [INFO]   ✓ FIL/USDT      : 35,040 شمعة 15m
+22:09:17 [INFO]   ✓ TON/USDT      : 29,326 شمعة 15m
+22:09:17 [INFO]   ✓ QNT/USDT      : 35,040 شمعة 15m
+22:09:17 [INFO]   ✓ DASH/USDT     : 35,040 شمعة 15m
+22:09:17 [INFO]   ✓ FLOW/USDT     : 35,040 شمعة 15m
+22:09:18 [INFO]   ✓ POL/USDT      : 10,511 شمعة 15m
+22:09:18 [INFO]   ✓ CAKE/USDT     : 35,040 شمعة 15m
+22:09:18 [INFO]   ✓ IOTA/USDT     : 35,040 شمعة 15m
+22:09:18 [INFO]   ✓ ROSE/USDT     : 35,040 شمعة 15m
+22:09:18 [INFO]   ✓ COMP/USDT     : 35,040 شمعة 15m
+22:09:18 [INFO]   ✓ KAVA/USDT     : 35,040 شمعة 15m
+22:09:18 [INFO]   ✓ CRV/USDT      : 35,040 شمعة 15m
+22:09:19 [INFO]   ✓ NEO/USDT      : 35,040 شمعة 15m
+22:09:19 [INFO]   ✓ SNX/USDT      : 35,040 شمعة 15m
+22:09:19 [INFO]   ✓ SUSHI/USDT    : 35,040 شمعة 15m
+22:09:19 [INFO]   ✓ BAT/USDT      : 35,040 شمعة 15m
+22:09:19 [INFO]   ✓ YFI/USDT      : 35,040 شمعة 15m
+22:09:20 [INFO]   ✓ ANKR/USDT     : 35,040 شمعة 15m
+22:09:20 [INFO]   ✓ NMR/USDT      : 35,040 شمعة 15m
+22:09:20 [INFO]   ✓ ZRX/USDT      : 35,040 شمعة 15m
+22:09:20 [INFO]   ✓ BAND/USDT     : 35,040 شمعة 15m
+22:09:20 [INFO]   ✓ ZEN/USDT      : 35,040 شمعة 15m
+22:09:21 [INFO]   ✓ CELO/USDT     : 35,040 شمعة 15m
+22:09:21 [INFO]   ✓ KSM/USDT      : 35,040 شمعة 15m
+22:09:21 [INFO]   ✓ MASK/USDT     : 35,040 شمعة 15m
+22:09:22 [INFO]   ✓ DYDX/USDT     : 35,040 شمعة 15m
+22:09:22 [INFO]   ✓ MAGIC/USDT    : 35,040 شمعة 15m
+22:09:22 [INFO]   ✓ GMX/USDT      : 35,040 شمعة 15m
+22:09:22 [INFO]   ✓ ENS/USDT      : 35,040 شمعة 15m
+22:09:23 [INFO]   ✓ JOE/USDT      : 35,040 شمعة 15m
+22:09:23 [INFO]   ✓ STORJ/USDT    : 35,040 شمعة 15m
+22:09:23 [INFO]   ✓ PENDLE/USDT   : 35,040 شمعة 15m
+22:09:23 [INFO]   ✓ CYBER/USDT    : 35,040 شمعة 15m
+22:09:24 [INFO]   ✓ ARKM/USDT     : 35,040 شمعة 15m
+22:09:24 [INFO]   ✓ ID/USDT       : 35,040 شمعة 15m
+22:09:24 [INFO]   ✓ WLD/USDT      : 35,040 شمعة 15m
+22:09:24 [INFO]   ✓ EDU/USDT      : 35,040 شمعة 15m
+22:09:25 [INFO]   ✓ BLUR/USDT     : 35,040 شمعة 15m
+22:09:25 [INFO]   ✓ ORDI/USDT     : 35,040 شمعة 15m
+22:09:25 [INFO]   ✓ JTO/USDT      : 35,040 شمعة 15m
+22:09:26 [INFO]   ✓ PYTH/USDT     : 35,040 شمعة 15m
+22:09:27 [INFO]   ✓ JUP/USDT      : 32,182 شمعة 15m
+22:09:27 [INFO]   ✓ DYM/USDT      : 31,556 شمعة 15m
+22:09:27 [INFO]   ✓ STRK/USDT     : 30,268 شمعة 15m
+22:09:28 [INFO]   ✓ ALT/USDT      : 32,776 شمعة 15m
+22:09:28 [INFO]   ✓ MANTA/USDT    : 33,448 شمعة 15m
+22:09:29 [INFO]   ✓ AEVO/USDT     : 28,170 شمعة 15m
+22:09:29 [INFO]   ✓ W/USDT        : 26,146 شمعة 15m
+22:09:30 [INFO]   ✓ ETHFI/USDT    : 27,682 شمعة 15m
+22:09:30 [INFO]   ✓ HIGH/USDT     : 35,040 شمعة 15m
+22:09:30 [INFO]   ✓ SAGA/USDT     : 25,590 شمعة 15m
+22:09:30 [INFO]   ✓ IO/USDT       : 19,528 شمعة 15m
+22:09:32 [INFO]   ✓ BB/USDT       : 22,318 شمعة 15m
+22:09:34 [INFO]   ✓ ZK/USDT       : 18,964 شمعة 15m
+22:09:34 [INFO]   ✓ LISTA/USDT    : 18,670 شمعة 15m
+22:09:34 [INFO]   ✓ ZRO/USDT      : 18,662 شمعة 15m
+22:09:36 [INFO]   ✓ RARE/USDT     : 13,292 شمعة 15m
+22:09:36 [INFO]   ✓ G/USDT        : 13,294 شمعة 15m
+22:09:37 [INFO]   ✓ SYN/USDT      : 13,198 شمعة 15m
+22:09:37 [INFO]   ✓ MEW/USDT      : 18,952 شمعة 15m
+22:09:38 [INFO]   ✓ BANANA/USDT   : 13,336 شمعة 15m
+22:10:14 [INFO]   ✓ BNB/USDT      : 35,040 شمعة 15m
+22:10:14 [INFO]   [SubBars] loaded for 98 symbols at 15m
+22:10:14 [INFO] §3  معالجة فضاء الحالة (K ديناميكي)...
+22:10:14 [INFO]   [Parallel] 8 workers × 98 symbols (cache=on)
+╔══════════════════════════════════════════════════════════════════════╗
+  [Level-1] Parallel: True  Cache: True
+  [Level-2] Numba: True
+
+║  محرك التداول الثرموديناميكي الكمي v6.0 – Singularity Engine     ║
+║  الوضع: BACKTEST    |  رأس المال: $100.00              ║
+╠══════════════════════════════════════════════════════════════════════╣
+║  ① Boltzmann Kelly: BASE=2.0%  λ=0.05  [1.0%–5.0%]  ║
+║  ② Topo-Divergence: ε=0.05  (حتمية هندسية)              ║
+║  ③ Dynamic-K:       [25–50]  (SNR ∝ 1/m)                     ║
+║  ④ Cosmological Λ:  0  (De Sitter drift)                  ║
+║  ⑤ T_sync EMA-accel: فلتر التشابك عبر المقاييس                  ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+22:10:25 [INFO]   ✓ BTC/USDT       | K=25 | اختبار=  385 | tri_μ=1.36 | [cache]
+22:10:25 [INFO]   ✓ SOL/USDT       | K=25 | اختبار=  441 | tri_μ=1.31 | [cache]
+22:10:25 [INFO]   ✓ BNB/USDT       | K=25 | اختبار=  421 | tri_μ=1.33 | [cache]
+22:10:25 [INFO]   ✓ ETH/USDT       | K=25 | اختبار=  413 | tri_μ=1.36 | [cache]
+22:10:25 [INFO]   ✓ AVAX/USDT      | K=25 | اختبار=  453 | tri_μ=1.25 | [cache]
+22:10:25 [INFO]   ✓ ADA/USDT       | K=25 | اختبار=  363 | tri_μ=1.27 | [cache]
+22:10:25 [INFO]   ✓ LINK/USDT      | K=25 | اختبار=  443 | tri_μ=1.27 | [cache]
+22:10:25 [INFO]   ✓ DOT/USDT       | K=25 | اختبار=  392 | tri_μ=1.28 | [cache]
+22:10:25 [INFO]   ✓ LTC/USDT       | K=25 | اختبار=  401 | tri_μ=1.26 | [cache]
+22:10:25 [INFO]   ✓ ATOM/USDT      | K=25 | اختبار=  421 | tri_μ=1.27 | [cache]
+22:10:25 [INFO]   ✓ TRX/USDT       | K=25 | اختبار=  356 | tri_μ=1.27 | [cache]
+22:10:25 [INFO]   ✓ UNI/USDT       | K=25 | اختبار=  472 | tri_μ=1.29 | [cache]
+22:10:25 [INFO]   ✓ ETC/USDT       | K=25 | اختبار=  428 | tri_μ=1.30 | [cache]
+22:10:25 [INFO]   ✓ BCH/USDT       | K=25 | اختبار=  422 | tri_μ=1.31 | [cache]
+22:10:25 [INFO]   ✓ HBAR/USDT      | K=25 | اختبار=  392 | tri_μ=1.25 | [cache]
+22:10:25 [INFO]   ✓ APT/USDT       | K=25 | اختبار=  408 | tri_μ=1.26 | [cache]
+22:10:25 [INFO]   ✓ NEAR/USDT      | K=25 | اختبار=  422 | tri_μ=1.29 | [cache]
+22:10:25 [INFO]   ✓ TON/USDT       | K=25 | اختبار=  359 | tri_μ=1.28 | [cache]
+22:10:25 [INFO]   ✓ STX/USDT       | K=25 | اختبار=  451 | tri_μ=1.30 | [cache]
+22:10:25 [INFO]   ✓ AAVE/USDT      | K=25 | اختبار=  398 | tri_μ=1.25 | [cache]
+22:10:25 [INFO]   ✓ OP/USDT        | K=25 | اختبار=  437 | tri_μ=1.29 | [cache]
+22:10:25 [INFO]   ✓ ARB/USDT       | K=25 | اختبار=  437 | tri_μ=1.32 | [cache]
+22:10:25 [INFO]   ✓ SUI/USDT       | K=25 | اختبار=  343 | tri_μ=1.22 | [cache]
+22:10:25 [INFO]   ✓ SEI/USDT       | K=25 | اختبار=  418 | tri_μ=1.29 | [cache]
+22:10:25 [INFO]   ✓ GRT/USDT       | K=25 | اختبار=  434 | tri_μ=1.31 | [cache]
+22:10:25 [INFO]   ✓ TIA/USDT       | K=25 | اختبار=  226 | tri_μ=1.18 | [cache]
+22:10:25 [INFO]   ✓ ALGO/USDT      | K=25 | اختبار=  399 | tri_μ=1.29 | [cache]
+22:10:25 [INFO]   ✓ FET/USDT       | K=25 | اختبار=  429 | tri_μ=1.29 | [cache]
+22:10:25 [INFO]   ✓ LDO/USDT       | K=25 | اختبار=  404 | tri_μ=1.25 | [cache]
+22:10:25 [INFO]   ✓ THETA/USDT     | K=25 | اختبار=  430 | tri_μ=1.31 | [cache]
+22:10:25 [INFO]   ✓ KAS/USDT       | K=25 | اختبار=  464 | tri_μ=1.28 | [cache]
+22:10:25 [INFO]   ✓ SAND/USDT      | K=25 | اختبار=  415 | tri_μ=1.27 | [cache]
+22:10:25 [INFO]   ✓ MANA/USDT      | K=25 | اختبار=  435 | tri_μ=1.30 | [cache]
+22:10:25 [INFO]   ✓ AXS/USDT       | K=25 | اختبار=  459 | tri_μ=1.30 | [cache]
+22:10:25 [INFO]   ✓ RENDER/USDT    | K=25 | اختبار=  183 | tri_μ=1.28 | [cache]
+22:10:25 [INFO]   ✓ WIF/USDT       | K=25 | اختبار=  418 | tri_μ=1.32 | [cache]
+22:10:25 [INFO]   ✓ XLM/USDT       | K=25 | اختبار=  370 | tri_μ=1.28 | [cache]
+22:10:25 [INFO]   ✓ CHZ/USDT       | K=25 | اختبار=  382 | tri_μ=1.28 | [cache]
+22:10:25 [INFO]   ✓ FIL/USDT       | K=25 | اختبار=  425 | tri_μ=1.28 | [cache]
+22:10:25 [INFO]   ✓ QNT/USDT       | K=25 | اختبار=  438 | tri_μ=1.26 | [cache]
+22:10:25 [INFO]   ✓ DASH/USDT      | K=25 | اختبار=  452 | tri_μ=1.25 | [cache]
+22:10:25 [INFO]   ✓ POL/USDT       | K=25 | اختبار=  143 | tri_μ=1.31 | [cache]
+22:10:25 [INFO]   ✓ IOTA/USDT      | K=25 | اختبار=  432 | tri_μ=1.31 | [cache]
+22:10:25 [INFO]   ✓ FLOW/USDT      | K=25 | اختبار=  400 | tri_μ=1.28 | [cache]
+22:10:25 [INFO]   ✓ CAKE/USDT      | K=25 | اختبار=  429 | tri_μ=1.29 | [cache]
+22:10:26 [INFO]   ✓ ROSE/USDT      | K=25 | اختبار=  435 | tri_μ=1.32 | [cache]
+22:10:26 [INFO]   ✓ NEO/USDT       | K=25 | اختبار=  426 | tri_μ=1.27 | [cache]
+22:10:26 [INFO]   ✓ KAVA/USDT      | K=25 | اختبار=  421 | tri_μ=1.28 | [cache]
+22:10:26 [INFO]   ✓ COMP/USDT      | K=25 | اختبار=  439 | tri_μ=1.26 | [cache]
+22:10:26 [INFO]   ✓ CRV/USDT       | K=25 | اختبار=  277 | tri_μ=1.21 | [cache]
+22:10:26 [INFO]   ✓ SNX/USDT       | K=25 | اختبار=  441 | tri_μ=1.29 | [cache]
+22:10:26 [INFO]   ✓ SUSHI/USDT     | K=25 | اختبار=  411 | tri_μ=1.26 | [cache]
+22:10:26 [INFO]   ✓ YFI/USDT       | K=25 | اختبار=  400 | tri_μ=1.38 | [cache]
+22:10:26 [INFO]   ✓ BAT/USDT       | K=25 | اختبار=  454 | tri_μ=1.29 | [cache]
+22:10:26 [INFO]   ✓ ANKR/USDT      | K=25 | اختبار=  409 | tri_μ=1.29 | [cache]
+22:10:26 [INFO]   ✓ ZRX/USDT       | K=25 | اختبار=  439 | tri_μ=1.29 | [cache]
+22:10:26 [INFO]   ✓ BAND/USDT      | K=25 | اختبار=  430 | tri_μ=1.29 | [cache]
+22:10:26 [INFO]   ✓ NMR/USDT       | K=25 | اختبار=  395 | tri_μ=1.20 | [cache]
+22:10:26 [INFO]   ✓ ZEN/USDT       | K=25 | اختبار=  336 | tri_μ=1.22 | [cache]
+22:10:26 [INFO]   ✓ KSM/USDT       | K=25 | اختبار=  418 | tri_μ=1.24 | [cache]
+22:10:26 [INFO]   ✓ CELO/USDT      | K=25 | اختبار=  405 | tri_μ=1.23 | [cache]
+22:10:26 [INFO]   ✓ STORJ/USDT     | K=25 | اختبار=  436 | tri_μ=1.29 | [cache]
+22:10:26 [INFO]   ✓ MASK/USDT      | K=25 | اختبار=  397 | tri_μ=1.26 | [cache]
+22:10:26 [INFO]   ✓ MAGIC/USDT     | K=25 | اختبار=  424 | tri_μ=1.30 | [cache]
+22:10:26 [INFO]   ✓ DYDX/USDT      | K=25 | اختبار=  436 | tri_μ=1.26 | [cache]
+22:10:26 [INFO]   ✓ GMX/USDT       | K=25 | اختبار=  452 | tri_μ=1.25 | [cache]
+22:10:26 [INFO]   ✓ ENS/USDT       | K=25 | اختبار=  433 | tri_μ=1.24 | [cache]
+22:10:26 [INFO]   ✓ HIGH/USDT      | K=25 | اختبار=  440 | tri_μ=1.29 | [cache]
+22:10:26 [INFO]   ✓ JOE/USDT       | K=25 | اختبار=  465 | tri_μ=1.31 | [cache]
+22:10:26 [INFO]   ✓ PENDLE/USDT    | K=25 | اختبار=  461 | tri_μ=1.28 | [cache]
+22:10:26 [INFO]   ✓ CYBER/USDT     | K=25 | اختبار=  388 | tri_μ=1.23 | [cache]
+22:10:26 [INFO]   ✓ ARKM/USDT      | K=25 | اختبار=  463 | tri_μ=1.29 | [cache]
+22:10:26 [INFO]   ✓ WLD/USDT       | K=25 | اختبار=  357 | tri_μ=1.21 | [cache]
+22:10:26 [INFO]   ✓ ID/USDT        | K=25 | اختبار=  426 | tri_μ=1.26 | [cache]
+22:10:26 [INFO]   ✓ EDU/USDT       | K=25 | اختبار=  412 | tri_μ=1.27 | [cache]
+22:10:27 [INFO]   ✓ ORDI/USDT      | K=25 | اختبار=  408 | tri_μ=1.26 | [cache]
+22:10:27 [INFO]   ✓ JTO/USDT       | K=25 | اختبار=  451 | tri_μ=1.32 | [cache]
+22:10:27 [INFO]   ✓ BLUR/USDT      | K=25 | اختبار=  408 | tri_μ=1.27 | [cache]
+22:10:27 [INFO]   ✓ PYTH/USDT      | K=25 | اختبار=  429 | tri_μ=1.31 | [cache]
+22:10:27 [INFO]   ✓ JUP/USDT       | K=25 | اختبار=  376 | tri_μ=1.28 | [cache]
+22:10:27 [INFO]   ✓ DYM/USDT       | K=25 | اختبار=  359 | tri_μ=1.24 | [cache]
+22:10:27 [INFO]   ✓ STRK/USDT      | K=25 | اختبار=  330 | tri_μ=1.24 | [cache]
+22:10:27 [INFO]   ✓ ALT/USDT       | K=25 | اختبار=  362 | tri_μ=1.26 | [cache]
+22:10:27 [INFO]   ✓ MANTA/USDT     | K=25 | اختبار=  419 | tri_μ=1.28 | [cache]
+22:10:27 [INFO]   ✓ AEVO/USDT      | K=25 | اختبار=  332 | tri_μ=1.29 | [cache]
+22:10:27 [INFO]   ✓ W/USDT         | K=25 | اختبار=  320 | tri_μ=1.32 | [cache]
+22:10:27 [INFO]   ✓ ETHFI/USDT     | K=25 | اختبار=  347 | tri_μ=1.26 | [cache]
+22:10:27 [INFO]   ✓ SAGA/USDT      | K=25 | اختبار=  319 | tri_μ=1.26 | [cache]
+22:10:27 [INFO]   ✓ IO/USDT        | K=25 | اختبار=  239 | tri_μ=1.32 | [cache]
+22:10:27 [INFO]   ✓ BB/USDT        | K=25 | اختبار=  289 | tri_μ=1.32 | [cache]
+22:10:27 [INFO]   ✓ ZK/USDT        | K=25 | اختبار=  243 | tri_μ=1.26 | [cache]
+22:10:27 [INFO]   ✓ LISTA/USDT     | K=25 | اختبار=  250 | tri_μ=1.31 | [cache]
+22:10:27 [INFO]   ✓ ZRO/USDT       | K=25 | اختبار=  254 | tri_μ=1.31 | [cache]
+22:10:27 [INFO]   ✓ RARE/USDT      | K=25 | اختبار=  187 | tri_μ=1.29 | [cache]
+22:10:27 [INFO]   ✓ G/USDT         | K=25 | اختبار=  163 | tri_μ=1.28 | [cache]
+22:10:27 [INFO]   ✓ SYN/USDT       | K=25 | اختبار=  171 | tri_μ=1.30 | [cache]
+22:10:27 [INFO]   ✓ BANANA/USDT    | K=25 | اختبار=  166 | tri_μ=1.27 | [cache]
+22:10:32 [WARNING] [process_asset] MEW/USDT: degenerate clustering (H_train=-0.000, H_theo=4.644, ratio=-0.000, K=25) — returning None
+22:10:32 [WARNING]   ✗ MEW/USDT: process_asset returned None
+22:10:40 [INFO]   [Parallel] done in 26.6s  (cache=97, computed=0, errors=1)
+22:10:40 [INFO] §4  مصفوفة الارتباط...
+22:10:41 [INFO]   أزواج مرتبطة (ρ>0.7): 1532
+22:10:41 [INFO] §5  بناء الإشارات (①②④⑤ مُفعَّلة)...
+22:10:41 [INFO] [Gauge-Filter] thresholds: BUY>p60=0.14886, SELL>p95=0.21053 (pool=85951)
+22:10:49 [INFO]   ✔ 351 إشارة
+22:10:49 [INFO]   T_info: μ=4.835 | σ=2.109
+22:10:49 [INFO]   risk_dynamic: μ=1.932% | max=2.51%
+22:10:49 [INFO]   BUY=0 | SELL=351 (Λ=0)
+22:10:49 [INFO] §6  محاكاة المحفظة متعددة المراكز...
+22:10:49 [INFO]   [Backtest Realism] Entry fills: 269/351 (76.6%) [pen=1.0bps, wait=live=0s → 6 bars]
+22:10:50 [INFO]   ✔ 213 صفقة
+22:10:50 [INFO] §7  انحدار الإنتروبيا...
+22:10:50 [INFO]   BTC/USDT      : b=-0.00072  R²=0.155  [decreasing]
+22:10:50 [INFO]   SOL/USDT      : b=+0.00020  R²=0.017  [neutral]
+22:10:50 [INFO]   BNB/USDT      : b=-0.00008  R²=0.003  [neutral]
+22:10:50 [INFO]   ETH/USDT      : b=-0.00015  R²=0.008  [neutral]
+22:10:53 [INFO] 📊 quantum_v6_results.png
+22:10:53 [INFO] ✅ اكتمل.
+22:10:53 [INFO]    E[ln(1+fR)] = -0.001681
+22:10:53 [INFO]    MaxDrawdown  = 36.64%
+22:10:53 [INFO]    Topo-Exits   = 0.0%
+22:10:53 [INFO]    AvgRisk      = 0.704%
+22:10:53 [INFO] [Diagnostic] Close-and-reverse within 3h: 0
+
+════════════════════════════════════════════════════════════════════════
+   📊  محرك التداول الثرموديناميكي الكمي v6.0  [BACKTEST]
+   🌌  محرك التفرد – Singularity Engine
+════════════════════════════════════════════════════════════════════════
+
+▶ المقياس الأساسي (م٦): E[ln(1+fR)] لكل صفقة
+   متوسط  : -0.001681
+   وسيط   : -0.005273
+   انحراف : 0.009494
+   → ❌ حافة سلبية
+
+▶ إحصاءات الصفقات
+   عدد الصفقات      : 213
+   شراء / بيع        : 0 / 213
+   نسبة النجاح      : 30.52%
+   عامل الربح (PF)  : 0.587
+   متوسط الربح      : $0.6589
+   متوسط الخسارة   : $-0.4927
+   شارب (سنوي)      : -2.810
+   دخول مُحسَّن       : 0  (0.0%)
+
+▶ التعديلات الجديدة (v6.0)
+   ① متوسط T_info (حرارة معلوماتية) : 4.9460
+   ① متوسط المخاطرة الديناميكية     : 0.704%
+   ② خروج توبولوجي (Topo-Div)       : 0  (0.0%)
+   خروج TRI مبكر                    : 0  (0.0%)
+   انزلاق إجمالي                    : $6.56
+
+▶ رأس المال (مقياس ثانوي)
+   ابتدائي: $100.00  →  نهائي: $69.91
+   العائد الكلي     : -30.1%
+   أقصى انخفاض     : 36.64%  ($36.64)
+
+▶ تحذير السيولة (م٦): 0 (0.0%)  ✅ معقول
+
+▶ توزيع أسباب الخروج
+   Emergency SL             :     189  (88.7%)
+   Hard TP                  :      18  (8.5%)
+   Apex: Action Integral Exhaustion:       3  (1.4%)
+   EndOfData                :       2  (0.9%)
+   MaxHold                  :       1  (0.5%)
+
+════════════════════════════════════════════════════════════════════════
+
+
+▶ تحليل MFE (أقصى ربح غير مُحقَّق)
+   Emergency SL   (n= 189) | μMFE= 2.23%  max=11.04%  | >0.5%:  127  >1.0%:  109  >2.0%:   85
+   Hard TP        (n=  18) | μMFE=11.77%  max=13.59%  | >0.5%:   18  >1.0%:   18  >2.0%:   18
+   Apex exits     (n=   3) | μMFE= 9.15%  max=10.88%  | >0.5%:    3  >1.0%:    3  >2.0%:    3
+
+▶ ميزانية المخاطرة الكلية
+   μ risk/trade : 0.704%
+   max risk/trade : 2.998%
+   min risk/trade : 0.500%

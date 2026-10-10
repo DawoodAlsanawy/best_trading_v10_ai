@@ -1,0 +1,213 @@
+16:27:51 [INFO] [Level-2] Numba kernels warm (JIT ready in 4.3s)
+16:27:51 [INFO] [Cache] LIVE_ASSET_CACHE_MAX adjusted to 150
+16:27:53 [INFO] [TF] timeframe=4h TF_SCALE=0.2500 TF_SECONDS=14400 TF_HOURS=4.000
+16:27:53 [INFO] [TF-Unified] N=24 W=20 L=10 ADV_BARS=6 (σ≈0.25× 1h)
+16:27:53 [INFO] [Data] mode=testnet | tf=4h | history=730d | tail=4380 bars/sym | min_for_process=4380 bars | quality=degraded | source=user(730d)
+16:27:53 [WARNING] [Data] degraded quality: tail=4380 < strict_min/2=5012. Many assets may be skipped by degenerate detection. Recommended minimum for 4h: --history-days 2339.
+16:27:53 [INFO] [Trail] Trailing Stop Loss DISABLED — SL is fixed
+16:27:53 [INFO] [Backtest] --no-fixed-price: entry target will be derived from close[sig.close_idx] × (1 ± PO_PENETRATION_BPS)
+16:27:53 [INFO] [Watch] Watch-then-trigger DISABLED (Config default) — legacy immediate placement
+16:27:53 [INFO] [OppTP] Opposite-Signal Adaptive TP DISABLED
+16:27:53 [INFO] [TradeLog] Logging trades to trades_log_testnet.jsonl
+16:27:54 [INFO] [TimeSync] drift = 1.12s — OK
+16:27:54 [INFO] 🔴 [TESTNET] بدء التشغيل (State Machine v2)
+16:27:54 [INFO]   [State] Restored 0 positions from live_state_testnet.json
+16:27:54 [INFO] [Meta] Loaded 1 symbols from symbol_meta_testnet.json
+16:27:54 [INFO] [Pending] Restored 0 pending orders (cleaned 0 stale refs)
+16:27:54 [INFO]   [Watch] Active watched signals: 0
+16:27:54 [INFO]   [Pending] Active pending orders: 0
+16:28:02 [INFO]   [State] After initial sync: 0 positions
+16:28:02 [INFO]   [Prot] restored=0 failed=0
+16:28:02 [INFO] ⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...
+16:28:03 [INFO]   ✓ SOL/USDT      : 4,380 شمعة
+16:28:03 [INFO]   ✓ AVAX/USDT     : 4,380 شمعة
+16:28:04 [INFO]   ✓ LINK/USDT     : 4,380 شمعة
+16:28:04 [INFO]   ✓ BTC/USDT      : 4,380 شمعة
+16:28:04 [INFO]   ✓ BNB/USDT      : 4,380 شمعة
+16:28:04 [INFO]   ✓ ADA/USDT      : 4,380 شمعة
+16:28:04 [INFO]   ✓ ETH/USDT      : 4,380 شمعة
+16:28:04 [INFO]   ✓ DOT/USDT      : 4,380 شمعة
+16:28:04 [INFO]   ✓ LTC/USDT      : 4,380 شمعة
+16:28:04 [INFO]   ✓ UNI/USDT      : 4,380 شمعة
+16:28:04 [INFO]   ✓ ATOM/USDT     : 4,380 شمعة
+16:28:04 [INFO]   ✓ ETC/USDT      : 4,380 شمعة
+16:28:05 [INFO]   ✓ TRX/USDT      : 4,380 شمعة
+16:28:05 [INFO]   ✓ BCH/USDT      : 4,380 شمعة
+16:28:05 [INFO]   ✓ NEAR/USDT     : 4,380 شمعة
+16:28:05 [INFO]   ✓ TON/USDT      : 4,380 شمعة
+16:28:05 [INFO]   ✓ APT/USDT      : 4,380 شمعة
+16:28:05 [INFO]   ✓ HBAR/USDT     : 4,380 شمعة
+16:28:05 [INFO]   ✓ OP/USDT       : 4,380 شمعة
+16:28:05 [INFO]   ✓ ARB/USDT      : 4,380 شمعة
+16:28:05 [INFO]   ✓ AAVE/USDT     : 4,380 شمعة
+16:28:05 [INFO]   ✓ STX/USDT      : 4,380 شمعة
+16:28:06 [INFO]   ✓ SUI/USDT      : 4,380 شمعة
+16:28:06 [INFO]   ✓ TIA/USDT      : 4,380 شمعة
+16:28:06 [INFO]   ✓ SEI/USDT      : 4,380 شمعة
+16:28:06 [INFO]   ✓ GRT/USDT      : 4,380 شمعة
+16:28:06 [INFO]   ✓ ALGO/USDT     : 4,380 شمعة
+16:28:06 [INFO]   ✓ FET/USDT      : 4,380 شمعة
+16:28:06 [INFO]   ✓ RENDER/USDT   : 4,380 شمعة
+16:28:07 [INFO]   ✓ KAS/USDT      : 4,380 شمعة
+16:28:07 [INFO]   ✓ LDO/USDT      : 4,380 شمعة
+16:28:07 [INFO]   ✓ WIF/USDT      : 4,380 شمعة
+16:28:07 [INFO]   ✓ THETA/USDT    : 4,380 شمعة
+16:28:07 [INFO]   ✓ XLM/USDT      : 4,380 شمعة
+16:28:07 [INFO]   ✓ AXS/USDT      : 4,380 شمعة
+16:28:07 [INFO]   ✓ SAND/USDT     : 4,380 شمعة
+16:28:07 [INFO]   ✓ MANA/USDT     : 4,380 شمعة
+16:28:07 [INFO]   ✓ CHZ/USDT      : 4,380 شمعة
+16:28:07 [INFO]   ✓ POL/USDT      : 4,380 شمعة
+16:28:08 [INFO]   ✓ FIL/USDT      : 4,380 شمعة
+16:28:08 [INFO]   ✓ DASH/USDT     : 4,380 شمعة
+16:28:08 [INFO]   ✓ QNT/USDT      : 4,380 شمعة
+16:28:08 [INFO]   ✓ FLOW/USDT     : 4,380 شمعة
+16:28:08 [INFO]   ✓ CAKE/USDT     : 4,380 شمعة
+16:28:08 [INFO]   ✓ IOTA/USDT     : 4,380 شمعة
+16:28:08 [INFO]   ✓ ROSE/USDT     : 4,380 شمعة
+16:28:08 [INFO]   ✓ KAVA/USDT     : 4,380 شمعة
+16:28:08 [INFO]   ✓ NEO/USDT      : 4,380 شمعة
+16:28:08 [INFO]   ✓ CRV/USDT      : 4,380 شمعة
+16:28:09 [INFO]   ✓ SUSHI/USDT    : 4,380 شمعة
+16:28:09 [INFO]   ✓ YFI/USDT      : 4,380 شمعة
+16:28:09 [INFO]   ✓ SNX/USDT      : 4,380 شمعة
+16:28:09 [INFO]   ✓ COMP/USDT     : 4,380 شمعة
+16:28:09 [INFO]   ✓ ZRX/USDT      : 4,380 شمعة
+16:28:09 [INFO]   ✓ BAT/USDT      : 4,380 شمعة
+16:28:09 [INFO]   ✓ BAND/USDT     : 4,380 شمعة
+16:28:09 [INFO]   ✓ STORJ/USDT    : 4,380 شمعة
+16:28:10 [INFO]   ✓ ANKR/USDT     : 4,380 شمعة
+16:28:10 [INFO]   ✓ NMR/USDT      : 4,380 شمعة
+16:28:10 [INFO]   ✓ KSM/USDT      : 4,380 شمعة
+16:28:10 [INFO]   ✓ ZEN/USDT      : 4,380 شمعة
+16:28:10 [INFO]   ✓ DYDX/USDT     : 4,380 شمعة
+16:28:10 [INFO]   ✓ MASK/USDT     : 4,380 شمعة
+16:28:10 [INFO]   ✓ CELO/USDT     : 4,380 شمعة
+16:28:10 [INFO]   ✓ ENS/USDT      : 4,380 شمعة
+16:28:10 [INFO]   ✓ PENDLE/USDT   : 4,380 شمعة
+16:28:10 [INFO]   ✓ HIGH/USDT     : 4,380 شمعة
+16:28:10 [INFO]   ✓ GMX/USDT      : 4,380 شمعة
+16:28:11 [INFO]   ✓ MAGIC/USDT    : 4,380 شمعة
+16:28:11 [INFO]   ✓ JOE/USDT      : 4,380 شمعة
+16:28:11 [INFO]   ✓ BLUR/USDT     : 4,380 شمعة
+16:28:11 [INFO]   ✓ ARKM/USDT     : 4,380 شمعة
+16:28:11 [INFO]   ✓ WLD/USDT      : 4,380 شمعة
+16:28:11 [INFO]   ✓ CYBER/USDT    : 4,380 شمعة
+16:28:11 [INFO]   ✓ ID/USDT       : 4,380 شمعة
+16:28:11 [INFO]   ✓ ORDI/USDT     : 4,380 شمعة
+16:28:11 [INFO]   ✓ JUP/USDT      : 4,380 شمعة
+16:28:11 [INFO]   ✓ EDU/USDT      : 4,380 شمعة
+16:28:12 [INFO]   ✓ PYTH/USDT     : 4,380 شمعة
+16:28:12 [INFO]   ✓ JTO/USDT      : 4,380 شمعة
+16:28:12 [INFO]   ✓ STRK/USDT     : 4,380 شمعة
+16:28:12 [INFO]   ✓ ALT/USDT      : 4,380 شمعة
+16:28:12 [INFO]   ✓ MANTA/USDT    : 4,380 شمعة
+16:28:12 [INFO]   ✓ DYM/USDT      : 4,380 شمعة
+16:28:12 [INFO]   ✓ AEVO/USDT     : 4,380 شمعة
+16:28:12 [INFO]   ✓ BB/USDT       : 4,380 شمعة
+16:28:13 [INFO]   ✓ W/USDT        : 4,380 شمعة
+16:28:13 [INFO]   ✓ ETHFI/USDT    : 4,380 شمعة
+16:28:13 [INFO]   ✓ SAGA/USDT     : 4,380 شمعة
+16:28:13 [INFO]   ✓ IO/USDT       : 4,380 شمعة
+16:28:13 [INFO]   ✓ LISTA/USDT    : 4,380 شمعة
+16:28:13 [INFO]   ✓ ZK/USDT       : 4,380 شمعة
+16:28:13 [INFO]   ✓ G/USDT        : 4,380 شمعة
+16:28:13 [INFO]   ✓ ZRO/USDT      : 4,380 شمعة
+16:28:14 [INFO]   ✓ RARE/USDT     : 4,380 شمعة
+16:28:14 [INFO]   ✓ SYN/USDT      : 4,380 شمعة
+16:28:14 [INFO]   ✓ MEW/USDT      : 4,380 شمعة
+16:28:14 [INFO]   ✓ TAIKO/USDT    : 2,883 شمعة
+16:28:14 [INFO]   ✓ BANANA/USDT   : 4,380 شمعة
+16:28:14 [INFO]   ✓ MERL/USDT     : 2,962 شمعة
+16:28:14 [INFO] 🚀 تم بناء الذاكرة التاريخية. بدء حلقة التداول اللحظي...
+16:28:14 [INFO] [RateLimit] usage=0.0%
+16:30:04 [WARNING] [process_asset] MEW/USDT: degenerate clustering (H_train=0.062, H_theo=4.644, ratio=0.013, K=25) — returning None
+16:30:05 [INFO] [LiveCache] hits=0, misses=100 (0.0%), evictions=0, entries=97
+16:30:06 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=0 soft_cap=2 effective_max=2
+16:30:06 [INFO] [Gauge-Filter] thresholds: BUY>p60=0.14886, SELL>p95=0.21053 (pool=183456)
+16:30:09 [INFO] [LevCap] SOL/USDT capping 29x → 10x (MMR=2.000%)
+16:30:11 [INFO] [Setup] SOL/USDT leverage=10x margin=isolated
+16:30:11 [INFO] [SL-Clip-Live] SOL/USDT SL clipped 3.496992 → 2.838971 (2.2% cap)
+16:30:11 [INFO] [Pending] SELL SOL/USDT @ 121.610060 qty=2.571711 id=4216865433 (timeout=28800s)
+16:33:16 [INFO] [RateLimit] usage=0.0%
+16:34:53 [INFO] [Prot] SOL/USDT PARTIAL-TP @117.505662 qty=1.285000 (50%)
+16:34:53 [INFO] [Prot] SOL/USDT STOP@124.346225 PARTIAL-TP@117.505662 FULL-TP@107.928875 placed
+16:34:54 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:35:04 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:35:14 [INFO] [LiveCache] hits=5723, misses=277 (95.4%), evictions=0, entries=97
+16:35:15 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:35:25 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:35:36 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:35:47 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:35:57 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:36:08 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:36:18 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:36:29 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:36:40 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:36:50 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:37:01 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:37:12 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:37:22 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:37:33 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:37:43 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:37:54 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:38:04 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:38:15 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:38:25 [INFO] [RateLimit] usage=0.4%
+16:38:26 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:38:36 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:38:47 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:38:58 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:39:08 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:39:19 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:39:29 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:39:40 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:39:51 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:40:01 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:40:12 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:40:22 [INFO] [LiveCache] hits=8536, misses=364 (95.9%), evictions=0, entries=97
+16:40:23 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:40:33 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:40:44 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:40:54 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:41:05 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:41:15 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:41:26 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:41:37 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:41:47 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:41:58 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:42:08 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:42:19 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:42:30 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:42:40 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:42:51 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:43:01 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:43:12 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:43:23 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:43:33 [INFO] [RateLimit] usage=0.4%
+16:43:33 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:43:44 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:43:54 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:44:05 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:44:16 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:44:26 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:44:37 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:44:47 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:44:58 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:45:09 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:45:20 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:45:30 [INFO] [LiveCache] hits=11349, misses=451 (96.2%), evictions=0, entries=97
+16:45:30 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:45:41 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:45:51 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:46:02 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:46:13 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:46:23 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:46:34 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:46:44 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:46:55 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:47:06 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:47:16 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:47:27 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:47:38 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'
+16:47:48 [ERROR] خطأ غير متوقع في حلقة التداول: 'dict' object has no attribute 'entry_px'

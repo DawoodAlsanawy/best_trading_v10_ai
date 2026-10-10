@@ -1,0 +1,412 @@
+22:51:37 [INFO] [Level-2] Numba kernels warm (JIT ready in 1.5s)
+22:51:37 [INFO] [Cache] LIVE_ASSET_CACHE_MAX adjusted to 150
+22:51:40 [INFO] [TF] timeframe=4h TF_SCALE=0.2500 TF_SECONDS=14400 TF_HOURS=4.000
+22:51:40 [INFO] [TF-Unified] N=24 W=20 L=10 ADV_BARS=6 (σ≈0.25× 1h)
+22:51:40 [INFO] [Data] mode=testnet | tf=4h | history=730d | tail=4380 bars/sym | min_for_process=4380 bars | quality=degraded | source=user(730d)
+22:51:40 [WARNING] [Data] degraded quality: tail=4380 < strict_min/2=5012. Many assets may be skipped by degenerate detection. Recommended minimum for 4h: --history-days 2339.
+22:51:40 [INFO] [Trail] Trailing Stop Loss DISABLED — SL is fixed
+22:51:40 [INFO] [Backtest] --no-fixed-price: entry target will be derived from close[sig.close_idx] × (1 ± PO_PENETRATION_BPS)
+22:51:40 [INFO] [Watch] Watch-then-trigger DISABLED (Config default) — legacy immediate placement
+22:51:40 [INFO] [OppTP] Opposite-Signal Adaptive TP DISABLED
+22:51:40 [INFO] [TradeLog] Logging trades to trades_log_testnet.jsonl
+22:51:42 [INFO] [TimeSync] drift = 0.96s — OK
+22:51:42 [INFO] 🔴 [TESTNET] بدء التشغيل (State Machine v2)
+22:51:42 [INFO]   [State] Restored 1 positions from live_state_testnet.json
+22:51:42 [INFO] [Meta] Loaded 1 symbols from symbol_meta_testnet.json
+22:51:42 [INFO] [Pending] Restored 0 pending orders (cleaned 0 stale refs)
+22:51:42 [INFO]   [Watch] Active watched signals: 0
+22:51:42 [INFO]   [Pending] Active pending orders: 0
+22:51:53 [INFO]   [State] After initial sync: 1 positions
+22:51:55 [INFO] [Prot] SOL/USDT PARTIAL-TP @117.505663 qty=1.285000 (50%)
+22:51:55 [INFO] [Prot] SOL/USDT STOP@124.346225 PARTIAL-TP@117.505663 FULL-TP@107.928875 placed
+22:51:55 [INFO]   [Prot] restored=1 deferred=0 dropped=0 failed=0
+22:51:55 [INFO] ⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...
+22:51:56 [INFO]   ✓ SOL/USDT      : 4,380 شمعة
+22:51:56 [INFO]   ✓ AVAX/USDT     : 4,380 شمعة
+22:51:56 [INFO]   ✓ LINK/USDT     : 4,380 شمعة
+22:51:57 [INFO]   ✓ ADA/USDT      : 4,380 شمعة
+22:51:57 [INFO]   ✓ BTC/USDT      : 4,380 شمعة
+22:51:57 [INFO]   ✓ ETH/USDT      : 4,380 شمعة
+22:51:57 [INFO]   ✓ BNB/USDT      : 4,380 شمعة
+22:51:57 [INFO]   ✓ DOT/USDT      : 4,380 شمعة
+22:51:57 [INFO]   ✓ LTC/USDT      : 4,380 شمعة
+22:51:57 [INFO]   ✓ ATOM/USDT     : 4,380 شمعة
+22:51:57 [INFO]   ✓ UNI/USDT      : 4,380 شمعة
+22:51:57 [INFO]   ✓ ETC/USDT      : 4,380 شمعة
+22:51:57 [INFO]   ✓ TRX/USDT      : 4,380 شمعة
+22:51:58 [INFO]   ✓ TON/USDT      : 4,380 شمعة
+22:51:58 [INFO]   ✓ BCH/USDT      : 4,380 شمعة
+22:51:58 [INFO]   ✓ STX/USDT      : 4,380 شمعة
+22:51:58 [INFO]   ✓ APT/USDT      : 4,380 شمعة
+22:51:58 [INFO]   ✓ HBAR/USDT     : 4,380 شمعة
+22:51:58 [INFO]   ✓ NEAR/USDT     : 4,380 شمعة
+22:51:58 [INFO]   ✓ AAVE/USDT     : 4,380 شمعة
+22:51:59 [INFO]   ✓ ARB/USDT      : 4,380 شمعة
+22:51:59 [INFO]   ✓ OP/USDT       : 4,380 شمعة
+22:51:59 [INFO]   ✓ SUI/USDT      : 4,380 شمعة
+22:51:59 [INFO]   ✓ SEI/USDT      : 4,380 شمعة
+22:51:59 [INFO]   ✓ TIA/USDT      : 4,380 شمعة
+22:51:59 [INFO]   ✓ GRT/USDT      : 4,380 شمعة
+22:51:59 [INFO]   ✓ ALGO/USDT     : 4,380 شمعة
+22:51:59 [INFO]   ✓ LDO/USDT      : 4,380 شمعة
+22:51:59 [INFO]   ✓ FET/USDT      : 4,380 شمعة
+22:51:59 [INFO]   ✓ RENDER/USDT   : 4,380 شمعة
+22:52:00 [INFO]   ✓ WIF/USDT      : 4,380 شمعة
+22:52:00 [INFO]   ✓ KAS/USDT      : 4,380 شمعة
+22:52:00 [INFO]   ✓ THETA/USDT    : 4,380 شمعة
+22:52:00 [INFO]   ✓ MANA/USDT     : 4,380 شمعة
+22:52:00 [INFO]   ✓ SAND/USDT     : 4,380 شمعة
+22:52:00 [INFO]   ✓ AXS/USDT      : 4,380 شمعة
+22:52:00 [INFO]   ✓ XLM/USDT      : 4,380 شمعة
+22:52:00 [INFO]   ✓ FIL/USDT      : 4,380 شمعة
+22:52:00 [INFO]   ✓ CHZ/USDT      : 4,380 شمعة
+22:52:00 [INFO]   ✓ POL/USDT      : 4,380 شمعة
+22:52:01 [INFO]   ✓ DASH/USDT     : 4,380 شمعة
+22:52:01 [INFO]   ✓ QNT/USDT      : 4,380 شمعة
+22:52:01 [INFO]   ✓ ROSE/USDT     : 4,380 شمعة
+22:52:01 [INFO]   ✓ CAKE/USDT     : 4,380 شمعة
+22:52:01 [INFO]   ✓ FLOW/USDT     : 4,380 شمعة
+22:52:01 [INFO]   ✓ IOTA/USDT     : 4,380 شمعة
+22:52:01 [INFO]   ✓ NEO/USDT      : 4,380 شمعة
+22:52:01 [INFO]   ✓ SNX/USDT      : 4,380 شمعة
+22:52:01 [INFO]   ✓ KAVA/USDT     : 4,380 شمعة
+22:52:01 [INFO]   ✓ CRV/USDT      : 4,380 شمعة
+22:52:02 [INFO]   ✓ SUSHI/USDT    : 4,380 شمعة
+22:52:02 [INFO]   ✓ COMP/USDT     : 4,380 شمعة
+22:52:02 [INFO]   ✓ BAT/USDT      : 4,380 شمعة
+22:52:02 [INFO]   ✓ YFI/USDT      : 4,380 شمعة
+22:52:02 [INFO]   ✓ ZRX/USDT      : 4,380 شمعة
+22:52:02 [INFO]   ✓ ANKR/USDT     : 4,380 شمعة
+22:52:02 [INFO]   ✓ BAND/USDT     : 4,380 شمعة
+22:52:02 [INFO]   ✓ STORJ/USDT    : 4,380 شمعة
+22:52:02 [INFO]   ✓ NMR/USDT      : 4,380 شمعة
+22:52:02 [INFO]   ✓ KSM/USDT      : 4,380 شمعة
+22:52:03 [INFO]   ✓ ZEN/USDT      : 4,380 شمعة
+22:52:03 [INFO]   ✓ CELO/USDT     : 4,380 شمعة
+22:52:03 [INFO]   ✓ ENS/USDT      : 4,380 شمعة
+22:52:03 [INFO]   ✓ MASK/USDT     : 4,380 شمعة
+22:52:03 [INFO]   ✓ DYDX/USDT     : 4,380 شمعة
+22:52:03 [INFO]   ✓ MAGIC/USDT    : 4,380 شمعة
+22:52:03 [INFO]   ✓ GMX/USDT      : 4,380 شمعة
+22:52:03 [INFO]   ✓ PENDLE/USDT   : 4,380 شمعة
+22:52:03 [INFO]   ✓ HIGH/USDT     : 4,380 شمعة
+22:52:03 [INFO]   ✓ JOE/USDT      : 4,380 شمعة
+22:52:04 [INFO]   ✓ ARKM/USDT     : 4,380 شمعة
+22:52:04 [INFO]   ✓ CYBER/USDT    : 4,380 شمعة
+22:52:04 [INFO]   ✓ WLD/USDT      : 4,380 شمعة
+22:52:04 [INFO]   ✓ BLUR/USDT     : 4,380 شمعة
+22:52:04 [INFO]   ✓ ID/USDT       : 4,380 شمعة
+22:52:04 [INFO]   ✓ ORDI/USDT     : 4,380 شمعة
+22:52:04 [INFO]   ✓ EDU/USDT      : 4,380 شمعة
+22:52:04 [INFO]   ✓ PYTH/USDT     : 4,380 شمعة
+22:52:04 [INFO]   ✓ JUP/USDT      : 4,380 شمعة
+22:52:05 [INFO]   ✓ JTO/USDT      : 4,380 شمعة
+22:52:05 [INFO]   ✓ DYM/USDT      : 4,380 شمعة
+22:52:05 [INFO]   ✓ STRK/USDT     : 4,380 شمعة
+22:52:05 [INFO]   ✓ MANTA/USDT    : 4,380 شمعة
+22:52:05 [INFO]   ✓ ETHFI/USDT    : 4,380 شمعة
+22:52:05 [INFO]   ✓ ALT/USDT      : 4,380 شمعة
+22:52:05 [INFO]   ✓ AEVO/USDT     : 4,380 شمعة
+22:52:05 [INFO]   ✓ W/USDT        : 4,380 شمعة
+22:52:05 [INFO]   ✓ SAGA/USDT     : 4,380 شمعة
+22:52:06 [INFO]   ✓ BB/USDT       : 4,380 شمعة
+22:52:06 [INFO]   ✓ ZK/USDT       : 4,380 شمعة
+22:52:06 [INFO]   ✓ LISTA/USDT    : 4,380 شمعة
+22:52:06 [INFO]   ✓ IO/USDT       : 4,380 شمعة
+22:52:06 [INFO]   ✓ ZRO/USDT      : 4,380 شمعة
+22:52:07 [INFO]   ✓ TAIKO/USDT    : 2,884 شمعة
+22:52:07 [INFO]   ✓ MEW/USDT      : 4,380 شمعة
+22:52:07 [INFO]   ✓ RARE/USDT     : 4,380 شمعة
+22:52:07 [INFO]   ✓ G/USDT        : 4,380 شمعة
+22:52:07 [INFO]   ✓ SYN/USDT      : 4,380 شمعة
+22:52:07 [INFO]   ✓ BANANA/USDT   : 4,380 شمعة
+22:52:08 [INFO]   ✓ MERL/USDT     : 2,963 شمعة
+22:52:08 [INFO] 🚀 تم بناء الذاكرة التاريخية. بدء حلقة التداول اللحظي...
+22:52:08 [INFO] [RateLimit] usage=0.0%
+22:55:38 [WARNING] [process_asset] MEW/USDT: degenerate clustering (H_train=0.077, H_theo=4.644, ratio=0.017, K=25) — returning None
+22:55:39 [INFO] [LiveCache] hits=0, misses=100 (0.0%), evictions=0, entries=97
+22:55:43 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+22:55:43 [INFO] [Gauge-Filter] thresholds: BUY>p60=0.14886, SELL>p95=0.21053 (pool=184815)
+22:57:08 [INFO] [RateLimit] usage=1.0%
+23:00:43 [INFO] [LiveCache] hits=5917, misses=283 (95.4%), evictions=0, entries=97
+23:00:44 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+23:02:08 [INFO] [RateLimit] usage=1.0%
+23:05:43 [INFO] [LiveCache] hits=11737, misses=463 (96.2%), evictions=0, entries=97
+23:05:49 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+23:07:08 [INFO] [RateLimit] usage=1.0%
+23:10:44 [INFO] [LiveCache] hits=17557, misses=643 (96.5%), evictions=0, entries=97
+23:10:49 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+23:12:08 [INFO] [RateLimit] usage=1.0%
+23:15:44 [INFO] [LiveCache] hits=23377, misses=823 (96.6%), evictions=0, entries=97
+23:15:54 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+23:17:08 [INFO] [RateLimit] usage=1.0%
+23:20:49 [INFO] [LiveCache] hits=29294, misses=1006 (96.7%), evictions=0, entries=97
+23:20:59 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+23:22:08 [INFO] [RateLimit] usage=1.0%
+23:25:49 [INFO] [LiveCache] hits=35114, misses=1186 (96.7%), evictions=0, entries=97
+23:26:00 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+23:27:08 [INFO] [RateLimit] usage=1.0%
+23:30:49 [INFO] [LiveCache] hits=40934, misses=1366 (96.8%), evictions=0, entries=97
+23:31:04 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+23:32:09 [INFO] [RateLimit] usage=1.0%
+23:35:50 [WARNING] [Balance] fetch failed: binance {"code":-1021,"msg":"Timestamp for this request is outside of the recvWindow."}; using last known $300.00
+23:35:50 [INFO] [LiveCache] hits=45784, misses=1516 (96.8%), evictions=0, entries=97
+23:36:10 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+23:36:20 [WARNING] [Balance] fetch failed: binance {"code":-1021,"msg":"Timestamp for this request is outside of the recvWindow."}; using last known $300.00
+23:36:36 [WARNING] [Balance] fetch failed: binance GET https://demo-fapi.binance.com/fapi/v3/account?timestamp=1791156986099&recvWindow=10000&signature=ccffb5221a7f2439a07a5e6146207842faa651cb2f36be52603de71aebb0ec0d; using last known $300.00
+23:37:22 [INFO] [RateLimit] usage=0.3%
+23:38:21 [WARNING] [Balance] fetch failed: binance GET https://demo-fapi.binance.com/fapi/v3/account?timestamp=1791157085732&recvWindow=10000&signature=6c7f85c685ead5cc7cf4498354b0cbf4edfc9b04d2a7f498c125b778744d7aed; using last known $300.00
+23:38:38 [WARNING] [Balance] fetch failed: binance GET https://demo-fapi.binance.com/fapi/v3/account?timestamp=1791157108799&recvWindow=10000&signature=4c3ea6ebab296ae88411c6fe24f6c7909fceea580546cdb5b2919ad10b645dda; using last known $300.00
+23:38:55 [WARNING] [Balance] fetch failed: binance GET https://demo-fapi.binance.com/fapi/v3/account?timestamp=1791157125872&recvWindow=10000&signature=b78120552f421d077cd8e798369515a16a4b9894c96cf44032afccd5f157cd3d; using last known $300.00
+23:39:53 [WARNING] [Balance] fetch failed: binance GET https://demo-fapi.binance.com/fapi/v3/account?timestamp=1791157178661&recvWindow=10000&signature=5ed181de69c6f7680bf86e2779c64b145e5f313a9f3e0ff7155860ffe4f093f0; using last known $300.00
+23:40:13 [WARNING] [Balance] fetch failed: binance GET https://demo-fapi.binance.com/fapi/v3/account?timestamp=1791157203297&recvWindow=10000&signature=347405e182f157edd4a1350162edad1ae82f00c02c6d263b9b58530a89480fc0; using last known $300.00
+23:40:32 [WARNING] [Balance] fetch failed: binance GET https://demo-fapi.binance.com/fapi/v3/account?timestamp=1791157222769&recvWindow=10000&signature=cce03bbf6feefe2115792414d2a359f686867814607eceb930c0aa9781f258fe; using last known $300.00
+23:40:54 [INFO] [LiveCache] hits=47724, misses=1576 (96.8%), evictions=0, entries=97
+23:41:31 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+23:41:41 [WARNING] [Balance] fetch failed: binance GET https://demo-fapi.binance.com/fapi/v3/account?timestamp=1791157291204&recvWindow=10000&signature=a3c357c39a438958a2deb75e6b566300e7546ff47ba1be0c4aeed0051a748467; using last known $300.00
+23:42:32 [INFO] [RateLimit] usage=0.1%
+23:42:42 [WARNING] [Balance] fetch failed: binance GET https://demo-fapi.binance.com/fapi/v3/account?timestamp=1791157352411&recvWindow=10000&signature=069d603a92cf01b920beb065915c4d4f9d13d1547ec4c64ac93b98debf73eef5; using last known $300.00
+23:45:55 [WARNING] [Balance] fetch failed: binance {"code":-1021,"msg":"Timestamp for this request is outside of the recvWindow."}; using last known $300.00
+23:45:55 [INFO] [LiveCache] hits=49955, misses=1645 (96.8%), evictions=0, entries=97
+23:46:10 [WARNING] [Balance] fetch failed: binance GET https://demo-fapi.binance.com/fapi/v3/account?timestamp=1791157560037&recvWindow=10000&signature=36222e5edbb54ed5dfc366d3d633ff3a85951779b23ef0a3e3518e91da69f153; using last known $300.00
+23:46:46 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+23:47:01 [WARNING] [Balance] fetch failed: binance GET https://demo-fapi.binance.com/fapi/v3/account?timestamp=1791157606902&recvWindow=10000&signature=0a641113070f6f15ba524f14158b17ccfb9d3f5e487f868d7ad24eac6dfe9ac7; using last known $300.00
+23:47:25 [WARNING] [Balance] fetch failed: binance GET https://demo-fapi.binance.com/fapi/v3/account?timestamp=1791157635904&recvWindow=10000&signature=818db764c23f747ca4643e70fb6f0d1635507cf47059732e42e8d0a2887cd258; using last known $300.00
+23:47:43 [INFO] [RateLimit] usage=0.2%
+23:49:17 [WARNING] [Balance] fetch failed: binance GET https://demo-fapi.binance.com/fapi/v3/account?timestamp=1791157746461&recvWindow=10000&signature=edadff4be1c2255bb49d2d66d718779d6b769c433060dd556316d59cbdabd3c8; using last known $300.00
+23:49:47 [WARNING] [Balance] fetch failed: binance GET https://demo-fapi.binance.com/fapi/v3/account?timestamp=1791157777808&recvWindow=10000&signature=cb6a9090b9faa117cb8cbe6169edffd9edb868b88f64d843e2ad13539a01b09d; using last known $300.00
+23:50:04 [WARNING] [Balance] fetch failed: binance GET https://demo-fapi.binance.com/fapi/v3/account?timestamp=1791157794696&recvWindow=10000&signature=41cbf583f2b477c192d3118ab53fab7ed3309d7dd086be07b1cd6ac94a33cf66; using last known $300.00
+23:50:57 [INFO] [LiveCache] hits=51992, misses=1708 (96.8%), evictions=0, entries=97
+23:51:54 [WARNING] [Balance] fetch failed: binance GET https://demo-fapi.binance.com/fapi/v3/account?timestamp=1791157900504&recvWindow=10000&signature=6039f04cebc99dfb90add1e73bd17910b0913fdb4b9f1ed909b5d955eb5ac51b; using last known $300.00
+23:52:01 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+23:52:25 [WARNING] [Balance] fetch failed: binance {"code":-1021,"msg":"Timestamp for this request is outside of the recvWindow."}; using last known $300.00
+23:52:44 [INFO] [RateLimit] usage=0.4%
+23:54:01 [WARNING] [Balance] fetch failed: binance GET https://demo-fapi.binance.com/fapi/v3/account?timestamp=1791158031112&recvWindow=10000&signature=ebdfb5a3b88b8f0f2ac5ad1514d3a52ae871b6d1703f2d1a035e4b299d28d88f; using last known $300.00
+23:55:58 [INFO] [LiveCache] hits=55775, misses=1825 (96.8%), evictions=0, entries=97
+23:57:04 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+23:57:48 [INFO] [RateLimit] usage=1.0%
+00:02:19 [WARNING] [process_asset] MEW/USDT: degenerate clustering (H_train=0.080, H_theo=4.644, ratio=0.017, K=25) — returning None
+00:02:21 [INFO] [LiveCache] hits=60452, misses=2048 (96.7%), evictions=23, entries=76
+00:02:22 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+00:02:59 [INFO] [RateLimit] usage=1.7%
+00:07:24 [INFO] [LiveCache] hits=65766, misses=2234 (96.7%), evictions=23, entries=97
+00:07:25 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+00:07:59 [INFO] [RateLimit] usage=1.0%
+00:12:29 [INFO] [LiveCache] hits=71683, misses=2417 (96.7%), evictions=23, entries=97
+00:12:30 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+00:12:59 [INFO] [RateLimit] usage=1.0%
+00:17:29 [INFO] [LiveCache] hits=77503, misses=2597 (96.8%), evictions=23, entries=97
+00:17:30 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+00:17:59 [INFO] [RateLimit] usage=1.0%
+00:22:30 [INFO] [LiveCache] hits=83323, misses=2777 (96.8%), evictions=23, entries=97
+00:22:30 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+00:22:59 [INFO] [RateLimit] usage=1.0%
+00:27:34 [INFO] [LiveCache] hits=89240, misses=2960 (96.8%), evictions=23, entries=97
+00:27:35 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+00:27:59 [INFO] [RateLimit] usage=1.0%
+00:32:34 [INFO] [LiveCache] hits=95060, misses=3140 (96.8%), evictions=23, entries=97
+00:32:35 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+00:32:59 [INFO] [RateLimit] usage=1.0%
+00:37:34 [INFO] [LiveCache] hits=100880, misses=3320 (96.8%), evictions=23, entries=97
+00:37:35 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+00:37:59 [INFO] [RateLimit] usage=1.0%
+00:42:35 [INFO] [LiveCache] hits=106700, misses=3500 (96.8%), evictions=23, entries=97
+00:42:35 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+00:42:59 [INFO] [RateLimit] usage=1.0%
+00:47:35 [INFO] [LiveCache] hits=112520, misses=3680 (96.8%), evictions=23, entries=97
+00:47:40 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+00:47:59 [INFO] [RateLimit] usage=1.0%
+00:52:35 [INFO] [LiveCache] hits=118340, misses=3860 (96.8%), evictions=23, entries=97
+00:52:41 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+00:52:59 [INFO] [RateLimit] usage=1.0%
+00:57:40 [INFO] [LiveCache] hits=124257, misses=4043 (96.8%), evictions=23, entries=97
+00:57:45 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+00:57:59 [INFO] [RateLimit] usage=1.0%
+01:02:40 [INFO] [LiveCache] hits=130077, misses=4223 (96.9%), evictions=23, entries=97
+01:02:45 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+01:02:59 [INFO] [RateLimit] usage=1.0%
+01:07:45 [INFO] [LiveCache] hits=135994, misses=4406 (96.9%), evictions=23, entries=97
+01:07:50 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+01:07:59 [INFO] [RateLimit] usage=1.0%
+01:12:50 [INFO] [LiveCache] hits=141911, misses=4589 (96.9%), evictions=23, entries=97
+01:12:55 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+01:12:59 [INFO] [RateLimit] usage=1.0%
+01:17:50 [INFO] [LiveCache] hits=147731, misses=4769 (96.9%), evictions=23, entries=97
+01:17:59 [INFO] [RateLimit] usage=1.0%
+01:18:00 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+01:22:50 [INFO] [LiveCache] hits=153551, misses=4949 (96.9%), evictions=23, entries=97
+01:22:59 [INFO] [RateLimit] usage=1.0%
+01:23:05 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+01:27:52 [INFO] [LiveCache] hits=159371, misses=5129 (96.9%), evictions=23, entries=97
+01:28:02 [INFO] [RateLimit] usage=1.0%
+01:28:08 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+01:32:52 [INFO] [LiveCache] hits=165191, misses=5309 (96.9%), evictions=23, entries=97
+01:33:02 [INFO] [RateLimit] usage=1.0%
+01:33:08 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+01:37:53 [INFO] [LiveCache] hits=171011, misses=5489 (96.9%), evictions=23, entries=97
+01:38:02 [INFO] [RateLimit] usage=1.0%
+01:38:13 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+01:42:53 [INFO] [LiveCache] hits=176831, misses=5669 (96.9%), evictions=23, entries=97
+01:43:02 [INFO] [RateLimit] usage=1.0%
+01:43:18 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+01:47:53 [INFO] [LiveCache] hits=182651, misses=5849 (96.9%), evictions=23, entries=97
+01:48:02 [INFO] [RateLimit] usage=1.0%
+01:48:18 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+01:52:53 [INFO] [LiveCache] hits=188471, misses=6029 (96.9%), evictions=23, entries=97
+01:53:02 [INFO] [RateLimit] usage=1.0%
+01:53:23 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+01:57:53 [INFO] [LiveCache] hits=194291, misses=6209 (96.9%), evictions=23, entries=97
+01:58:02 [INFO] [RateLimit] usage=1.0%
+01:58:23 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+02:02:53 [INFO] [LiveCache] hits=200111, misses=6389 (96.9%), evictions=23, entries=97
+02:03:02 [INFO] [RateLimit] usage=1.0%
+02:03:24 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+02:07:53 [INFO] [LiveCache] hits=205931, misses=6569 (96.9%), evictions=23, entries=97
+02:08:02 [INFO] [RateLimit] usage=1.0%
+02:08:28 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+02:12:58 [INFO] [LiveCache] hits=211848, misses=6752 (96.9%), evictions=23, entries=97
+02:13:02 [INFO] [RateLimit] usage=1.0%
+02:13:28 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+02:17:58 [INFO] [LiveCache] hits=217668, misses=6932 (96.9%), evictions=23, entries=97
+02:18:02 [INFO] [RateLimit] usage=1.0%
+02:18:29 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+02:22:58 [INFO] [LiveCache] hits=223488, misses=7112 (96.9%), evictions=23, entries=97
+02:23:03 [INFO] [RateLimit] usage=1.0%
+02:23:33 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+02:27:58 [INFO] [LiveCache] hits=229308, misses=7292 (96.9%), evictions=23, entries=97
+02:28:03 [INFO] [RateLimit] usage=1.0%
+02:28:34 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+02:32:58 [INFO] [LiveCache] hits=235128, misses=7472 (96.9%), evictions=23, entries=97
+02:33:03 [INFO] [RateLimit] usage=1.0%
+02:33:38 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+02:37:58 [INFO] [LiveCache] hits=240948, misses=7652 (96.9%), evictions=23, entries=97
+02:38:03 [INFO] [RateLimit] usage=1.0%
+02:38:39 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+02:43:01 [INFO] [LiveCache] hits=245992, misses=7808 (96.9%), evictions=23, entries=97
+02:43:06 [INFO] [RateLimit] usage=0.9%
+02:43:42 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+02:48:07 [INFO] [LiveCache] hits=251618, misses=7982 (96.9%), evictions=23, entries=97
+02:48:13 [INFO] [RateLimit] usage=0.7%
+02:48:46 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+02:52:12 [INFO] 🔄 تحديث قائمة الأصول ومزامنة التاريخ العميق...
+02:52:12 [INFO]   ✓ BTC/USDT      : 360 شمعة
+02:52:13 [INFO]   ✓ SOL/USDT      : 360 شمعة
+02:52:13 [INFO]   ✓ LINK/USDT     : 360 شمعة
+02:52:14 [INFO]   ✓ BNB/USDT      : 360 شمعة
+02:52:14 [INFO]   ✓ ETH/USDT      : 360 شمعة
+02:52:14 [INFO]   ✓ DOT/USDT      : 360 شمعة
+02:52:14 [INFO]   ✓ AVAX/USDT     : 360 شمعة
+02:52:14 [INFO]   ✓ ADA/USDT      : 360 شمعة
+02:52:14 [INFO]   ✓ LTC/USDT      : 360 شمعة
+02:52:14 [INFO]   ✓ UNI/USDT      : 360 شمعة
+02:52:15 [INFO]   ✓ ETC/USDT      : 360 شمعة
+02:52:15 [INFO]   ✓ TRX/USDT      : 360 شمعة
+02:52:15 [INFO]   ✓ ATOM/USDT     : 360 شمعة
+02:52:15 [INFO]   ✓ TON/USDT      : 360 شمعة
+02:52:15 [INFO]   ✓ BCH/USDT      : 360 شمعة
+02:52:15 [INFO]   ✓ NEAR/USDT     : 360 شمعة
+02:52:16 [INFO]   ✓ AAVE/USDT     : 360 شمعة
+02:52:16 [INFO]   ✓ APT/USDT      : 360 شمعة
+02:52:16 [INFO]   ✓ HBAR/USDT     : 360 شمعة
+02:52:16 [INFO]   ✓ STX/USDT      : 360 شمعة
+02:52:16 [INFO]   ✓ ARB/USDT      : 360 شمعة
+02:52:16 [INFO]   ✓ OP/USDT       : 360 شمعة
+02:52:17 [INFO]   ✓ SEI/USDT      : 360 شمعة
+02:52:17 [INFO]   ✓ TIA/USDT      : 360 شمعة
+02:52:17 [INFO]   ✓ ALGO/USDT     : 360 شمعة
+02:52:17 [INFO]   ✓ SUI/USDT      : 360 شمعة
+02:52:17 [INFO]   ✓ GRT/USDT      : 360 شمعة
+02:52:17 [INFO]   ✓ RENDER/USDT   : 360 شمعة
+02:52:18 [INFO]   ✓ KAS/USDT      : 360 شمعة
+02:52:18 [INFO]   ✓ WIF/USDT      : 360 شمعة
+02:52:18 [INFO]   ✓ LDO/USDT      : 360 شمعة
+02:52:18 [INFO]   ✓ FET/USDT      : 360 شمعة
+02:52:18 [INFO]   ✓ THETA/USDT    : 360 شمعة
+02:52:18 [INFO]   ✓ SAND/USDT     : 360 شمعة
+02:52:19 [INFO]   ✓ XLM/USDT      : 360 شمعة
+02:52:19 [INFO]   ✓ MANA/USDT     : 360 شمعة
+02:52:19 [INFO]   ✓ AXS/USDT      : 360 شمعة
+02:52:19 [INFO]   ✓ CHZ/USDT      : 360 شمعة
+02:52:19 [INFO]   ✓ POL/USDT      : 360 شمعة
+02:52:19 [INFO]   ✓ FIL/USDT      : 360 شمعة
+02:52:20 [INFO]   ✓ FLOW/USDT     : 360 شمعة
+02:52:20 [INFO]   ✓ QNT/USDT      : 360 شمعة
+02:52:20 [INFO]   ✓ DASH/USDT     : 360 شمعة
+02:52:20 [INFO]   ✓ CAKE/USDT     : 360 شمعة
+02:52:20 [INFO]   ✓ ROSE/USDT     : 360 شمعة
+02:52:20 [INFO]   ✓ NEO/USDT      : 360 شمعة
+02:52:21 [INFO]   ✓ IOTA/USDT     : 360 شمعة
+02:52:21 [INFO]   ✓ SNX/USDT      : 360 شمعة
+02:52:21 [INFO]   ✓ CRV/USDT      : 360 شمعة
+02:52:21 [INFO]   ✓ KAVA/USDT     : 360 شمعة
+02:52:21 [INFO]   ✓ COMP/USDT     : 360 شمعة
+02:52:21 [INFO]   ✓ SUSHI/USDT    : 360 شمعة
+02:52:22 [INFO]   ✓ ANKR/USDT     : 360 شمعة
+02:52:22 [INFO]   ✓ ZRX/USDT      : 360 شمعة
+02:52:22 [INFO]   ✓ YFI/USDT      : 360 شمعة
+02:52:22 [INFO]   ✓ BAT/USDT      : 360 شمعة
+02:52:22 [INFO]   ✓ BAND/USDT     : 360 شمعة
+02:52:22 [INFO]   ✓ NMR/USDT      : 360 شمعة
+02:52:23 [INFO]   ✓ STORJ/USDT    : 360 شمعة
+02:52:23 [INFO]   ✓ KSM/USDT      : 360 شمعة
+02:52:23 [INFO]   ✓ CELO/USDT     : 360 شمعة
+02:52:23 [INFO]   ✓ ZEN/USDT      : 360 شمعة
+02:52:23 [INFO]   ✓ DYDX/USDT     : 360 شمعة
+02:52:23 [INFO]   ✓ MASK/USDT     : 360 شمعة
+02:52:23 [INFO]   ✓ ENS/USDT      : 360 شمعة
+02:52:24 [INFO]   ✓ MAGIC/USDT    : 360 شمعة
+02:52:24 [INFO]   ✓ GMX/USDT      : 360 شمعة
+02:52:24 [INFO]   ✓ JOE/USDT      : 360 شمعة
+02:52:24 [INFO]   ✓ PENDLE/USDT   : 360 شمعة
+02:52:24 [INFO]   ✓ HIGH/USDT     : 360 شمعة
+02:52:24 [INFO]   ✓ CYBER/USDT    : 360 شمعة
+02:52:24 [INFO]   ✓ ARKM/USDT     : 360 شمعة
+02:52:25 [INFO]   ✓ WLD/USDT      : 360 شمعة
+02:52:25 [INFO]   ✓ BLUR/USDT     : 360 شمعة
+02:52:25 [INFO]   ✓ EDU/USDT      : 360 شمعة
+02:52:25 [INFO]   ✓ ORDI/USDT     : 360 شمعة
+02:52:25 [INFO]   ✓ ID/USDT       : 360 شمعة
+02:52:25 [INFO]   ✓ JUP/USDT      : 360 شمعة
+02:52:26 [INFO]   ✓ PYTH/USDT     : 360 شمعة
+02:52:26 [INFO]   ✓ DYM/USDT      : 360 شمعة
+02:52:26 [INFO]   ✓ MANTA/USDT    : 360 شمعة
+02:52:26 [INFO]   ✓ JTO/USDT      : 360 شمعة
+02:52:26 [INFO]   ✓ STRK/USDT     : 360 شمعة
+02:52:26 [INFO]   ✓ ALT/USDT      : 360 شمعة
+02:52:27 [INFO]   ✓ AEVO/USDT     : 360 شمعة
+02:52:27 [INFO]   ✓ W/USDT        : 360 شمعة
+02:52:27 [INFO]   ✓ SAGA/USDT     : 360 شمعة
+02:52:27 [INFO]   ✓ ETHFI/USDT    : 360 شمعة
+02:52:27 [INFO]   ✓ BB/USDT       : 360 شمعة
+02:52:27 [INFO]   ✓ IO/USDT       : 360 شمعة
+02:52:28 [INFO]   ✓ ZK/USDT       : 360 شمعة
+02:52:28 [INFO]   ✓ ZRO/USDT      : 360 شمعة
+02:52:28 [INFO]   ✓ G/USDT        : 360 شمعة
+02:52:28 [INFO]   ✓ LISTA/USDT    : 360 شمعة
+02:52:28 [INFO]   ✓ TAIKO/USDT    : 360 شمعة
+02:52:28 [INFO]   ✓ RARE/USDT     : 360 شمعة
+02:52:28 [INFO]   ✓ SYN/USDT      : 360 شمعة
+02:52:29 [INFO]   ✓ MERL/USDT     : 360 شمعة
+02:52:29 [INFO]   ✓ MEW/USDT      : 360 شمعة
+02:52:29 [INFO]   ✓ BANANA/USDT   : 360 شمعة
+02:53:12 [INFO] [LiveCache] hits=256177, misses=8123 (96.9%), evictions=23, entries=97
+02:53:17 [INFO] [RateLimit] usage=0.7%
+02:53:50 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+02:58:16 [INFO] [LiveCache] hits=261415, misses=8285 (96.9%), evictions=23, entries=97
+02:58:20 [INFO] [RateLimit] usage=0.9%
+02:58:52 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+03:03:17 [INFO] [LiveCache] hits=265586, misses=8414 (96.9%), evictions=23, entries=97
+03:03:22 [INFO] [RateLimit] usage=0.7%
+03:03:53 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+03:08:17 [INFO] [LiveCache] hits=271406, misses=8594 (96.9%), evictions=23, entries=97
+03:08:22 [INFO] [RateLimit] usage=1.0%
+03:08:53 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+03:13:17 [INFO] [LiveCache] hits=277226, misses=8774 (96.9%), evictions=23, entries=97
+03:13:22 [INFO] [RateLimit] usage=1.0%
+03:13:53 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+03:18:18 [INFO] [LiveCache] hits=283046, misses=8954 (96.9%), evictions=23, entries=97
+03:18:22 [INFO] [RateLimit] usage=1.0%
+03:18:53 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2
+03:23:18 [INFO] [LiveCache] hits=288769, misses=9131 (96.9%), evictions=23, entries=97
+03:23:23 [INFO] [RateLimit] usage=1.0%
+03:23:54 [INFO] [Concurrency] dd=0.0% cap=$300.00 peak=$300.00 n_open=1 soft_cap=2 effective_max=2

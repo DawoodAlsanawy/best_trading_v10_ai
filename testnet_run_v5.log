@@ -1,0 +1,152 @@
+16:51:26 [INFO] [Level-2] Numba kernels warm (JIT ready in 0.9s)
+16:51:26 [INFO] [Cache] LIVE_ASSET_CACHE_MAX adjusted to 150
+16:51:29 [INFO] [TF] timeframe=4h TF_SCALE=0.2500 TF_SECONDS=14400 TF_HOURS=4.000
+16:51:29 [INFO] [TF-Unified] N=24 W=20 L=10 ADV_BARS=6 (σ≈0.25× 1h)
+16:51:29 [INFO] [Data] mode=testnet | tf=4h | history=730d | tail=4380 bars/sym | min_for_process=4380 bars | quality=degraded | source=user(730d)
+16:51:29 [WARNING] [Data] degraded quality: tail=4380 < strict_min/2=5012. Many assets may be skipped by degenerate detection. Recommended minimum for 4h: --history-days 2339.
+16:51:29 [INFO] [Trail] Trailing Stop Loss DISABLED — SL is fixed
+16:51:29 [INFO] [Backtest] --no-fixed-price: entry target will be derived from close[sig.close_idx] × (1 ± PO_PENETRATION_BPS)
+16:51:29 [INFO] [Watch] Watch-then-trigger DISABLED (Config default) — legacy immediate placement
+16:51:29 [INFO] [OppTP] Opposite-Signal Adaptive TP DISABLED
+16:51:29 [INFO] [TradeLog] Logging trades to trades_log_testnet.jsonl
+16:51:30 [INFO] [TimeSync] drift = 1.10s — OK
+16:51:30 [INFO] 🔴 [TESTNET] بدء التشغيل (State Machine v2)
+16:51:30 [INFO]   [State] Restored 0 positions from live_state_testnet.json
+16:51:30 [INFO] [Meta] Loaded 1 symbols from symbol_meta_testnet.json
+16:51:30 [INFO] [Pending] Restored 1 pending orders (cleaned 0 stale refs)
+16:51:30 [INFO]   [Watch] Active watched signals: 0
+16:51:30 [INFO]   [Pending] Active pending orders: 1
+16:51:37 [WARNING] [Reconcile] SOL/USDT exchange-only → adopting
+16:51:37 [INFO] [Reconcile] 1 changes applied
+16:51:37 [INFO]   [State] After initial sync: 1 positions
+16:51:38 [INFO] [Prot] SOL/USDT STOP@123.434150 TP@117.961700 placed
+16:51:38 [INFO]   [Prot] restored=1 failed=0
+16:51:38 [INFO] ⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...
+16:51:39 [INFO]   ✓ SOL/USDT      : 4,380 شمعة
+16:51:39 [INFO]   ✓ AVAX/USDT     : 4,380 شمعة
+16:51:39 [INFO]   ✓ LINK/USDT     : 4,380 شمعة
+16:51:40 [INFO]   ✓ BTC/USDT      : 4,380 شمعة
+16:51:40 [INFO]   ✓ BNB/USDT      : 4,380 شمعة
+16:51:40 [INFO]   ✓ ETH/USDT      : 4,380 شمعة
+16:51:40 [INFO]   ✓ DOT/USDT      : 4,380 شمعة
+16:51:40 [INFO]   ✓ ADA/USDT      : 4,380 شمعة
+16:51:40 [INFO]   ✓ LTC/USDT      : 4,380 شمعة
+16:51:40 [INFO]   ✓ UNI/USDT      : 4,380 شمعة
+16:51:41 [INFO]   ✓ ETC/USDT      : 4,380 شمعة
+16:51:41 [INFO]   ✓ ATOM/USDT     : 4,380 شمعة
+16:51:41 [INFO]   ✓ TRX/USDT      : 4,380 شمعة
+16:51:41 [INFO]   ✓ TON/USDT      : 4,380 شمعة
+16:51:41 [INFO]   ✓ BCH/USDT      : 4,380 شمعة
+16:51:41 [INFO]   ✓ NEAR/USDT     : 4,380 شمعة
+16:51:41 [INFO]   ✓ HBAR/USDT     : 4,380 شمعة
+16:51:41 [INFO]   ✓ APT/USDT      : 4,380 شمعة
+16:51:41 [INFO]   ✓ AAVE/USDT     : 4,380 شمعة
+16:51:41 [INFO]   ✓ STX/USDT      : 4,380 شمعة
+16:51:42 [INFO]   ✓ OP/USDT       : 4,380 شمعة
+16:51:42 [INFO]   ✓ SUI/USDT      : 4,380 شمعة
+16:51:42 [INFO]   ✓ ARB/USDT      : 4,380 شمعة
+16:51:42 [INFO]   ✓ SEI/USDT      : 4,380 شمعة
+16:51:42 [INFO]   ✓ TIA/USDT      : 4,380 شمعة
+16:51:42 [INFO]   ✓ ALGO/USDT     : 4,380 شمعة
+16:51:42 [INFO]   ✓ FET/USDT      : 4,380 شمعة
+16:51:42 [INFO]   ✓ GRT/USDT      : 4,380 شمعة
+16:51:42 [INFO]   ✓ RENDER/USDT   : 4,380 شمعة
+16:51:42 [INFO]   ✓ LDO/USDT      : 4,380 شمعة
+16:51:43 [INFO]   ✓ KAS/USDT      : 4,380 شمعة
+16:51:43 [INFO]   ✓ WIF/USDT      : 4,380 شمعة
+16:51:43 [INFO]   ✓ THETA/USDT    : 4,380 شمعة
+16:51:43 [INFO]   ✓ SAND/USDT     : 4,380 شمعة
+16:51:43 [INFO]   ✓ MANA/USDT     : 4,380 شمعة
+16:51:43 [INFO]   ✓ CHZ/USDT      : 4,380 شمعة
+16:51:43 [INFO]   ✓ XLM/USDT      : 4,380 شمعة
+16:51:43 [INFO]   ✓ AXS/USDT      : 4,380 شمعة
+16:51:43 [INFO]   ✓ FIL/USDT      : 4,380 شمعة
+16:51:43 [INFO]   ✓ POL/USDT      : 4,380 شمعة
+16:51:44 [INFO]   ✓ FLOW/USDT     : 4,380 شمعة
+16:51:44 [INFO]   ✓ QNT/USDT      : 4,380 شمعة
+16:51:44 [INFO]   ✓ DASH/USDT     : 4,380 شمعة
+16:51:44 [INFO]   ✓ ROSE/USDT     : 4,380 شمعة
+16:51:44 [INFO]   ✓ CAKE/USDT     : 4,380 شمعة
+16:51:44 [INFO]   ✓ IOTA/USDT     : 4,380 شمعة
+16:51:44 [INFO]   ✓ KAVA/USDT     : 4,380 شمعة
+16:51:44 [INFO]   ✓ NEO/USDT      : 4,380 شمعة
+16:51:44 [INFO]   ✓ CRV/USDT      : 4,380 شمعة
+16:51:44 [INFO]   ✓ SNX/USDT      : 4,380 شمعة
+16:51:45 [INFO]   ✓ YFI/USDT      : 4,380 شمعة
+16:51:45 [INFO]   ✓ COMP/USDT     : 4,380 شمعة
+16:51:45 [INFO]   ✓ SUSHI/USDT    : 4,380 شمعة
+16:51:45 [INFO]   ✓ BAT/USDT      : 4,380 شمعة
+16:51:45 [INFO]   ✓ ZRX/USDT      : 4,380 شمعة
+16:51:45 [INFO]   ✓ BAND/USDT     : 4,380 شمعة
+16:51:45 [INFO]   ✓ NMR/USDT      : 4,380 شمعة
+16:51:45 [INFO]   ✓ ANKR/USDT     : 4,380 شمعة
+16:51:45 [INFO]   ✓ KSM/USDT      : 4,380 شمعة
+16:51:45 [INFO]   ✓ STORJ/USDT    : 4,380 شمعة
+16:51:46 [INFO]   ✓ MASK/USDT     : 4,380 شمعة
+16:51:46 [INFO]   ✓ CELO/USDT     : 4,380 شمعة
+16:51:46 [INFO]   ✓ ZEN/USDT      : 4,380 شمعة
+16:51:46 [INFO]   ✓ DYDX/USDT     : 4,380 شمعة
+16:51:46 [INFO]   ✓ ENS/USDT      : 4,380 شمعة
+16:51:46 [INFO]   ✓ HIGH/USDT     : 4,380 شمعة
+16:51:46 [INFO]   ✓ GMX/USDT      : 4,380 شمعة
+16:51:46 [INFO]   ✓ MAGIC/USDT    : 4,380 شمعة
+16:51:46 [INFO]   ✓ JOE/USDT      : 4,380 شمعة
+16:51:46 [INFO]   ✓ PENDLE/USDT   : 4,380 شمعة
+16:51:47 [INFO]   ✓ WLD/USDT      : 4,380 شمعة
+16:51:47 [INFO]   ✓ CYBER/USDT    : 4,380 شمعة
+16:51:47 [INFO]   ✓ ARKM/USDT     : 4,380 شمعة
+16:51:47 [INFO]   ✓ ID/USDT       : 4,380 شمعة
+16:51:47 [INFO]   ✓ BLUR/USDT     : 4,380 شمعة
+16:51:47 [INFO]   ✓ ORDI/USDT     : 4,380 شمعة
+16:51:47 [INFO]   ✓ EDU/USDT      : 4,380 شمعة
+16:51:47 [INFO]   ✓ JUP/USDT      : 4,380 شمعة
+16:51:48 [INFO]   ✓ PYTH/USDT     : 4,380 شمعة
+16:51:48 [INFO]   ✓ JTO/USDT      : 4,380 شمعة
+16:51:48 [INFO]   ✓ STRK/USDT     : 4,380 شمعة
+16:51:48 [INFO]   ✓ DYM/USDT      : 4,380 شمعة
+16:51:48 [INFO]   ✓ AEVO/USDT     : 4,380 شمعة
+16:51:48 [INFO]   ✓ MANTA/USDT    : 4,380 شمعة
+16:51:48 [INFO]   ✓ ALT/USDT      : 4,380 شمعة
+16:51:48 [INFO]   ✓ ETHFI/USDT    : 4,380 شمعة
+16:51:48 [INFO]   ✓ W/USDT        : 4,380 شمعة
+16:51:49 [INFO]   ✓ SAGA/USDT     : 4,380 شمعة
+16:51:49 [INFO]   ✓ IO/USDT       : 4,380 شمعة
+16:51:49 [INFO]   ✓ LISTA/USDT    : 4,380 شمعة
+16:51:49 [INFO]   ✓ BB/USDT       : 4,380 شمعة
+16:51:49 [INFO]   ✓ ZK/USDT       : 4,380 شمعة
+16:51:49 [INFO]   ✓ RARE/USDT     : 4,380 شمعة
+16:51:49 [INFO]   ✓ G/USDT        : 4,380 شمعة
+16:51:49 [INFO]   ✓ ZRO/USDT      : 4,380 شمعة
+16:51:49 [INFO]   ✓ SYN/USDT      : 4,380 شمعة
+16:51:50 [INFO]   ✓ TAIKO/USDT    : 2,883 شمعة
+16:51:50 [INFO]   ✓ MEW/USDT      : 4,380 شمعة
+16:51:50 [INFO]   ✓ BANANA/USDT   : 4,380 شمعة
+16:51:50 [INFO]   ✓ MERL/USDT     : 2,962 شمعة
+16:51:50 [INFO] 🚀 تم بناء الذاكرة التاريخية. بدء حلقة التداول اللحظي...
+16:51:50 [INFO] [RateLimit] usage=0.0%
+16:53:50 [WARNING] [process_asset] MEW/USDT: degenerate clustering (H_train=0.062, H_theo=4.644, ratio=0.013, K=25) — returning None
+16:53:51 [INFO] [LiveCache] hits=0, misses=100 (0.0%), evictions=0, entries=97
+16:53:52 [ERROR] خطأ غير متوقع في حلقة التداول: name 'p' is not defined
+16:54:04 [INFO] [Prot] SOL/USDT PARTIAL-TP @117.505662 qty=1.285000 (50%)
+16:54:04 [INFO] [Prot] SOL/USDT STOP@124.346225 PARTIAL-TP@117.505662 FULL-TP@107.928875 placed
+16:54:05 [ERROR] خطأ غير متوقع في حلقة التداول: name 'p' is not defined
+16:54:16 [ERROR] خطأ غير متوقع في حلقة التداول: name 'p' is not defined
+16:54:26 [ERROR] خطأ غير متوقع في حلقة التداول: name 'p' is not defined
+16:54:37 [ERROR] خطأ غير متوقع في حلقة التداول: name 'p' is not defined
+16:54:48 [ERROR] خطأ غير متوقع في حلقة التداول: name 'p' is not defined
+16:54:58 [ERROR] خطأ غير متوقع في حلقة التداول: name 'p' is not defined
+16:55:09 [ERROR] خطأ غير متوقع في حلقة التداول: name 'p' is not defined
+16:55:19 [ERROR] خطأ غير متوقع في حلقة التداول: name 'p' is not defined
+16:55:30 [ERROR] خطأ غير متوقع في حلقة التداول: name 'p' is not defined
+16:55:41 [ERROR] خطأ غير متوقع في حلقة التداول: name 'p' is not defined
+16:55:51 [ERROR] خطأ غير متوقع في حلقة التداول: name 'p' is not defined
+16:56:02 [ERROR] خطأ غير متوقع في حلقة التداول: name 'p' is not defined
+16:56:12 [ERROR] خطأ غير متوقع في حلقة التداول: name 'p' is not defined
+16:56:23 [ERROR] خطأ غير متوقع في حلقة التداول: name 'p' is not defined
+16:56:34 [ERROR] خطأ غير متوقع في حلقة التداول: name 'p' is not defined
+16:56:44 [ERROR] خطأ غير متوقع في حلقة التداول: name 'p' is not defined
+16:56:54 [INFO] [RateLimit] usage=0.4%
+16:56:55 [ERROR] خطأ غير متوقع في حلقة التداول: name 'p' is not defined
+16:57:05 [ERROR] خطأ غير متوقع في حلقة التداول: name 'p' is not defined
+16:57:16 [ERROR] خطأ غير متوقع في حلقة التداول: name 'p' is not defined
+16:57:27 [ERROR] خطأ غير متوقع في حلقة التداول: name 'p' is not defined

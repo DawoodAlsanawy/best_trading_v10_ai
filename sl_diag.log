@@ -1,0 +1,86 @@
+Total trades: 9,948
+
+═══ Exit reasons ═══
+  SL             :  8,356 ( 84.0%)
+  TP             :  1,561 ( 15.7%)
+  MaxHold        :     29 (  0.3%)
+  EndOfData      :      2 (  0.0%)
+
+═══ SL hits: hold_bars distribution ═══
+  p10: 1 bars
+  p25: 1 bars
+  p50: 1 bars
+  p75: 2 bars
+  p90: 5 bars
+  p95: 8 bars
+  p99: 21 bars
+  mean: 2.4  max: 93
+
+═══ SL hold_bars buckets ═══
+  [  0,   5):  7,448 ( 89.1%)
+  [  5,  10):    556 (  6.7%)
+  [ 10,  20):    253 (  3.0%)
+  [ 20,  50):     87 (  1.0%)
+  [ 50, 100):     12 (  0.1%)
+  [100, 168):      0 (  0.0%)
+  [168, 99999):      0 (  0.0%)
+
+═══ SL hits: MFE (max favorable excursion) ═══
+  p10:   0.00%
+  p25:   0.00%
+  p50:   0.05%
+  p75:   1.63%
+  p90:  28.69%
+  p95:  45.77%
+  mean: 6.02%
+
+═══ SL: MFE buckets ═══
+  [  0.0%,   0.5%):  4,971 ( 59.5%)
+  [  0.5%,   1.0%):    637 (  7.6%)
+  [  1.0%,   2.0%):    906 ( 10.8%)
+  [  2.0%,   5.0%):    562 (  6.7%)
+  [  5.0%,  10.0%):    114 (  1.4%)
+  [ 10.0%, 100.0%):  1,166 ( 14.0%)
+
+═══ SL rate by score bucket ═══
+  score [3, 4): n=2,809  SL%= 84.3%
+  score [4, 5): n=1,575  SL%= 86.7%
+  score [5, 6): n=2,814  SL%= 83.1%
+  score [6, 7): n=2,750  SL%= 83.1%
+
+═══ SL rate by action ═══
+  BUY  : n=4,963  SL%= 90.9%
+  SELL : n=4,985  SL%= 77.2%
+
+═══ SL rate by initial SL distance ═══
+  sl_dist [ 0.18%,  1.09%]: n=1,989  SL%= 78.4%
+  sl_dist [ 1.09%,  1.50%]: n=1,990  SL%= 84.4%
+  sl_dist [ 1.50%,  1.95%]: n=1,989  SL%= 86.3%
+  sl_dist [ 1.95%,  2.59%]: n=1,990  SL%= 89.2%
+  sl_dist [ 2.59%, 36.04%]: n=1,990  SL%= 81.6%
+
+═══ SL rate by ATR fraction ═══
+  atr/price [ 0.11%,  0.59%]: n=1,989  SL%= 78.5%
+  atr/price [ 0.59%,  0.81%]: n=1,990  SL%= 84.3%
+  atr/price [ 0.81%,  1.02%]: n=1,989  SL%= 85.4%
+  atr/price [ 1.02%,  1.32%]: n=1,990  SL%= 87.9%
+  atr/price [ 1.32%, 13.47%]: n=1,990  SL%= 83.9%
+
+═══ SL rate by symbol (top 15 by count) ═══
+  ETC/USDT        : n=  804  SL%= 58.3%
+  ATOM/USDT       : n=  798  SL%= 52.5%
+  BCH/USDT        : n=  764  SL%= 91.4%
+  LTC/USDT        : n=  747  SL%= 57.8%
+  LINK/USDT       : n=  741  SL%= 98.2%
+  UNI/USDT        : n=  715  SL%= 94.7%
+  DOT/USDT        : n=  706  SL%= 89.0%
+  BNB/USDT        : n=  701  SL%= 99.9%
+  TRX/USDT        : n=  699  SL%= 52.8%
+  ADA/USDT        : n=  646  SL%=100.0%
+  BTC/USDT        : n=  645  SL%= 99.8%
+  ETH/USDT        : n=  571  SL%=100.0%
+  AVAX/USDT       : n=  531  SL%= 93.2%
+  TON/USDT        : n=  508  SL%=100.0%
+  SOL/USDT        : n=  372  SL%=100.0%
+
+✅ done.

@@ -1,0 +1,155 @@
+📖 File: trading_2_complete4.py
+   Size: 596,733 chars
+   Encoding check passed
+
+═══ SECTION 1: Around 'top_syms = scan_top_assets(exchange)' ═══
+Marker found at offset 483657
+
+── Plain text (may look weird due to RTL) ──
+info(f"  [Prot] restored={_prot_ok} "
+                 f"deferred={_prot_deferred} "
+                 f"dropped={_prot_dropped_pending} "
+                 f"failed={_prot_fail}")
+
+    # ══ [RE-ENTRY COOLDOWN] track last exit time per symbol ══
+    last_exit_time: Dict[str, float] = {}
+
+    corr_cache: Dict = {}
+
+    log.info("⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...")
+    top_syms = scan_top_assets(exchange)
+
+    # ══ [DATA-LENGTH-FIX] Live needs real history, not 60 days ══
+    # Backtest uses 730 days; live used 60 → KMeans collapsed (H_train ≈ 0.2).
+    # 365 days o
+
+── Python repr (exact chars) ──
+'info(f"  [Prot] restored={_prot_ok} "\n                 f"deferred={_prot_deferred} "\n                 f"dropped={_prot_dropped_pending} "\n                 f"failed={_prot_fail}")\n\n    # ══ [RE-ENTRY COOLDOWN] track last exit time per symbol ══\n    last_exit_time: Dict[str, float] = {}\n\n    corr_cache: Dict = {}\n\n    log.info("⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...")\n    top_syms = scan_top_assets(exchange)\n\n    # ══ [DATA-LENGTH-FIX] Live needs real history, not 60 days ══\n    # Backtest uses 730 days; live used 60 → KMeans collapsed (H_train ≈ 0.2).\n    # 365 days o'
+
+═══ SECTION 2: Anchor pattern tests ═══
+
+Pattern A (original from script):
+   ❌ NO MATCH
+   Found prefix '    log.info("⏳' at offset 483571
+   First 100 chars after prefix:
+   '    log.info("⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...")\n    top_syms = scan_top_assets(exchange)\n\n    # ══ [DATA-LENGTH-FIX] Live needs real history, not 60 days ══\n    # Bac'
+
+Pattern B (just top_syms line):
+   ✅ MATCH
+
+Pattern C (with newline):
+   ✅ MATCH
+
+═══ SECTION 3: Line-by-line byte analysis ═══
+
+Line 12132:
+  repr  : '    top_syms = scan_top_assets(exchange)'
+  bytes : [32, 32, 32, 32, 116, 111, 112, 95, 115, 121, 109, 115, 32, 61, 32, 115, 99, 97, 110, 95, 116, 111, 112, 95, 97, 115, 115, 101, 116, 115, 40, 101, 120, 99, 104, 97, 110, 103, 101, 41]...
+  len   : 40 chars
+
+Line 12131 (previous):
+  repr  : '    log.info("⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...")'
+  len   : 81 chars
+  char-by-char (last 80 chars):
+    [   1] U+0020 ' '
+    [   2] U+0020 ' '
+    [   3] U+0020 ' '
+    [   4] U+006C 'l'
+    [   5] U+006F 'o'
+    [   6] U+0067 'g'
+    [   7] U+002E '.'
+    [   8] U+0069 'i'
+    [   9] U+006E 'n'
+    [  10] U+0066 'f'
+    [  11] U+006F 'o'
+    [  12] U+0028 '('
+    [  13] U+0022 '"'
+    [  14] U+23F3 U+23F3
+    [  15] U+0020 ' '
+    [  16] U+062C U+062C
+    [  17] U+0644 U+0644
+    [  18] U+0628 U+0628
+    [  19] U+0020 ' '
+    [  20] U+0627 U+0627
+    [  21] U+0644 U+0644
+    [  22] U+0632 U+0632
+    [  23] U+0645 U+0645
+    [  24] U+0643 U+0643
+    [  25] U+0627 U+0627
+    [  26] U+0646 U+0646
+    [  27] U+0020 ' '
+    [  28] U+0627 U+0627
+    [  29] U+0644 U+0644
+    [  30] U+0645 U+0645
+    [  31] U+0627 U+0627
+    [  32] U+0644 U+0644
+    [  33] U+064A U+064A
+    [  34] U+0020 ' '
+    [  35] U+0627 U+0627
+    [  36] U+0644 U+0644
+    [  37] U+062A U+062A
+    [  38] U+0627 U+0627
+    [  39] U+0631 U+0631
+    [  40] U+064A U+064A
+    [  41] U+062E U+062E
+    [  42] U+064A U+064A
+    [  43] U+0020 ' '
+    [  44] U+0028 '('
+    [  45] U+0647 U+0647
+    [  46] U+0630 U+0630
+    [  47] U+0647 U+0647
+    [  48] U+0020 ' '
+    [  49] U+0627 U+0627
+    [  50] U+0644 U+0644
+    [  51] U+0639 U+0639
+    [  52] U+0645 U+0645
+    [  53] U+0644 U+0644
+    [  54] U+064A U+064A
+    [  55] U+0629 U+0629
+    [  56] U+0020 ' '
+    [  57] U+062A U+062A
+    [  58] U+062D U+062D
+    [  59] U+062F U+062F
+    [  60] U+062B U+062B
+    [  61] U+0020 ' '
+    [  62] U+0645 U+0645
+    [  63] U+0631 U+0631
+    [  64] U+0629 U+0629
+    [  65] U+0020 ' '
+    [  66] U+0648 U+0648
+    [  67] U+0627 U+0627
+    [  68] U+062D U+062D
+    [  69] U+062F U+062F
+    [  70] U+0629 U+0629
+    [  71] U+0020 ' '
+    [  72] U+0641 U+0641
+    [  73] U+0642 U+0642
+    [  74] U+0637 U+0637
+    [  75] U+0029 ')'
+    [  76] U+002E '.'
+    [  77] U+002E '.'
+    [  78] U+002E '.'
+    [  79] U+0022 '"'
+    [  80] U+0029 ')'
+
+═══ SECTION 4: Suggested safe anchor ═══
+
+Suggested anchor (exact lines to copy):
+```python
+# line 12130: ''
+# line 12131: '    log.info("⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...")'
+# line 12132: '    top_syms = scan_top_assets(exchange)'
+# line 12133: ''
+# line 12134: '    # ══ [DATA-LENGTH-FIX] Live needs real history, not 60 days ══'
+```
+
+Suggested pattern to use (multi-line, avoid Arabic):
+```python
+anchor = (
+    '    top_syms = scan_top_assets(exchange)\n'
+    '\n'
+    '    # ══ [DATA-LENGTH-FIX]'
+)
+```
+
+Verification: ✅ MATCH

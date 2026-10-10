@@ -1,0 +1,126 @@
+16:46:47 [INFO] [Level-2] Numba kernels warm (JIT ready in 0.5s)
+16:46:47 [INFO] [Cache] LIVE_ASSET_CACHE_MAX adjusted to 150
+16:46:49 [INFO] [TF] timeframe=4h TF_SCALE=0.2500 TF_SECONDS=14400 TF_HOURS=4.000
+16:46:49 [INFO] [TF-Unified] N=24 W=20 L=10 ADV_BARS=6 (σ≈0.25× 1h)
+16:46:49 [INFO] [Data] mode=testnet | tf=4h | history=730d | tail=4380 bars/sym | min_for_process=4380 bars | quality=degraded | source=user(730d)
+16:46:49 [WARNING] [Data] degraded quality: tail=4380 < strict_min/2=5012. Many assets may be skipped by degenerate detection. Recommended minimum for 4h: --history-days 2339.
+16:46:49 [INFO] [Trail] Trailing Stop Loss DISABLED — SL is fixed
+16:46:49 [INFO] [Backtest] --no-fixed-price: entry target will be derived from close[sig.close_idx] × (1 ± PO_PENETRATION_BPS)
+16:46:49 [INFO] [Watch] Watch-then-trigger DISABLED (Config default) — legacy immediate placement
+16:46:49 [INFO] [OppTP] Opposite-Signal Adaptive TP DISABLED
+16:46:49 [INFO] [TradeLog] Logging trades to trades_log_testnet.jsonl
+16:46:50 [INFO] [TimeSync] drift = 1.11s — OK
+16:46:50 [INFO] 🔴 [TESTNET] بدء التشغيل (State Machine v2)
+16:46:50 [INFO]   [State] Restored 0 positions from live_state_testnet.json
+16:46:50 [INFO] [Meta] Loaded 1 symbols from symbol_meta_testnet.json
+16:46:50 [INFO] [Pending] Restored 1 pending orders (cleaned 0 stale refs)
+16:46:50 [INFO]   [Watch] Active watched signals: 0
+16:46:50 [INFO]   [Pending] Active pending orders: 1
+16:46:58 [WARNING] [Reconcile] SOL/USDT exchange-only → adopting
+16:46:58 [INFO] [Reconcile] 1 changes applied
+16:46:58 [INFO]   [State] After initial sync: 1 positions
+16:46:59 [WARNING] [Prot] SOL/USDT partial: sl=True tp=True partial=False
+16:46:59 [INFO]   [Prot] restored=0 failed=1
+16:46:59 [INFO] ⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...
+16:46:59 [INFO]   ✓ ETH/USDT      : 4,380 شمعة
+16:47:00 [INFO]   ✓ AVAX/USDT     : 4,380 شمعة
+16:47:00 [INFO]   ✓ LINK/USDT     : 4,380 شمعة
+16:47:00 [INFO]   ✓ SOL/USDT      : 4,380 شمعة
+16:47:00 [INFO]   ✓ ADA/USDT      : 4,380 شمعة
+16:47:00 [INFO]   ✓ BNB/USDT      : 4,380 شمعة
+16:47:00 [INFO]   ✓ BTC/USDT      : 4,380 شمعة
+16:47:00 [INFO]   ✓ DOT/USDT      : 4,380 شمعة
+16:47:00 [INFO]   ✓ ATOM/USDT     : 4,380 شمعة
+16:47:01 [INFO]   ✓ UNI/USDT      : 4,380 شمعة
+16:47:01 [INFO]   ✓ ETC/USDT      : 4,380 شمعة
+16:47:01 [INFO]   ✓ LTC/USDT      : 4,380 شمعة
+16:47:01 [INFO]   ✓ TRX/USDT      : 4,380 شمعة
+16:47:01 [INFO]   ✓ TON/USDT      : 4,380 شمعة
+16:47:01 [INFO]   ✓ NEAR/USDT     : 4,380 شمعة
+16:47:01 [INFO]   ✓ APT/USDT      : 4,380 شمعة
+16:47:01 [INFO]   ✓ BCH/USDT      : 4,380 شمعة
+16:47:01 [INFO]   ✓ HBAR/USDT     : 4,380 شمعة
+16:47:02 [INFO]   ✓ ARB/USDT      : 4,380 شمعة
+16:47:02 [INFO]   ✓ OP/USDT       : 4,380 شمعة
+16:47:02 [INFO]   ✓ STX/USDT      : 4,380 شمعة
+16:47:02 [INFO]   ✓ AAVE/USDT     : 4,380 شمعة
+16:47:02 [INFO]   ✓ SUI/USDT      : 4,380 شمعة
+16:47:02 [INFO]   ✓ ALGO/USDT     : 4,380 شمعة
+16:47:02 [INFO]   ✓ GRT/USDT      : 4,380 شمعة
+16:47:02 [INFO]   ✓ TIA/USDT      : 4,380 شمعة
+16:47:02 [INFO]   ✓ SEI/USDT      : 4,380 شمعة
+16:47:02 [INFO]   ✓ FET/USDT      : 4,380 شمعة
+16:47:03 [INFO]   ✓ WIF/USDT      : 4,380 شمعة
+16:47:03 [INFO]   ✓ RENDER/USDT   : 4,380 شمعة
+16:47:03 [INFO]   ✓ KAS/USDT      : 4,380 شمعة
+16:47:03 [INFO]   ✓ LDO/USDT      : 4,380 شمعة
+16:47:03 [INFO]   ✓ THETA/USDT    : 4,380 شمعة
+16:47:03 [INFO]   ✓ XLM/USDT      : 4,380 شمعة
+16:47:03 [INFO]   ✓ SAND/USDT     : 4,380 شمعة
+16:47:03 [INFO]   ✓ AXS/USDT      : 4,380 شمعة
+16:47:03 [INFO]   ✓ MANA/USDT     : 4,380 شمعة
+16:47:03 [INFO]   ✓ CHZ/USDT      : 4,380 شمعة
+16:47:03 [INFO]   ✓ FIL/USDT      : 4,380 شمعة
+16:47:04 [INFO]   ✓ POL/USDT      : 4,380 شمعة
+16:47:04 [INFO]   ✓ QNT/USDT      : 4,380 شمعة
+16:47:04 [INFO]   ✓ DASH/USDT     : 4,380 شمعة
+16:47:04 [INFO]   ✓ FLOW/USDT     : 4,380 شمعة
+16:47:04 [INFO]   ✓ NEO/USDT      : 4,380 شمعة
+16:47:04 [INFO]   ✓ CAKE/USDT     : 4,380 شمعة
+16:47:04 [INFO]   ✓ IOTA/USDT     : 4,380 شمعة
+16:47:04 [INFO]   ✓ ROSE/USDT     : 4,380 شمعة
+16:47:04 [INFO]   ✓ KAVA/USDT     : 4,380 شمعة
+16:47:05 [INFO]   ✓ SNX/USDT      : 4,380 شمعة
+16:47:05 [INFO]   ✓ SUSHI/USDT    : 4,380 شمعة
+16:47:05 [INFO]   ✓ CRV/USDT      : 4,380 شمعة
+16:47:05 [INFO]   ✓ COMP/USDT     : 4,380 شمعة
+16:47:05 [INFO]   ✓ YFI/USDT      : 4,380 شمعة
+16:47:05 [INFO]   ✓ ANKR/USDT     : 4,380 شمعة
+16:47:05 [INFO]   ✓ BAND/USDT     : 4,380 شمعة
+16:47:05 [INFO]   ✓ BAT/USDT      : 4,380 شمعة
+16:47:05 [INFO]   ✓ ZRX/USDT      : 4,380 شمعة
+16:47:05 [INFO]   ✓ NMR/USDT      : 4,380 شمعة
+16:47:06 [INFO]   ✓ KSM/USDT      : 4,380 شمعة
+16:47:06 [INFO]   ✓ STORJ/USDT    : 4,380 شمعة
+16:47:06 [INFO]   ✓ CELO/USDT     : 4,380 شمعة
+16:47:06 [INFO]   ✓ ZEN/USDT      : 4,380 شمعة
+16:47:06 [INFO]   ✓ MASK/USDT     : 4,380 شمعة
+16:47:06 [INFO]   ✓ ENS/USDT      : 4,380 شمعة
+16:47:07 [INFO]   ✓ HIGH/USDT     : 4,380 شمعة
+16:47:07 [INFO]   ✓ DYDX/USDT     : 4,380 شمعة
+16:47:07 [INFO]   ✓ GMX/USDT      : 4,380 شمعة
+16:47:07 [INFO]   ✓ MAGIC/USDT    : 4,380 شمعة
+16:47:07 [INFO]   ✓ PENDLE/USDT   : 4,380 شمعة
+16:47:07 [INFO]   ✓ CYBER/USDT    : 4,380 شمعة
+16:47:07 [INFO]   ✓ BLUR/USDT     : 4,380 شمعة
+16:47:07 [INFO]   ✓ ARKM/USDT     : 4,380 شمعة
+16:47:07 [INFO]   ✓ WLD/USDT      : 4,380 شمعة
+16:47:07 [INFO]   ✓ JOE/USDT      : 4,380 شمعة
+16:47:07 [INFO]   ✓ ID/USDT       : 4,380 شمعة
+16:47:08 [INFO]   ✓ EDU/USDT      : 4,380 شمعة
+16:47:08 [INFO]   ✓ PYTH/USDT     : 4,380 شمعة
+16:47:08 [INFO]   ✓ JUP/USDT      : 4,380 شمعة
+16:47:08 [INFO]   ✓ ORDI/USDT     : 4,380 شمعة
+16:47:08 [INFO]   ✓ JTO/USDT      : 4,380 شمعة
+16:47:08 [INFO]   ✓ MANTA/USDT    : 4,380 شمعة
+16:47:08 [INFO]   ✓ ALT/USDT      : 4,380 شمعة
+16:47:08 [INFO]   ✓ STRK/USDT     : 4,380 شمعة
+16:47:08 [INFO]   ✓ DYM/USDT      : 4,380 شمعة
+16:47:08 [INFO]   ✓ AEVO/USDT     : 4,380 شمعة
+16:47:09 [INFO]   ✓ W/USDT        : 4,380 شمعة
+16:47:09 [INFO]   ✓ ETHFI/USDT    : 4,380 شمعة
+16:47:09 [INFO]   ✓ BB/USDT       : 4,380 شمعة
+16:47:09 [INFO]   ✓ SAGA/USDT     : 4,380 شمعة
+16:47:09 [INFO]   ✓ IO/USDT       : 4,380 شمعة
+16:47:09 [INFO]   ✓ ZRO/USDT      : 4,380 شمعة
+16:47:09 [INFO]   ✓ ZK/USDT       : 4,380 شمعة
+16:47:09 [INFO]   ✓ LISTA/USDT    : 4,380 شمعة
+16:47:09 [INFO]   ✓ G/USDT        : 4,380 شمعة
+16:47:10 [INFO]   ✓ TAIKO/USDT    : 2,883 شمعة
+16:47:10 [INFO]   ✓ MEW/USDT      : 4,380 شمعة
+16:47:10 [INFO]   ✓ SYN/USDT      : 4,380 شمعة
+16:47:10 [INFO]   ✓ RARE/USDT     : 4,380 شمعة
+16:47:10 [INFO]   ✓ BANANA/USDT   : 4,380 شمعة
+16:47:11 [INFO]   ✓ MERL/USDT     : 2,962 شمعة
+16:47:11 [INFO] 🚀 تم بناء الذاكرة التاريخية. بدء حلقة التداول اللحظي...
+16:47:11 [INFO] [RateLimit] usage=0.0%
