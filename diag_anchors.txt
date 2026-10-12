@@ -1,0 +1,114 @@
+File: trading_2_live2_1.py
+Size: 647069 chars, 15595 lines
+
+══════════════════════════════════════════════════════════════════════════════
+  ANCHOR: F1_Config
+══════════════════════════════════════════════════════════════════════════════
+  Looking for first line: '    SELL_MAJOR_PAIRS: Tuple = ("BTC/USDT", "ETH/USDT",'
+  ✓ Found 1 match(es)
+
+  Context around line 696:
+    693     '    SELL_REQUIRE_EMA_DOWN: bool = False     # trend-aligned SELL'
+    694     '    SELL_MAJOR_ONLY: bool = False           # only BTC/ETH/SOL/BNB'
+    695     '    SELL_MIN_ATR_FRAC: float = 0.0          # 0 = no gate'
+    696 >>> '    SELL_MAJOR_PAIRS: Tuple = ("BTC/USDT", "ETH/USDT",'
+    697     '                                "SOL/USDT", "BNB/USDT")'
+    698     ''
+    699     '    # ══ [PERF-FIX] KMeans tuning (5x speedup on the biggest hot spot) ══'
+    700     '    # n_init 15→3   : inertia diff <2% in practice, 5x faster'
+    701     '    # max_iter 500→100 : convergence typically at ~30-50 iterations'
+    702     '    KMEANS_N_INIT: int = 3'
+    703     '    KMEANS_MAX_ITER: int = 100'
+    704     ''
+    705     '    # ══ [PERF-FIX] Parallel retrain via ThreadPoolExecutor ══'
+    706     '    # sklearn KMeans releases the GIL → concurrent calls scale on multi-core.'
+    707     '    LIVE_PARALLEL_RETRAIN: bool = True'
+    708     '    LIVE_PARALLEL_WORKERS: int = 4'
+
+══════════════════════════════════════════════════════════════════════════════
+  ANCHOR: F2_CoilFunctions
+══════════════════════════════════════════════════════════════════════════════
+  Looking for first line: "    result['market_price'] = micro['mid']"
+  ✗ NOT FOUND: "    result['market_price'] = micro['mid']"
+  Trying short form: "result['market_price'] = micro['mid']"
+  ✗ Still not found. Trying key substring...
+
+══════════════════════════════════════════════════════════════════════════════
+  ANCHOR: F4_LiveHook
+══════════════════════════════════════════════════════════════════════════════
+  Looking for first line: '                        rec = place_pending_entry('
+  ✓ Found 1 match(es)
+
+  Context around line 14673:
+  14670     '                            if _cap > 0:'
+  14671     '                                _timeout_s = min(_timeout_s, _cap)'
+  14672     ''
+  14673 >>> '                            rec = place_pending_entry('
+  14674     '                                exchange, sym, sd, qty, sig,'
+  14675     '                                timeout_s=_timeout_s,'
+  14676     '                                leverage=int(dynamic_leverage),'
+  14677     '                                ad=assets[sym],'
+  14678     '                            )'
+  14679     '                            if rec is None:'
+  14680     '                                log.info(f"[Pending] {sym} rejected — skip")'
+  14681     '                                continue'
+  14682     '                            try:'
+  14683     '                                save_pending_orders()'
+  14684     '                            except Exception:'
+  14685     '                                pass'
+
+══════════════════════════════════════════════════════════════════════════════
+  SEARCH: 'SELL_MAJOR_PAIRS'
+══════════════════════════════════════════════════════════════════════════════
+
+  Line 696:
+    695     '    SELL_MIN_ATR_FRAC: float = 0.0          # 0 = no gate'
+    696 >>> '    SELL_MAJOR_PAIRS: Tuple = ("BTC/USDT", "ETH/USDT",'
+    697     '                                "SOL/USDT", "BNB/USDT")'
+    698     ''
+    699     '    # ══ [PERF-FIX] KMeans tuning (5x speedup on the biggest hot spot) ══'
+    700     '    # n_init 15→3   : inertia diff <2% in practice, 5x faster'
+    701     '    # max_iter 500→100 : convergence typically at ~30-50 iterations'
+
+  Line 4592:
+   4591     "                if getattr(CFG, 'SELL_MAJOR_ONLY', False):"
+   4592 >>> "                    if sym not in getattr(CFG, 'SELL_MAJOR_PAIRS',"
+   4593     '                                           ("BTC/USDT", "ETH/USDT",'
+   4594     '                                            "SOL/USDT", "BNB/USDT")):'
+   4595     '                        continue'
+   4596     '                # Volatility gate (higher vol required)'
+   4597     '                _atr_frac_s = float(ad.atr14[ci]) / max(float(p), 1e-12) \\'
+
+══════════════════════════════════════════════════════════════════════════════
+  SEARCH: 'def run_live'
+══════════════════════════════════════════════════════════════════════════════
+
+  Line 13301:
+  13297     '# [/LIVE-PARITY v1]'
+  13298     ''
+  13299     ''
+  13300     ''
+  13301 >>> 'def run_live(cfg, exchange):'
+  13302     '    """'
+  13303     '    محرك التداول الحي والـ Testnet عالي التردد (HFT):'
+
+══════════════════════════════════════════════════════════════════════════════
+  SEARCH: 'rec = place_pending_entry'
+══════════════════════════════════════════════════════════════════════════════
+
+  Line 14673:
+  14671     '                                _timeout_s = min(_timeout_s, _cap)'
+  14672     ''
+  14673 >>> '                            rec = place_pending_entry('
+  14674     '                                exchange, sym, sd, qty, sig,'
+  14675     '                                timeout_s=_timeout_s,'
+  14676     '                                leverage=int(dynamic_leverage),'
+  14677     '                                ad=assets[sym],'
+  14678     '                            )'
+  14679     '                            if rec is None:'
+  14680     '                                log.info(f"[Pending] {sym} rejected — skip")'
+  14681     '                                continue'
+  14682     '                            try:'
+  14683     '                                save_pending_orders()'
+  14684     '                            except Exception:'
+  14685     '                                pass'

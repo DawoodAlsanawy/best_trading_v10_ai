@@ -109,7 +109,7 @@ class Config:
     EMA_SPAN: int = 200; ATR_PERIOD: int = 14
 
     W_CURV: float=1.0; W_VOL: float=1.0; W_ENTROPY: float=2.0
-    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=3
+    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=1
 
     CURV_THRESHOLD: float=0.01; DH_ENTROPY_THRESHOLD: float=0.005
     DH_HMM_UPPER: float=0.01;  DH_HMM_LOWER: float=-0.01
@@ -162,7 +162,7 @@ class Config:
     MAX_CONCURRENT_ASSETS: int   = 3   # [ABL6] 5 -> 3
     CORRELATION_THRESHOLD: float = 0.70
 
-    MAX_HOLD_BARS: int = 168
+    MAX_HOLD_BARS: int = 200
 
     TOPO_DIV_THRESHOLD: float = 0.05
 
@@ -232,7 +232,7 @@ class Config:
     FILL_APPLY_TO_EXITS: bool = True             # also apply to SL/TP
     # ══ [LEVEL-1 PERFORMANCE] ══
     PARALLEL_PROCESSING: bool = True
-    PARALLEL_WORKERS: int = 0            # 0 = auto (cpu_count)
+    PARALLEL_WORKERS: int = 1            # 0 = auto (cpu_count)
     ASSET_CACHE_ENABLED: bool = True
     ASSET_CACHE_DIR: str = "asset_cache"
 
@@ -412,7 +412,7 @@ class Config:
     # These values are IGNORED at runtime — _resolve_data_params() in main()
     # overrides them based on (mode, timeframe, --history-days).
     # Kept only as fallbacks if main() is bypassed (tests, imports).
-    LIVE_HISTORY_DAYS: int = 90
+    LIVE_HISTORY_DAYS: int = 730
     LIVE_TAIL_BARS: int = 800
     LIVE_MIN_BARS_FOR_PROCESS: int = 300
     # ══ [LIQ AWARENESS] Liquidation safety envelope ══
@@ -660,7 +660,7 @@ class Config:
     # الأمر يُوضع في اتجاه يواجه السعر الهابط/الصاعد، ليملأ عند أول تلامس.
     # BUY : order = tunnel + offset  (above)
     # SELL: order = tunnel − offset  (below)
-    WATCH_OFFSET_VOL_KAPPA: float = 0.02   # جزء من σ_bar
+    WATCH_OFFSET_VOL_KAPPA: float = 0.001   # جزء من σ_bar
     WATCH_OFFSET_ADV_TIERS: Tuple = (
         (1e10, 1.0),   # ADV ≥ 10B → ×1.0
         (1e9,  1.3),   # ADV ≥ 1B  → ×1.3
@@ -977,7 +977,7 @@ def _resolve_data_params(cfg, mode: str, tf_hours: float,
 
     # ── Physical constants ──
     strict_min_bars = 2 * K_max * min_pts + N         # 2424
-    MAX_HISTORY_DAYS = 730
+    MAX_HISTORY_DAYS = 10000
     MIN_HISTORY_DAYS = 3
     absolute_floor = max(N + W + 100, 500)
 
@@ -10662,7 +10662,7 @@ def monitor_watch_signals(exchange, open_pos_live: Dict,
                 float(rec['sl']) - tunnel_p
             )
         else:
-            _expected_entry = tunnel_p - _offset
+            _expected_entry = tunnel_p  - _offset
             _effective_sl = _expected_entry + abs(
                 float(rec['sl']) - tunnel_p
             )
@@ -13421,7 +13421,8 @@ def run_live(cfg, exchange):
     # Startup cost: ~5–8 minutes for 50 symbols. One-time only.
     _live_history_days = int(getattr(CFG, 'LIVE_HISTORY_DAYS', 365))
     cached_data = fetch_all(top_syms, exchange, cfg.timeframe,
-                            days=_live_history_days, workers=5)
+                        days=int(getattr(CFG, 'LIVE_HISTORY_DAYS', 365)),
+                        workers=5)
 
     # [ccxt 4.x FIX] Prefetch leverage tiers for all live symbols
     try:
@@ -13532,7 +13533,8 @@ def run_live(cfg, exchange):
                     _new_syms = list(_new_syms) + _add_back
                 top_syms = _new_syms
                 cached_data = fetch_all(top_syms, exchange, cfg.timeframe,
-                                        days=60, workers=5)
+                        days=int(getattr(CFG, 'LIVE_HISTORY_DAYS', 365)),
+                        workers=5)
                 last_scan_time = time.time()
                 corr_cache.clear()
 

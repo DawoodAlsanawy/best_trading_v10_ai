@@ -1,0 +1,7 @@
+SL Cap Diagnostic Report
+=========================
+Log: trades_sl_cap.jsonl
+N:   243
+Cap: 0.22%
+Clipped: 243 (100.00%)
+Win rate overall: 49.38%

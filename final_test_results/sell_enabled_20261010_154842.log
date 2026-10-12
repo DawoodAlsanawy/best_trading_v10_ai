@@ -1,0 +1,177 @@
+15:49:52 [INFO] [MFAL] Disabled (use --mfal to enable)
+15:49:56 [INFO] [Level-2] Numba kernels warm (JIT ready in 4.3s)
+15:49:56 [INFO] [Cache] LIVE_ASSET_CACHE_MAX adjusted to 50
+15:49:58 [INFO] [TF] timeframe=4h TF_SCALE=0.2500 TF_SECONDS=14400 TF_HOURS=4.000
+15:49:58 [INFO] [TF-Unified] N=24 W=20 L=10 ADV_BARS=6 (σ≈0.25× 1h)
+15:49:58 [INFO] [Data] mode=backtest | tf=4h | history=365d (2190 bars/symbol) | quality=degraded | source=user(365d)
+15:49:58 [WARNING] [Data] degraded quality: tail=2190 < strict_min/2=5012. Many assets may be skipped by degenerate detection. Recommended minimum for 4h: --history-days 2339.
+15:49:58 [INFO] [Trail] Trailing Stop Loss DISABLED — SL is fixed
+15:49:58 [INFO] [Watch] Watch-then-trigger DISABLED (Config default) — legacy immediate placement
+15:49:58 [INFO] [Ablation] APEX DISABLED
+15:49:58 [INFO] [Ablation] TP_MULT = 7.0
+15:49:58 [INFO] [Ablation] PARTIAL_TP_R = 3.5
+15:49:58 [INFO] [Ablation] SL_WIDEN_MULT = 0.8
+15:49:58 [INFO] [Ablation] APEX DISABLED
+15:49:58 [INFO] [Ablation] TP_MULT = 7.0
+15:49:58 [INFO] [Ablation] PARTIAL_TP_R = 3.5
+15:49:58 [INFO] [Ablation] SL_WIDEN_MULT = 0.8
+15:49:58 [INFO] [OppTP] Opposite-Signal Adaptive TP DISABLED
+15:49:58 [INFO] [TradeLog] Logging trades to trades_log_backtest.jsonl
+15:49:58 [INFO] §1  مسح أعلى 15 عملة...
+15:50:03 [INFO] §2  جلب البيانات (متوازٍ)...
+15:50:04 [INFO]   ✓ SOL/USDT      : 2,190 شمعة
+15:50:05 [INFO]   ✓ AVAX/USDT     : 2,190 شمعة
+15:50:05 [INFO]   ✓ BNB/USDT      : 2,190 شمعة
+15:50:05 [INFO]   ✓ ETH/USDT      : 2,190 شمعة
+15:50:05 [INFO]   ✓ BTC/USDT      : 2,190 شمعة
+15:50:05 [INFO]   ✓ ADA/USDT      : 2,190 شمعة
+15:50:05 [INFO]   ✓ LINK/USDT     : 2,190 شمعة
+15:50:05 [INFO]   ✓ DOT/USDT      : 2,190 شمعة
+15:50:06 [INFO]   ✓ ATOM/USDT     : 2,190 شمعة
+15:50:06 [INFO]   ✓ UNI/USDT      : 2,190 شمعة
+15:50:06 [INFO]   ✓ LTC/USDT      : 2,190 شمعة
+15:50:06 [INFO]   ✓ ETC/USDT      : 2,190 شمعة
+15:50:06 [INFO]   ✓ TRX/USDT      : 2,190 شمعة
+15:50:07 [INFO]   ✓ NEAR/USDT     : 2,190 شمعة
+15:50:07 [INFO]   ✓ TON/USDT      : 2,190 شمعة
+15:50:07 [INFO]   ✓ BCH/USDT      : 2,190 شمعة
+15:50:07 [INFO]   ✓ APT/USDT      : 2,190 شمعة
+15:50:07 [INFO]   ✓ HBAR/USDT     : 2,190 شمعة
+15:50:07 [INFO]   ✓ STX/USDT      : 2,190 شمعة
+15:50:08 [INFO]   ✓ AAVE/USDT     : 2,190 شمعة
+15:50:08 [INFO]   ✓ BNB/USDT      : 35,040 شمعة 15m
+15:50:09 [INFO]   ✓ SOL/USDT      : 35,040 شمعة 15m
+15:50:09 [INFO]   ✓ AVAX/USDT     : 35,040 شمعة 15m
+15:50:09 [INFO]   ✓ BTC/USDT      : 35,040 شمعة 15m
+15:50:09 [INFO]   ✓ ETH/USDT      : 35,040 شمعة 15m
+15:50:09 [INFO]   ✓ ADA/USDT      : 35,040 شمعة 15m
+15:50:10 [INFO]   ✓ LINK/USDT     : 35,040 شمعة 15m
+15:50:10 [INFO]   ✓ ATOM/USDT     : 35,040 شمعة 15m
+15:50:10 [INFO]   ✓ DOT/USDT      : 35,040 شمعة 15m
+15:50:10 [INFO]   ✓ LTC/USDT      : 35,040 شمعة 15m
+15:50:11 [INFO]   ✓ UNI/USDT      : 35,040 شمعة 15m
+15:50:11 [INFO]   ✓ TRX/USDT      : 35,040 شمعة 15m
+15:50:11 [INFO]   ✓ ETC/USDT      : 35,040 شمعة 15m
+15:50:11 [INFO]   ✓ NEAR/USDT     : 35,040 شمعة 15m
+15:50:11 [INFO]   ✓ BCH/USDT      : 35,040 شمعة 15m
+15:50:12 [INFO]   ✓ HBAR/USDT     : 35,040 شمعة 15m
+15:50:12 [INFO]   ✓ STX/USDT      : 35,040 شمعة 15m
+15:50:12 [INFO]   ✓ APT/USDT      : 35,040 شمعة 15m
+15:50:12 [INFO]   ✓ AAVE/USDT     : 35,040 شمعة 15m
+15:50:16 [INFO]   ✓ TON/USDT      : 25,383 شمعة 15m
+15:50:17 [INFO] [LevTiers] prefetched tiers for 0/20 symbols
+15:50:17 [INFO]   [SubBars] loaded for 20 symbols at 15m
+15:50:17 [INFO] §3  معالجة فضاء الحالة (K ديناميكي)...
+15:50:17 [INFO]   [Parallel] 7 workers × 20 symbols (cache=on)
+╔══════════════════════════════════════════════════════════════════════╗
+  [Level-1] Parallel: True  Cache: True
+  [Level-2] Numba: True
+
+║  محرك التداول الثرموديناميكي الكمي v6.0 – Singularity Engine     ║
+║  الوضع: BACKTEST    |  رأس المال: $100.00              ║
+╠══════════════════════════════════════════════════════════════════════╣
+║  ① Boltzmann Kelly: BASE=2.0%  λ=0.05  [1.0%–5.0%]  ║
+║  ② Topo-Divergence: ε=0.05  (حتمية هندسية)              ║
+║  ③ Dynamic-K:       [25–50]  (SNR ∝ 1/m)                     ║
+║  ④ Cosmological Λ:  0  (De Sitter drift)                  ║
+║  ⑤ T_sync EMA-accel: فلتر التشابك عبر المقاييس                  ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+15:50:26 [INFO]   ✓ SOL/USDT       | K=25 | اختبار=  423 | tri_μ=1.25 | [cache]
+15:50:26 [INFO]   ✓ AVAX/USDT      | K=25 | اختبار=  433 | tri_μ=1.28 | [cache]
+15:50:26 [INFO]   ✓ BNB/USDT       | K=25 | اختبار=  422 | tri_μ=1.34 | [cache]
+15:50:26 [INFO]   ✓ ETH/USDT       | K=25 | اختبار=  421 | tri_μ=1.31 | [cache]
+15:50:26 [INFO]   ✓ BTC/USDT       | K=25 | اختبار=  423 | tri_μ=1.37 | [cache]
+15:50:26 [INFO]   ✓ ADA/USDT       | K=25 | اختبار=  329 | tri_μ=1.25 | [cache]
+15:50:26 [INFO]   ✓ LINK/USDT      | K=25 | اختبار=  446 | tri_μ=1.31 | [cache]
+15:50:26 [INFO]   ✓ DOT/USDT       | K=25 | اختبار=  377 | tri_μ=1.26 | [cache]
+15:50:26 [INFO]   ✓ ATOM/USDT      | K=25 | اختبار=  430 | tri_μ=1.31 | [cache]
+15:50:26 [INFO]   ✓ UNI/USDT       | K=25 | اختبار=  419 | tri_μ=1.31 | [cache]
+15:50:26 [INFO]   ✓ LTC/USDT       | K=25 | اختبار=  437 | tri_μ=1.28 | [cache]
+15:50:26 [INFO]   ✓ ETC/USDT       | K=25 | اختبار=  447 | tri_μ=1.29 | [cache]
+15:50:26 [INFO]   ✓ TRX/USDT       | K=25 | اختبار=  458 | tri_μ=1.32 | [cache]
+15:50:26 [INFO]   ✓ NEAR/USDT      | K=25 | اختبار=  423 | tri_μ=1.27 | [cache]
+15:50:26 [INFO]   ✓ TON/USDT       | K=25 | اختبار=  237 | tri_μ=1.07 | [cache]
+15:50:26 [INFO]   ✓ BCH/USDT       | K=25 | اختبار=  390 | tri_μ=1.29 | [cache]
+15:50:26 [INFO]   ✓ APT/USDT       | K=25 | اختبار=  455 | tri_μ=1.30 | [cache]
+15:50:26 [INFO]   ✓ HBAR/USDT      | K=25 | اختبار=  394 | tri_μ=1.33 | [cache]
+15:50:26 [INFO]   ✓ STX/USDT       | K=25 | اختبار=  397 | tri_μ=1.27 | [cache]
+15:50:27 [INFO]   ✓ AAVE/USDT      | K=25 | اختبار=  294 | tri_μ=1.24 | [cache]
+15:50:36 [INFO]   [Parallel] done in 18.9s  (cache=20, computed=0, errors=0)
+15:50:36 [INFO] §4  مصفوفة الارتباط...
+15:50:36 [INFO]   أزواج مرتبطة (ρ>0.7): 7
+15:50:36 [INFO] §5  بناء الإشارات (①②④⑤ مُفعَّلة)...
+15:50:36 [INFO] [Gauge-Filter] thresholds: BUY>p60=0.14886, SELL>p95=0.22330 (pool=18626)
+15:50:36 [INFO]   ✔ 453 إشارة
+15:50:36 [INFO]   T_info: μ=3.364 | σ=1.104
+15:50:36 [INFO]   risk_dynamic: μ=1.966% | max=2.46%
+15:50:36 [INFO]   BUY=449 | SELL=4 (Λ=0)
+15:50:36 [INFO] §6  محاكاة المحفظة متعددة المراكز...
+15:50:36 [INFO]   [Backtest Realism] Entry fills: 324/453 (71.5%) [pen=1.0bps, wait=live=0s → 6 bars]
+15:50:37 [INFO]   ✔ 242 صفقة
+15:50:37 [INFO] §7  انحدار الإنتروبيا...
+15:50:37 [INFO]   SOL/USDT      : b=+0.00031  R²=0.027  [neutral]
+15:50:37 [INFO]   AVAX/USDT     : b=+0.00079  R²=0.133  [increasing]
+15:50:37 [INFO]   BNB/USDT      : b=-0.00032  R²=0.030  [neutral]
+15:50:37 [INFO]   ETH/USDT      : b=-0.00054  R²=0.062  [decreasing]
+15:50:41 [INFO] 📊 quantum_v6_results.png
+15:50:41 [INFO] [Cache-Health] Session summary: scanned=10 files, local_fixes=0 issues, gaps=0, bars_refetched=0, files_rewritten=0
+15:50:41 [INFO] ✅ اكتمل.
+15:50:41 [INFO]    E[ln(1+fR)] = +0.000508
+15:50:41 [INFO]    MaxDrawdown  = 35.00%
+15:50:41 [INFO]    Topo-Exits   = 0.0%
+15:50:41 [INFO]    AvgRisk      = 0.855%
+15:50:41 [INFO] [Diagnostic] Close-and-reverse within 3h: 0
+
+════════════════════════════════════════════════════════════════════════
+   📊  محرك التداول الثرموديناميكي الكمي v6.0  [BACKTEST]
+   🌌  محرك التفرد – Singularity Engine
+════════════════════════════════════════════════════════════════════════
+
+▶ المقياس الأساسي (م٦): E[ln(1+fR)] لكل صفقة
+   متوسط  : +0.000508
+   وسيط   : -0.002606
+   انحراف : 0.018806
+   → ✅ حافة إيجابية
+
+▶ إحصاءات الصفقات
+   عدد الصفقات      : 242
+   شراء / بيع        : 239 / 3
+   نسبة النجاح      : 19.83%
+   عامل الربح (PF)  : 1.102
+   متوسط الربح      : $2.9559
+   متوسط الخسارة   : $-0.6637
+   شارب (سنوي)      : 0.429
+   دخول مُحسَّن       : 0  (0.0%)
+
+▶ التعديلات الجديدة (v6.0)
+   ① متوسط T_info (حرارة معلوماتية) : 3.3851
+   ① متوسط المخاطرة الديناميكية     : 0.855%
+   ② خروج توبولوجي (Topo-Div)       : 0  (0.0%)
+   خروج TRI مبكر                    : 0  (0.0%)
+   انزلاق إجمالي                    : $21.12
+
+▶ رأس المال (مقياس ثانوي)
+   ابتدائي: $100.00  →  نهائي: $113.12
+   العائد الكلي     : 13.1%
+   أقصى انخفاض     : 35.00%  ($48.16)
+
+▶ تحذير السيولة (م٦): 0 (0.0%)  ✅ معقول
+
+▶ توزيع أسباب الخروج
+   Emergency SL             :     213  (88.0%)
+   Hard TP                  :      19  (7.9%)
+   MaxHold                  :       8  (3.3%)
+   EndOfData                :       2  (0.8%)
+
+════════════════════════════════════════════════════════════════════════
+
+
+▶ تحليل MFE (أقصى ربح غير مُحقَّق)
+   Emergency SL   (n= 213) | μMFE= 1.59%  max= 8.31%  | >0.5%:  135  >1.0%:  109  >2.0%:   60
+   Hard TP        (n=  19) | μMFE= 9.04%  max=10.26%  | >0.5%:   19  >1.0%:   19  >2.0%:   19
+
+▶ ميزانية المخاطرة الكلية
+   μ risk/trade : 0.855%
+   max risk/trade : 2.998%
+   min risk/trade : 0.500%

@@ -1,182 +1,132 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-يُخرج النص الفعلي حول المناطق التي فشلت فيها anchors.
-أرسل المخرجات كاملة.
-
-python diagnose_anchors.py --input trading_2_fixed_v2.py
+Anchors Diagnostic
+يُظهر السياق الحقيقي في الملف حول كل anchor، ويقترح البديل الصحيح.
 """
 
 import argparse
-import os
 import sys
+import re
 
 
-def show(src, start, end, label, max_chars=1500):
-    print(f"\n{'='*72}")
-    print(f"  {label}")
-    print(f"  offsets: {start} .. {end}")
-    print(f"{'='*72}")
-    snippet = src[start:end]
-    if len(snippet) > max_chars:
-        snippet = snippet[:max_chars] + "\n... [truncated]"
-    # طباعة النص الخام + repr لرؤية whitespace
-    print(snippet)
-    print(f"\n  ───── repr (first 400 chars) ─────")
-    print(repr(snippet[:400]))
+def find_anchor_context(source, anchor_first_line, window=3):
+    """يبحث عن أول سطر من الـ anchor ويطبع 3 أسطر قبله و10 بعده."""
+    lines = source.split('\n')
+    needle = anchor_first_line.strip()
+    hits = []
+    for i, ln in enumerate(lines):
+        if needle in ln:
+            hits.append(i)
+    return hits, lines
 
 
-def find_all(src, needle):
-    """يعيد قائمة كل offsets حيث يظهر needle."""
-    out = []
-    start = 0
-    while True:
-        i = src.find(needle, start)
-        if i < 0:
-            break
-        out.append(i)
-        start = i + 1
-    return out
+def show_context(lines, idx, before=3, after=10):
+    start = max(0, idx - before)
+    end = min(len(lines), idx + after + 1)
+    for i in range(start, end):
+        marker = " >>>" if i == idx else "    "
+        # escape غير مرئي
+        display = lines[i].replace('\t', '→')
+        # اظهر طول السطر (كشف مسافات زائدة)
+        print(f"  {i+1:5d}{marker} {display!r}")
+
+
+def show_anchor(name, anchor, source):
+    print(f"\n{'═' * 78}")
+    print(f"  ANCHOR: {name}")
+    print(f"{'═' * 78}")
+    anchor_lines = anchor.split('\n')
+    first = anchor_lines[0]
+    print(f"  Looking for first line: {first!r}")
+    hits, lines = find_anchor_context(source, first)
+    if not hits:
+        print(f"  ✗ NOT FOUND: {first!r}")
+        # جرّب أول 40 حرف فقط
+        short = first.strip()[:40]
+        print(f"  Trying short form: {short!r}")
+        if short and len(short) > 10:
+            hits, _ = find_anchor_context(source, short)
+        if not hits:
+            print(f"  ✗ Still not found. Trying key substring...")
+            # extract a distinctive keyword
+            for kw in ['SELL_MAJOR_PAIRS', 'result[\'market_price\']',
+                       'place_pending_entry(', 'rec = place_pending_entry']:
+                if kw in first:
+                    hits, _ = find_anchor_context(source, kw)
+                    if hits:
+                        print(f"  Found using keyword: {kw!r}")
+                        break
+        if not hits:
+            return
+    print(f"  ✓ Found {len(hits)} match(es)")
+    for idx in hits[:3]:
+        print(f"\n  Context around line {idx+1}:")
+        show_context(lines, idx, before=3, after=12)
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--input", default="trading_2_fixed_v2.py")
-    args = ap.parse_args()
+    p = argparse.ArgumentParser()
+    p.add_argument("--target", default="trading_2_live2_1.py")
+    args = p.parse_args()
 
-    if not os.path.exists(args.input):
-        print(f"❌ {args.input} not found")
-        sys.exit(1)
+    with open(args.target, "r", encoding="utf-8") as f:
+        source = f.read()
 
-    with open(args.input, "r", encoding="utf-8") as f:
-        src = f.read()
+    print(f"File: {args.target}")
+    print(f"Size: {len(source)} chars, {source.count(chr(10))+1} lines")
 
-    print(f"📖 Loaded {len(src):,} bytes from {args.input}\n")
+    # ═══ F1: Config ═══
+    F1 = '''    SELL_MAJOR_PAIRS: Tuple = ("BTC/USDT", "ETH/USDT",
+                                "SOL/USDT", "BNB/USDT")
 
-    # ═══════════════════════════════════════════════════════════
-    # 1) ابحث عن place_pending_entry و اعرض الجزء الأخير منه
-    # ═══════════════════════════════════════════════════════════
-    print("\n" + "█"*72)
-    print("█  SECTION 1: place_pending_entry — final GTX block")
-    print("█"*72)
+CFG = Config()'''
+    show_anchor("F1_Config", F1, source)
 
-    ppe = src.find("def place_pending_entry(")
-    if ppe < 0:
-        print("❌ place_pending_entry NOT FOUND")
-    else:
-        # آخر 2000 حرف من الدالة (نهاية الدالة هي rec = {...} و log)
-        # نبحث عن "rec = {" بعد ppe
-        rec_pos = src.find("rec = {", ppe)
-        if rec_pos < 0:
-            print("❌ `rec = {` not found after place_pending_entry")
-            # اطبع 3000 حرف من البداية
-            show(src, ppe, ppe + 3000, "place_pending_entry head")
-        else:
-            # اطبع 1500 حرف قبل rec = { (هذا يحتوي على GTX block)
-            show(src,
-                 max(ppe, rec_pos - 1800),
-                 rec_pos + 50,
-                 "GTX block + rec start (in place_pending_entry)")
+    # ═══ F2: CoilFunctions ═══
+    F2 = '''    result['market_price'] = micro['mid']
+    return result
 
-    # ═══════════════════════════════════════════════════════════
-    # 2) ابحث عن كل تطابقات "GTX" داخل place_pending_entry
-    # ═══════════════════════════════════════════════════════════
-    print("\n" + "█"*72)
-    print("█  SECTION 2: All 'GTX' occurrences in place_pending_entry")
-    print("█"*72)
 
-    if ppe >= 0:
-        # نهاية الدالة = بداية الدالة التالية أو نهاية الملف
-        next_def = src.find("\ndef ", ppe + 10)
-        if next_def < 0:
-            next_def = len(src)
-        ppe_body = src[ppe:next_def]
-        print(f"place_pending_entry body: {len(ppe_body)} chars")
-        for m in find_all(ppe_body, "GTX"):
-            print(f"  • GTX at relative offset {m} "
-                  f"(abs {ppe + m})")
-            print(f"      ... {ppe_body[max(0,m-80):m+120]!r}")
+def run_live(cfg, exchange):'''
+    show_anchor("F2_CoilFunctions", F2, source)
 
-    # ═══════════════════════════════════════════════════════════
-    # 3) ابحث عن exit block الذي يحتوي no fill
-    # ═══════════════════════════════════════════════════════════
-    print("\n" + "█"*72)
-    print("█  SECTION 3: Exit no-fill block in run_live")
-    print("█"*72)
+    # ═══ F4: LiveHook ═══
+    F4 = '''                        rec = place_pending_entry(
+                            exchange, sym, sd, qty, sig,
+                            timeout_s=_timeout_s,
+                            leverage=int(dynamic_leverage),
+                            ad=assets[sym],
+                        )'''
+    show_anchor("F4_LiveHook", F4, source)
 
-    # ابحث عن "execute_post_only(" الذي يسبق exit
-    # الـ anchor الأفضل: البحث عن "po_exit" أو "[Exit]"
-    exit_marker = src.find("⬛ [Exit]")
-    if exit_marker < 0:
-        exit_marker = src.find("[Exit]")
+    # إضافي: اطبع كل الأسطر التي تحتوي على "SELL_MAJOR_PAIRS"
+    print(f"\n{'═' * 78}")
+    print(f"  SEARCH: 'SELL_MAJOR_PAIRS'")
+    print(f"{'═' * 78}")
+    hits, lines = find_anchor_context(source, "SELL_MAJOR_PAIRS")
+    for idx in hits[:5]:
+        print(f"\n  Line {idx+1}:")
+        show_context(lines, idx, before=1, after=5)
 
-    if exit_marker >= 0:
-        print(f"  • '[Exit]' log found at offset {exit_marker}")
-        # اطبع 2500 حرف قبل ذلك
-        show(src,
-             max(0, exit_marker - 2500),
-             exit_marker + 100,
-             "Exit block (before ⬛ [Exit] log)")
-    else:
-        print("  ❌ '[Exit]' not found")
+    print(f"\n{'═' * 78}")
+    print(f"  SEARCH: 'def run_live'")
+    print(f"{'═' * 78}")
+    hits, lines = find_anchor_context(source, "def run_live")
+    for idx in hits[:5]:
+        print(f"\n  Line {idx+1}:")
+        show_context(lines, idx, before=4, after=2)
 
-    # ═══════════════════════════════════════════════════════════
-    # 4) ابحث عن كل تطابقات "no fill" و "[Exit]"
-    # ═══════════════════════════════════════════════════════════
-    print("\n" + "█"*72)
-    print("█  SECTION 4: All 'no fill' and '[Exit]' occurrences")
-    print("█"*72)
+    print(f"\n{'═' * 78}")
+    print(f"  SEARCH: 'rec = place_pending_entry'")
+    print(f"{'═' * 78}")
+    hits, lines = find_anchor_context(source, "rec = place_pending_entry")
+    for idx in hits[:3]:
+        print(f"\n  Line {idx+1}:")
+        show_context(lines, idx, before=2, after=12)
 
-    print("\n  'no fill' occurrences:")
-    for i in find_all(src, "no fill"):
-        print(f"    • offset {i}: ...{src[max(0,i-60):i+60]!r}")
-
-    print("\n  '[Exit]' occurrences:")
-    for i in find_all(src, "[Exit]"):
-        print(f"    • offset {i}: ...{src[max(0,i-60):i+60]!r}")
-
-    # ═══════════════════════════════════════════════════════════
-    # 5) ابحث عن _exit_ok و _exit_retry
-    # ═══════════════════════════════════════════════════════════
-    print("\n" + "█"*72)
-    print("█  SECTION 5: _exit_ok / _exit_retry context")
-    print("█"*72)
-
-    for needle in ("_exit_ok", "_exit_retry", "forcing MARKET after"):
-        print(f"\n  '{needle}' occurrences:")
-        for i in find_all(src, needle):
-            print(f"    • offset {i}: "
-                  f"...{src[max(0,i-80):i+120]!r}")
-
-    # ═══════════════════════════════════════════════════════════
-    # 6) اطبع حول rec.get('filled')
-    # ═══════════════════════════════════════════════════════════
-    print("\n" + "█"*72)
-    print("█  SECTION 6: monitor_pending_orders timeout block")
-    print("█"*72)
-
-    mpo = src.find("def monitor_pending_orders(")
-    if mpo < 0:
-        print("❌ monitor_pending_orders NOT FOUND")
-    else:
-        # ابحث عن timeout داخل هذه الدالة
-        timeout_pos = src.find("timeout_s = float(rec.get", mpo)
-        if timeout_pos < 0:
-            timeout_pos = src.find("elapsed > timeout_s", mpo)
-        if timeout_pos > 0:
-            show(src,
-                 max(mpo, timeout_pos - 800),
-                 timeout_pos + 1500,
-                 "timeout block in monitor_pending_orders")
-        else:
-            print("⚠️  timeout block not found — showing first 2500 chars of function")
-            show(src, mpo, mpo + 2500, "monitor_pending_orders head")
-
-    print("\n" + "█"*72)
-    print("█  END OF DIAGNOSTIC")
-    print("█"*72)
-    print("\n📋 أرسل المخرجات كاملة (من أول SECTION 1 حتى النهاية)")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

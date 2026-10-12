@@ -1,0 +1,60 @@
+15:44:37 [INFO] [MFAL] Disabled (use --mfal to enable)
+15:44:41 [INFO] [Level-2] Numba kernels warm (JIT ready in 4.3s)
+15:44:41 [INFO] [Cache] LIVE_ASSET_CACHE_MAX adjusted to 50
+15:44:44 [INFO] [TF] timeframe=1h TF_SCALE=1.0000 TF_SECONDS=3600 TF_HOURS=1.000
+15:44:44 [INFO] [TF-Unified] N=24 W=20 L=10 ADV_BARS=24 (σ≈1.00× 1h)
+15:44:44 [INFO] [Data] mode=backtest | tf=1h | history=365d (8760 bars/symbol) | quality=reduced | source=user(365d)
+15:44:44 [INFO] [Data] K will be capped near 43 (tail < strict_min=10024). Normal for large TFs (4h, 1d) or low --history-days.
+15:44:44 [INFO] [Trail] Trailing Stop Loss DISABLED — SL is fixed
+15:44:44 [INFO] [Watch] Watch-then-trigger DISABLED (Config default) — legacy immediate placement
+15:44:44 [INFO] [Ablation] APEX DISABLED
+15:44:44 [INFO] [Ablation] TP_MULT = 7.0
+15:44:44 [INFO] [Ablation] PARTIAL_TP_R = 3.5
+15:44:44 [INFO] [Ablation] SL_WIDEN_MULT = 0.8
+15:44:44 [INFO] [Ablation] APEX DISABLED
+15:44:44 [INFO] [Ablation] TP_MULT = 7.0
+15:44:44 [INFO] [Ablation] PARTIAL_TP_R = 3.5
+15:44:44 [INFO] [Ablation] SL_WIDEN_MULT = 0.8
+15:44:44 [INFO] [OppTP] Opposite-Signal Adaptive TP DISABLED
+15:44:44 [INFO] [TradeLog] Logging trades to trades_log_backtest.jsonl
+15:44:44 [INFO] §1  مسح أعلى 15 عملة...
+15:44:50 [INFO] §2  جلب البيانات (متوازٍ)...
+15:44:51 [INFO]   ✓ ETH/USDT      : 8,760 شمعة
+15:44:52 [INFO]   ✓ ADA/USDT      : 8,760 شمعة
+15:44:52 [INFO]   ✓ SOL/USDT      : 8,760 شمعة
+15:44:52 [INFO]   ✓ BNB/USDT      : 8,760 شمعة
+15:44:52 [INFO]   ✓ AVAX/USDT     : 8,760 شمعة
+15:44:53 [INFO]   ✓ LINK/USDT     : 8,760 شمعة
+15:44:54 [INFO]   ✓ UNI/USDT      : 8,760 شمعة
+15:44:54 [INFO]   ✓ LTC/USDT      : 8,760 شمعة
+15:44:54 [INFO]   ✓ DOT/USDT      : 8,760 شمعة
+15:44:54 [INFO]   ✓ ATOM/USDT     : 8,760 شمعة
+15:44:55 [INFO]   ✓ TRX/USDT      : 8,760 شمعة
+15:44:55 [INFO]   ✓ ETC/USDT      : 8,760 شمعة
+15:44:56 [INFO]   ✓ BCH/USDT      : 8,760 شمعة
+15:44:56 [INFO]   ✓ TON/USDT      : 6,153 شمعة
+15:44:57 [INFO]   ✓ BTC/USDT      : 8,760 شمعة
+15:45:02 [INFO]   ✓ APT/USDT      : 8,760 شمعة
+15:45:03 [INFO]   ✓ STX/USDT      : 8,760 شمعة
+15:45:03 [INFO]   ✓ NEAR/USDT     : 8,760 شمعة
+15:45:03 [INFO]   ✓ HBAR/USDT     : 8,760 شمعة
+15:45:04 [INFO]   ✓ AAVE/USDT     : 8,760 شمعة
+15:45:41 [INFO]   ✓ AVAX/USDT     : 105,120 شمعة 5m
+15:45:41 [INFO]   ✓ ADA/USDT      : 105,120 شمعة 5m
+15:45:42 [INFO]   ✓ BNB/USDT      : 105,120 شمعة 5m
+15:45:45 [INFO]   ✓ SOL/USDT      : 105,120 شمعة 5m
+15:45:47 [INFO]   ✓ ETH/USDT      : 105,120 شمعة 5m
+15:46:22 [INFO]   ✓ DOT/USDT      : 105,120 شمعة 5m
+15:46:23 [INFO]   ✓ LINK/USDT     : 105,120 شمعة 5m
+15:46:39 [WARNING] [SubBars] ATOM/USDT backfill: binance GET https://fapi.binance.com/fapi/v1/klines?interval=5m&limit=1000&symbol=ATOMUSDT&startTime=1776911100001
+15:46:39 [WARNING] [SubBars] TRX/USDT backfill: binance GET https://fapi.binance.com/fapi/v1/klines?interval=5m&limit=1000&symbol=TRXUSDT&startTime=1761911100001
+15:46:39 [WARNING] [SubBars] UNI/USDT backfill: binance GET https://fapi.binance.com/fapi/v1/klines?interval=5m&limit=1000&symbol=UNIUSDT&startTime=1779611100001
+15:46:39 [INFO]   ✓ ATOM/USDT     : 26,114 شمعة 5m
+15:46:39 [INFO]   ✓ UNI/USDT      : 26,114 شمعة 5m
+15:46:39 [INFO]   ✓ TRX/USDT      : 26,114 شمعة 5m
+15:46:50 [INFO]   ✓ LTC/USDT      : 105,120 شمعة 5m
+15:47:22 [INFO]   ✓ BTC/USDT      : 105,120 شمعة 5m
+15:47:28 [INFO]   ✓ ETC/USDT      : 105,120 شمعة 5m
+15:47:42 [INFO]   ✓ BCH/USDT      : 105,120 شمعة 5m
+15:47:56 [INFO]   ✓ TON/USDT      : 73,648 شمعة 5m
+15:48:04 [INFO]   ✓ APT/USDT      : 105,120 شمعة 5m
