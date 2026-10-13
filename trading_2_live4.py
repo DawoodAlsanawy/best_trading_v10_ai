@@ -76,6 +76,62 @@ _CACHE_HEALTH: Dict = {
     'bars_refetched': 0,
     'files_saved': 0,
 }
+
+# ═══════════════════════════════════════════════════════════════
+# [DEAD-GAPS] Persistent record of gaps the exchange cannot fill.
+# Once a (symbol, timeframe, start_ts, end_ts) is confirmed dead,
+# we stop retrying it forever.
+# ═══════════════════════════════════════════════════════════════
+_DEAD_GAPS_FILE = "cache_dead_gaps.json"
+_DEAD_GAPS: Dict[str, list] = {}
+
+
+def _dead_gaps_load() -> None:
+    global _DEAD_GAPS
+    if not os.path.exists(_DEAD_GAPS_FILE):
+        return
+    try:
+        with open(_DEAD_GAPS_FILE) as f:
+            _DEAD_GAPS = json.load(f)
+    except Exception:
+        _DEAD_GAPS = {}
+
+
+def _dead_gaps_save() -> None:
+    try:
+        tmp = _DEAD_GAPS_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(_DEAD_GAPS, f)
+        os.replace(tmp, _DEAD_GAPS_FILE)
+    except Exception:
+        pass
+
+
+def _is_dead_gap(symbol: str, timeframe: str,
+                  start_ts: int, end_ts: int) -> bool:
+    """True if the entire [start_ts, end_ts] lies inside a known dead gap."""
+    for (ds, de) in _DEAD_GAPS.get(f"{symbol}|{timeframe}", []):
+        if ds <= start_ts and end_ts <= de:
+            return True
+    return False
+
+
+def _mark_dead_gap(symbol: str, timeframe: str,
+                    start_ts: int, end_ts: int) -> None:
+    key = f"{symbol}|{timeframe}"
+    lst = _DEAD_GAPS.setdefault(key, [])
+    for (ds, de) in lst:
+        if ds == start_ts and de == end_ts:
+            return  # already recorded
+    lst.append([int(start_ts), int(end_ts)])
+    _dead_gaps_save()
+
+
+# Load on import
+try:
+    _dead_gaps_load()
+except Exception:
+    pass
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 logging.basicConfig(level=logging.INFO,
@@ -352,16 +408,21 @@ class Config:
 
     # ══ [SMART OHLCV FETCH] ══
     SMART_OHLCV_ENABLED: bool = True
-    # ══ [SUPPORT/RESISTANCE FILTER] ══
-    SR_FILTER_ENABLED: bool = False      # disabled by default until tuned
-    SR_LOOKBACK: int = 100
-    SR_MIN_TOUCHES: int = 2              # relaxed from 3
-    SR_TOUCH_TOLERANCE: float = 0.0035   # relaxed from 0.0025 (0.35%)
+    # ══ [SR-PROTECTED-SL] REVERSED LOGIC ══
+    # BUY : a strong SUPPORT must sit between entry and SL
+    #       (SL is protected from above)
+    # SELL: a strong RESISTANCE must sit between entry and SL
+    #       (SL is protected from below)
+    SR_FILTER_ENABLED: bool = False       # off by default
+    SR_LOOKBACK: int = 60                 # 10 days @ 4h
+    SR_MIN_TOUCHES: int = 3               # strong, not casual
+    SR_TOUCH_TOLERANCE: float = 0.003     # 0.3% cluster tolerance
     SR_MIN_GAP_BARS: int = 10
-    SR_STRENGTH_THRESHOLD: float = 1.0   # relaxed from 2.0
-    SR_DECAY_TAU: float = 80.0           # slower decay
-    SR_SL_PROXIMITY: float = 0.006       # relaxed from 0.004 (0.6%)
+    SR_STRENGTH_THRESHOLD: float = 2.0    # stronger threshold
+    SR_DECAY_TAU: float = 80.0
+    SR_SL_PROXIMITY: float = 0.008        # 0.8% max gap SL↔level
     SR_VOLUME_WEIGHT: float = 1.5
+    SR_MIN_GAP_FRAC: float = 0.001        # 0.1% min gap SL↔level
     # ══ [KILL SWITCH — HMAC-authenticated] ══
     KILL_SWITCH_ENABLED: bool = True
     KILL_SWITCH_SECRET: str = ""          # from env or CLI
@@ -715,6 +776,28 @@ class Config:
     # sklearn KMeans releases the GIL → concurrent calls scale on multi-core.
     LIVE_PARALLEL_RETRAIN: bool = True
     LIVE_PARALLEL_WORKERS: int = 4
+
+    # ══ [REVERSAL-CONFIRM] Touch-and-Bounce on SUB-BARS ══
+    # Main TF gives (action, target, close_idx).
+    # Sub-bar TF confirms entry via TOUCH → BOUNCE.
+    REVERSAL_CONFIRM_ENABLED: bool = False
+    REVERSAL_TOUCH_SUBBARS:  int   = 20       # 5h @ 15m sub-bar
+    REVERSAL_BOUNCE_SUBBARS: int   = 4        # 1h @ 15m sub-bar
+    REVERSAL_MAX_HOURS:      float = 24.0     # signal validity window
+    REVERSAL_CONFIRM_MODE:   str   = "close_back"
+    REVERSAL_CONFIRM_KAPPA:  float = 0.20     # for sigma_bounce mode
+    REVERSAL_FILL_AT:        str   = "target" # [DEPRECATED] always target
+
+    # ══ [ESCAPE] Physics-based switch from GTX to Market ══
+    # The decision uses two quantities derived from stored signal-time
+    # physics + the live ticker:
+    #   d_sigma = |p_now − target| / (σ_bar · target)
+    #   rho     = |accel| · (1 + gauge) / (friction · d_sigma + ε)
+    REVERSAL_ESCAPE_ENABLED: bool = True
+    REVERSAL_ESCAPE_D_SIGMA_MIN: float = 1.0
+    REVERSAL_ESCAPE_D_SIGMA_MAX: float = 2.0
+    REVERSAL_ESCAPE_RHO_THRESHOLD: float = 1.5
+    REVERSAL_ESCAPE_CHECK_INTERVAL_S: float = 5.0
 
 CFG = Config()
 
@@ -1425,10 +1508,15 @@ _REQUIRED_OHLCV = ('Open', 'High', 'Low', 'Close', 'Volume')
 _TS_COL_CANDIDATES = ('ts', 'timestamp', 'time', 'date', 'datetime')
 
 
-def _validate_cache_local(df, symbol: str, timeframe: str, tf_sec: int):
+def _validate_cache_local(df, symbol: str, timeframe: str, tf_sec: int,
+                           since_ts=None):
     """
     مرحلة الإصلاح المحلي (بدون شبكة).
     Returns: (cleaned_df | None, gap_ranges: list[(start_ts, end_ts)], issues: dict)
+
+    since_ts: if given, only gaps whose end_ts >= since_ts are reported.
+              Gaps entirely before it are dropped from gap_ranges AND
+              excluded from issues['gaps'].
     """
     issues = {
         'naive_tz': 0, 'wrong_index_type': 0, 'unsorted': 0,
@@ -1554,8 +1642,16 @@ def _validate_cache_local(df, symbol: str, timeframe: str, tf_sec: int):
                 continue
             start_ts = df.index[gi - 1] + expected
             end_ts = df.index[gi] - expected
-            if start_ts <= end_ts:
-                gap_ranges.append((start_ts, end_ts))
+            if start_ts > end_ts:
+                continue
+            # [WINDOW-FILTER] skip gaps entirely outside the current window
+            if since_ts is not None:
+                try:
+                    if end_ts < since_ts:
+                        continue
+                except Exception:
+                    pass
+            gap_ranges.append((start_ts, end_ts))
         issues['gaps'] = len(gap_ranges)
 
     return df, gap_ranges, issues
@@ -1628,9 +1724,14 @@ def _log_cache_health(symbol: str, timeframe: str,
         log.info(f"[Cache-Health] {symbol} {timeframe}: "
                  f"local repair [{_fixes}]")
     if gaps_filled > 0:
-        log.info(f"[Cache-Health] {symbol} {timeframe}: "
-                 f"filled {bars_fetched} bar(s) across "
-                 f"{gaps_filled} gap(s) — network fetch")
+        if bars_fetched > 0:
+            log.info(f"[Cache-Health] {symbol} {timeframe}: "
+                     f"filled {bars_fetched} bar(s) across "
+                     f"{gaps_filled} gap(s) — network fetch")
+        else:
+            log.debug(f"[Cache-Health] {symbol} {timeframe}: "
+                      f"{gaps_filled} gap(s) confirmed dead "
+                      f"(exchange has no data)")
 
     _CACHE_HEALTH['files_scanned'] += 1
     _CACHE_HEALTH['issues_fixed_local'] += sum(
@@ -1792,7 +1893,7 @@ def _load_cached_sub(symbol, exchange, sub_tf, days):
             log.warning(f"[SubBars] {symbol} backfill: {e}")
     # ═══ 3.5 التحقق والإصلاح المحلي (sub-bars) ═══
     df, gap_ranges, issues = _validate_cache_local(
-        df, symbol, sub_tf, _sub_sec
+        df, symbol, sub_tf, _sub_sec, since_ts=since_full_dt
     )
     if df is None or len(df) < min_rows:
         return None
@@ -1881,20 +1982,21 @@ def fetch_all_with_subbars(symbols, exchange, main_tf, days, workers=5):
 def _align_subbars(main_index, sub_df, sub_per_main, tf_sec):
     """
     Align sub-bars to main-bar grid.
-
-    Returns (sub_highs, sub_lows) with shape (n_main, sub_per_main).
-    Missing sub-bars are filled with the main bar's high/low.
+    Returns (sub_highs, sub_lows, sub_closes) each (n_main, sub_per_main).
+    Missing sub-bars are NaN.
     """
     n = len(main_index)
-    sub_highs = np.full((n, sub_per_main), np.nan, dtype=np.float64)
-    sub_lows  = np.full((n, sub_per_main), np.nan, dtype=np.float64)
+    sub_highs  = np.full((n, sub_per_main), np.nan, dtype=np.float64)
+    sub_lows   = np.full((n, sub_per_main), np.nan, dtype=np.float64)
+    sub_closes = np.full((n, sub_per_main), np.nan, dtype=np.float64)
     if sub_df is None or len(sub_df) == 0 or sub_per_main <= 0:
-        return sub_highs, sub_lows
+        return sub_highs, sub_lows, sub_closes
 
     try:
         sub_ts_ns = sub_df.index.asi8
-        sub_high_vals = sub_df['High'].values.astype(np.float64)
-        sub_low_vals  = sub_df['Low'].values.astype(np.float64)
+        sub_high_vals  = sub_df['High'].values.astype(np.float64)
+        sub_low_vals   = sub_df['Low'].values.astype(np.float64)
+        sub_close_vals = sub_df['Close'].values.astype(np.float64)
         main_ns = main_index.asi8
         tf_ns = int(tf_sec * 1_000_000_000)
 
@@ -1906,11 +2008,12 @@ def _align_subbars(main_index, sub_df, sub_per_main, tf_sec):
             if hi <= lo:
                 continue
             take = min(hi - lo, sub_per_main)
-            sub_highs[i, :take] = sub_high_vals[lo:lo+take]
-            sub_lows[i, :take]  = sub_low_vals[lo:lo+take]
+            sub_highs[i, :take]  = sub_high_vals[lo:lo+take]
+            sub_lows[i, :take]   = sub_low_vals[lo:lo+take]
+            sub_closes[i, :take] = sub_close_vals[lo:lo+take]
     except Exception as e:
         log.warning(f"[SubBars] align failed: {e}")
-    return sub_highs, sub_lows
+    return sub_highs, sub_lows, sub_closes
 
 # ════════════════════════════════════════════════════════════════
 # § 2  جلب البيانات مع كاش (متوازٍ)
@@ -2078,7 +2181,7 @@ def _load_cached(symbol, exchange, timeframe, days):
 
     # ═══ 3.5 التحقق والإصلاح المحلي ═══
     df, gap_ranges, issues = _validate_cache_local(
-        df, symbol, timeframe, _tf_sec
+        df, symbol, timeframe, _tf_sec, since_ts=since_full_dt
     )
     if df is None or len(df) < min_rows:
         return None
@@ -2087,8 +2190,17 @@ def _load_cached(symbol, exchange, timeframe, days):
     _gaps_filled = 0
     _bars_fetched = 0
     if issues.get('gaps', 0) > 0 and gap_ranges:
-        _relevant = [(s, e) for (s, e) in gap_ranges
-                     if e >= since_full_dt]
+        _candidates = [(s, e) for (s, e) in gap_ranges
+                       if e >= since_full_dt]
+        # [DEAD-GAPS] Skip gaps the exchange cannot fill
+        _relevant = [(s, e) for (s, e) in _candidates
+                     if not _is_dead_gap(symbol, timeframe,
+                                          int(s.timestamp()),
+                                          int(e.timestamp()))]
+        _n_dead_skipped = len(_candidates) - len(_relevant)
+        if _n_dead_skipped > 0:
+            log.debug(f"[Cache-Health] {symbol} {timeframe}: "
+                      f"skipped {_n_dead_skipped} known-dead gap(s)")
         if _relevant:
             _n_before = len(df)
             try:
@@ -2100,7 +2212,15 @@ def _load_cached(symbol, exchange, timeframe, days):
                             f"failed: {e}")
                 df_gap = None
 
+            # [DEAD-GAPS] Identify gaps that returned no bars
             if df_gap is not None and len(df_gap) > 0:
+                _gap_idx = df_gap.index
+                for (s, e) in _relevant:
+                    _hit = _gap_idx[(_gap_idx >= s) & (_gap_idx <= e)]
+                    if len(_hit) == 0:
+                        _mark_dead_gap(symbol, timeframe,
+                                        int(s.timestamp()),
+                                        int(e.timestamp()))
                 df = pd.concat([df, df_gap])
                 df = (df[~df.index.duplicated(keep='last')]
                         .sort_index())
@@ -2111,6 +2231,12 @@ def _load_cached(symbol, exchange, timeframe, days):
                     _CACHE_HEALTH['files_saved'] += 1
                 except Exception as e:
                     log.debug(f"[Cache-Health] {symbol} save failed: {e}")
+            else:
+                # Every candidate gap returned nothing → mark all dead
+                for (s, e) in _relevant:
+                    _mark_dead_gap(symbol, timeframe,
+                                    int(s.timestamp()),
+                                    int(e.timestamp()))
 
     # سجّل الملخص
     _log_cache_health(symbol, timeframe, issues,
@@ -2851,8 +2977,9 @@ class AssetData:
     geodesic_accel: np.ndarray
     score_q95_train: float
     # ══ [SUB-BARS] ══
-    sub_highs: Optional[np.ndarray] = None    # shape (n_bars, sub_per_main)
-    sub_lows:  Optional[np.ndarray] = None
+    sub_highs:  Optional[np.ndarray] = None   # shape (n_bars, sub_per_main)
+    sub_lows:   Optional[np.ndarray] = None
+    sub_closes: Optional[np.ndarray] = None
     sub_per_main: int = 0
     sub_tf: str = ""
 
@@ -3190,7 +3317,7 @@ def process_asset(symbol, df, km_ext=None, current_capital=None, sub_df=None):
     tri = compute_tri(dH, d2H, dF, dKE, ed['lya'])
 
     # ══ [SUB-BARS] Align finer bars to the main grid ══
-    _sub_h, _sub_l = None, None
+    _sub_h, _sub_l, _sub_c = None, None, None
     _sub_pm = 0
     _sub_tf_name = ""
     if (getattr(CFG, 'SUBBARS_ENABLED', True)
@@ -3199,7 +3326,7 @@ def process_asset(symbol, df, km_ext=None, current_capital=None, sub_df=None):
         if _sub_tf_name:
             _sub_pm = _sub_per_main(CFG.timeframe, _sub_tf_name)
             if _sub_pm >= 2:
-                _sub_h, _sub_l = _align_subbars(
+                _sub_h, _sub_l, _sub_c = _align_subbars(
                     ts, sub_df, _sub_pm, int(CFG.TF_SECONDS)
                 )
 
@@ -3219,6 +3346,7 @@ def process_asset(symbol, df, km_ext=None, current_capital=None, sub_df=None):
         score_q95_train=_score_q95_train,
         sub_highs=_sub_h,
         sub_lows=_sub_l,
+        sub_closes=_sub_c,
         sub_per_main=_sub_pm,
         sub_tf=_sub_tf_name,
     )
@@ -4207,37 +4335,55 @@ def _sr_filter_check(sig, ad, current_ci: int) -> Tuple[bool, str]:
             return False, "no_clusters"
 
         sl_price = float(sig.sl)
+        entry_price = float(sig.price)
         best_strength = 0.0
         best_level = 0.0
         best_dist = 999.0
 
+        _min_gap = float(getattr(CFG, 'SR_MIN_GAP_FRAC', 0.001))
+
         for c in clusters:
             if c['touch_count'] < min_touches:
                 continue
-            dist = abs(sl_price - c['price']) / max(sl_price, 1e-12)
-            if dist > sl_prox:
+
+            level = float(c['price'])
+
+            # ── [REVERSED] The level must sit BETWEEN entry and SL ──
+            if sig.action == "BUY":
+                # support between SL and entry
+                if not (sl_price < level < entry_price):
+                    continue
+                gap_frac = (level - sl_price) / max(abs(sl_price), 1e-12)
+            else:
+                # resistance between entry and SL
+                if not (entry_price < level < sl_price):
+                    continue
+                gap_frac = (sl_price - level) / max(abs(sl_price), 1e-12)
+
+            # gap bounds: neither attached nor too far
+            if gap_frac < _min_gap:
                 continue
-            if sig.action == "BUY" and c['price'] > sl_price * (1.0 + tol):
+            if gap_frac > sl_prox:
                 continue
-            if sig.action == "SELL" and c['price'] < sl_price * (1.0 - tol):
-                continue
+
             strength = _compute_level_strength(ad, current_ci, c)
             if strength > best_strength:
                 best_strength = strength
-                best_level = c['price']
-                best_dist = dist
+                best_level = level
+                best_dist = gap_frac
 
         if best_strength < str_thr:
             _SR_REJECT_LOG['weak_strength'] += 1
-            # Log first 20 rejections per symbol for diagnosis
             if _SR_REJECT_LOG['weak_strength'] <= 20:
                 log.debug(
-                    f"[SR] {sig.symbol} {sig.action} weak: "
+                    f"[SR] {sig.symbol} {sig.action} no protection: "
                     f"strength={best_strength:.2f} < {str_thr:.2f} "
-                    f"(level={best_level:.6f}, dist={best_dist*1e4:.1f}bps)"
+                    f"(level={best_level:.6f}, gap={best_dist*100:.2f}%)"
                 )
-            return False, f"weak_SR({best_strength:.2f})"
-        return True, f"OK(strength={best_strength:.2f})"
+            return False, f"unprotected_SL(strength={best_strength:.2f})"
+        return True, (f"OK(level={best_level:.6f}, "
+                      f"strength={best_strength:.2f}, "
+                      f"gap={best_dist*100:.2f}%)")
     except Exception as e:
         log.warning(f"[SR] check failed {sig.symbol}: {e}")
         return True, "SR_error"  # fail open
@@ -4967,6 +5113,129 @@ def _check_confirmation(ad, sig, cfg):
 # § 14.5  Precompute Realistic Entry Fills (Backtest Only)
 # ════════════════════════════════════════════════════════════════
 
+def _check_reversal_fill_subbars(ad, sig, target0, cfg,
+                                  first_main_ci, deadline_main_ci):
+    """
+    [REVERSAL-CONFIRM / SUB-BARS] Touch-and-Bounce entry on sub-bars.
+
+    Signal fires at close of main bar `sig.close_idx`.
+    Scan sub-bars starting at (sig.close_idx + 1, sub_idx = 0).
+
+    Returns (confirm_main_ci, fill_px) or None.
+    """
+    if ad.sub_highs is None or ad.sub_closes is None or ad.sub_per_main < 2:
+        return None
+
+    action  = sig.action
+    sub_pm  = int(ad.sub_per_main)
+    start_main = sig.close_idx + 1
+    end_main   = min(deadline_main_ci, ad.sub_highs.shape[0])
+    if end_main <= start_main:
+        return None
+
+    # Flatten sub-bar blocks into single arrays
+    sh_flat = ad.sub_highs[start_main:end_main].reshape(-1)
+    sl_flat = ad.sub_lows[start_main:end_main].reshape(-1)
+    sc_flat = ad.sub_closes[start_main:end_main].reshape(-1)
+    n_flat  = sh_flat.size
+    if n_flat == 0:
+        return None
+
+    touch_win  = max(1, int(getattr(cfg, 'REVERSAL_TOUCH_SUBBARS', 20)))
+    bounce_win = max(1, int(getattr(cfg, 'REVERSAL_BOUNCE_SUBBARS', 4)))
+    mode = str(getattr(cfg, 'REVERSAL_CONFIRM_MODE', 'close_back'))
+
+    # ── PHASE 1: TOUCH ──
+    _touch_limit = min(touch_win, n_flat)
+    touch_k = -1
+    for k in range(_touch_limit):
+        if not np.isfinite(sl_flat[k]) or not np.isfinite(sh_flat[k]):
+            continue
+        if action == "BUY" and sl_flat[k] <= target0:
+            touch_k = k; break
+        if action == "SELL" and sh_flat[k] >= target0:
+            touch_k = k; break
+    if touch_k < 0:
+        return None
+
+    # ── PHASE 2: BOUNCE ──
+    b0 = touch_k + 1
+    b1 = min(b0 + bounce_win, n_flat)
+    if b1 <= b0:
+        return None
+
+    confirm_k = -1
+
+    if mode == "close_back":
+        for k in range(b0, b1):
+            c = sc_flat[k]
+            if not np.isfinite(c):
+                continue
+            if action == "BUY" and c > target0:
+                confirm_k = k; break
+            if action == "SELL" and c < target0:
+                confirm_k = k; break
+
+    elif mode == "two_bar":
+        for k in range(b0, b1 - 1):
+            c1, c2 = sc_flat[k], sc_flat[k + 1]
+            if not (np.isfinite(c1) and np.isfinite(c2)):
+                continue
+            if action == "BUY" and c1 > target0 and c2 > target0:
+                confirm_k = k + 1; break
+            if action == "SELL" and c1 < target0 and c2 < target0:
+                confirm_k = k + 1; break
+
+    elif mode == "sigma_bounce":
+        fi = int(sig.feat_idx)
+        sigma_bar = 0.01
+        if 0 <= fi < len(ad.E_therm):
+            _s = float(ad.E_therm[fi])
+            if np.isfinite(_s) and _s > 1e-9:
+                sigma_bar = _s
+        thr = (float(getattr(cfg, 'REVERSAL_CONFIRM_KAPPA', 0.20))
+               * sigma_bar * float(target0))
+        for k in range(b0, b1):
+            c = sc_flat[k]
+            if not np.isfinite(c):
+                continue
+            if action == "BUY" and (c - target0) > thr:
+                confirm_k = k; break
+            if action == "SELL" and (target0 - c) > thr:
+                confirm_k = k; break
+
+    elif mode == "bar_color":
+        for k in range(b0, b1):
+            c = sc_flat[k]
+            c_prev = sc_flat[k - 1] if k > 0 else c
+            if not (np.isfinite(c) and np.isfinite(c_prev)):
+                continue
+            if action == "BUY" and c > c_prev:
+                confirm_k = k; break
+            if action == "SELL" and c < c_prev:
+                confirm_k = k; break
+
+    if confirm_k < 0:
+        return None
+
+    # Flat index → main bar ci
+    _main_offset = confirm_k // sub_pm
+    confirm_main = start_main + _main_offset
+
+    # ── PHASE 3: FILL ──
+    fill_mode = str(getattr(cfg, 'REVERSAL_FILL_AT', 'target'))
+    c_conf = float(sc_flat[confirm_k]) if np.isfinite(sc_flat[confirm_k]) else float(target0)
+    if fill_mode == "close":
+        fill_px = c_conf
+    elif fill_mode == "best":
+        fill_px = (min(float(target0), c_conf) if action == "BUY"
+                   else max(float(target0), c_conf))
+    else:
+        fill_px = float(target0)
+
+    return (int(confirm_main), float(fill_px))
+
+
 def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps,
                            time_decay_enabled=False,
                            time_decay_bars=(5, 10, 15),
@@ -5135,6 +5404,25 @@ def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps,
             target0 = _backtest_entry_target(sig, ad)
             ref_px = float(getattr(sig, 'entry_ref_price', 0.0) or 0.0)
             base_dip = float(getattr(sig, 'entry_base_dip', 0.0) or 0.0)
+
+            # ═══ [REVERSAL-CONFIRM] Touch-and-Bounce on SUB-BARS ═══
+            if getattr(CFG, 'REVERSAL_CONFIRM_ENABLED', False):
+                _max_h = float(getattr(CFG, 'REVERSAL_MAX_HOURS', 24.0))
+                _sub_h = CFG.TF_HOURS / max(int(ad.sub_per_main or 16), 1)
+                _max_main_bars = max(1, int(np.ceil(
+                    _max_h / max(_sub_h, 1e-6)
+                )))
+                _dl = min(sig.close_idx + _max_main_bars + 1, n_bars)
+                _rev = _check_reversal_fill_subbars(
+                    ad, sig, target0, CFG,
+                    sig.close_idx + 1, _dl
+                )
+                if _rev is None:
+                    result[sig_i] = None
+                    continue
+                _rev_main, _rev_px = _rev
+                result[sig_i] = ('S1', int(_rev_main), float(_rev_px))
+                continue
 
             # ── Stage 1 ──
             # [PARITY-FIX] Fill criterion now matches live exactly:
@@ -13392,6 +13680,572 @@ def _lv_upgrade_adopted(exchange, sym, pos, ad) -> None:
 
 
 
+# ═══════════════════════════════════════════════════════════════
+# [LIVE REVERSAL] Touch-and-Bounce on sub-bars, live execution
+# ═══════════════════════════════════════════════════════════════
+import time as _t_rev
+
+
+_REVERSAL_WATCHERS: Dict[str, Dict] = {}
+_REVERSAL_WATCHERS_PATH: str = ""
+_SUBBAR_LIVE_CACHE: Dict[str, pd.DataFrame] = {}
+_SUBBAR_FETCH_THROTTLE: Dict[str, float] = {}
+_REV_FETCH_EVERY_S: float = 30.0
+_REV_MAX_PER_CYCLE: int = 3
+
+
+def _sub_tf_seconds(sub_tf: str) -> int:
+    try:
+        import ccxt as _cc
+        return int(_cc.binance().parse_timeframe(sub_tf))
+    except Exception:
+        return {"1m": 60, "5m": 300, "15m": 900,
+                "30m": 1800, "1h": 3600, "4h": 14400}.get(sub_tf, 900)
+
+
+def load_reversal_watchers(mode: str) -> Dict[str, Dict]:
+    global _REVERSAL_WATCHERS, _REVERSAL_WATCHERS_PATH
+    _REVERSAL_WATCHERS_PATH = f"reversal_watchers_{mode}.json"
+    if os.path.exists(_REVERSAL_WATCHERS_PATH):
+        try:
+            with open(_REVERSAL_WATCHERS_PATH) as f:
+                raw = json.load(f)
+            for _sym, _w in raw.items():
+                _w.pop("signal_ref", None)
+            _REVERSAL_WATCHERS = raw
+            log.info(f"[LiveRev] Restored {len(_REVERSAL_WATCHERS)} watchers")
+        except Exception as e:
+            log.warning(f"[LiveRev] load failed: {e}")
+            _REVERSAL_WATCHERS = {}
+    return _REVERSAL_WATCHERS
+
+
+def save_reversal_watchers() -> None:
+    if not _REVERSAL_WATCHERS_PATH:
+        return
+    try:
+        tmp = _REVERSAL_WATCHERS_PATH + ".tmp"
+        ser = {}
+        for sym, w in _REVERSAL_WATCHERS.items():
+            _w = {k: v for k, v in w.items() if k != "signal_ref"}
+            ser[sym] = _w
+        with open(tmp, "w") as f:
+            json.dump(ser, f, default=str, indent=2)
+        os.replace(tmp, _REVERSAL_WATCHERS_PATH)
+    except Exception as e:
+        log.debug(f"[LiveRev] save failed: {e}")
+
+
+def _fetch_live_subbars(exchange, sym: str, sub_tf: str,
+                         keep_bars: int = 200) -> Optional[pd.DataFrame]:
+    now = _t_rev.time()
+    _last = _SUBBAR_FETCH_THROTTLE.get(sym, 0.0)
+    if now - _last < _REV_FETCH_EVERY_S:
+        return _SUBBAR_LIVE_CACHE.get(sym)
+    _SUBBAR_FETCH_THROTTLE[sym] = now
+    try:
+        _rate_record(1.0)
+        bars = exchange.fetch_ohlcv(sym, sub_tf, limit=min(keep_bars, 300))
+    except Exception as e:
+        log.debug(f"[LiveRev] fetch {sym} {sub_tf}: {e}")
+        return _SUBBAR_LIVE_CACHE.get(sym)
+    if not bars:
+        return _SUBBAR_LIVE_CACHE.get(sym)
+    df_new = pd.DataFrame(bars,
+                          columns=["ts", "Open", "High", "Low",
+                                    "Close", "Volume"])
+    df_new["ts"] = pd.to_datetime(df_new["ts"], unit="ms", utc=True)
+    df_new = df_new.set_index("ts").astype(float).sort_index()
+    old = _SUBBAR_LIVE_CACHE.get(sym)
+    if old is not None:
+        df_new = pd.concat([old, df_new])
+    df_new = df_new[~df_new.index.duplicated(keep="last")].sort_index()
+    if len(df_new) > keep_bars:
+        df_new = df_new.iloc[-keep_bars:]
+    _SUBBAR_LIVE_CACHE[sym] = df_new
+    return df_new
+
+
+def _only_closed_subbars(df: pd.DataFrame, tf_sec: int) -> pd.DataFrame:
+    if df is None or len(df) == 0:
+        return df
+    cutoff = pd.Timestamp.utcnow() - pd.Timedelta(seconds=int(tf_sec))
+    return df[df.index <= cutoff]
+
+
+def _bar_confirms_bounce(w: Dict, close: float) -> bool:
+    action = w["action"]
+    target = float(w["target"])
+    mode = str(CFG.REVERSAL_CONFIRM_MODE)
+
+    if mode == "close_back":
+        return (action == "BUY" and close > target) or \
+               (action == "SELL" and close < target)
+
+    if mode == "sigma_bounce":
+        kappa = float(CFG.REVERSAL_CONFIRM_KAPPA)
+        sigma = float(w.get("sigma_bar", 0.01))
+        thr = kappa * sigma * target
+        if action == "BUY":
+            return (close - target) > thr
+        return (target - close) > thr
+
+    if mode == "bar_color":
+        prev = w.get("prev_close")
+        w["prev_close"] = close
+        if prev is None:
+            return False
+        return (action == "BUY" and close > float(prev)) or \
+               (action == "SELL" and close < float(prev))
+
+    if mode == "two_bar":
+        ok = (close > target) if action == "BUY" else (close < target)
+        w["two_bar_count"] = (int(w.get("two_bar_count", 0)) + 1) if ok else 0
+        return w["two_bar_count"] >= 2
+
+    return False
+
+
+def _physics_escape_decision(w: Dict, p_now: float) -> str:
+    """
+    [ESCAPE] Decide whether to abandon GTX and market-fill.
+
+    Returns 'HOLD' or 'ESCAPE'.
+
+    Physics:
+      d_sigma = |p_now − target| / (σ_bar · target)
+      rho     = |accel| · (1 + gauge) / (friction · d_sigma + ε)
+
+    Rules (in order):
+      1. Direction check — if price moved TOWARD target, HOLD.
+      2. Hard cap      — d_sigma > D_MAX  → ESCAPE.
+      3. Min distance  — d_sigma < D_MIN  → HOLD.
+      4. Force ratio   — rho > RHO_THR    → ESCAPE.
+    Otherwise HOLD.
+    """
+    if not getattr(CFG, 'REVERSAL_ESCAPE_ENABLED', True):
+        return 'HOLD'
+    try:
+        action = w.get('action', 'BUY')
+        target = float(w.get('target', 0.0))
+        if target <= 0 or p_now <= 0:
+            return 'HOLD'
+
+        sigma = float(w.get('sigma_bar', 0.01))
+        if not (sigma > 1e-9):
+            return 'HOLD'
+
+        d = abs(p_now - target) / (sigma * target)
+
+        # Direction: ESCAPE means the price is moving AWAY from target.
+        if action == 'BUY':
+            moving_away = p_now > target
+        else:
+            moving_away = p_now < target
+        if not moving_away:
+            return 'HOLD'
+
+        d_max = float(getattr(CFG, 'REVERSAL_ESCAPE_D_SIGMA_MAX', 2.0))
+        if d > d_max:
+            return 'ESCAPE'
+
+        d_min = float(getattr(CFG, 'REVERSAL_ESCAPE_D_SIGMA_MIN', 1.0))
+        if d < d_min:
+            return 'HOLD'
+
+        accel = abs(float(w.get('accel', 0.05)))
+        gauge = float(w.get('gauge_force', 0.1))
+        friction = float(w.get('friction', 0.2))
+
+        rho = (accel * (1.0 + gauge)) / (friction * d + 1e-9)
+        rho_thr = float(getattr(CFG, 'REVERSAL_ESCAPE_RHO_THRESHOLD', 1.5))
+
+        return 'ESCAPE' if rho > rho_thr else 'HOLD'
+    except Exception:
+        return 'HOLD'
+
+
+def _execute_reversal_fill(exchange, sym: str, w: Dict,
+                            open_pos_live: Dict) -> None:
+
+    action = w["action"]
+    target = float(w["target"])
+    qty = float(w["qty"])
+    side = "buy" if action == "BUY" else "sell"
+
+    # ── Leverage / margin setup ──
+    try:
+        ensure_symbol_setup(exchange, sym, int(w["leverage"]),
+                             margin_mode="isolated")
+    except Exception as e:
+        log.warning(f"[LiveRev] setup {sym}: {e}")
+        w["status"] = "EXPIRED"
+        return
+
+    # ── Place initial GTX at target ──
+    try:
+        _o = exchange.create_order(sym, 'limit', side, qty, target,
+                                    params={'timeInForce': 'GTX'})
+        order_id = str(_o['id'])
+    except Exception as e:
+        log.info(f"[LiveRev] {sym} GTX rejected at {target:.6f}: {e}")
+        w["status"] = "EXPIRED"
+        return
+
+    filled_qty = 0.0
+    total_cost = 0.0
+    active = True
+    t0 = _t_rev.time()
+    last_phys_check = 0.0
+    max_wait = float(getattr(CFG, 'PO_MAX_WAIT_S', 30))
+    escape_interval = float(getattr(
+        CFG, 'REVERSAL_ESCAPE_CHECK_INTERVAL_S', 5.0))
+
+    # ── Main polling loop ──
+    while active and (_t_rev.time() - t0) < max_wait:
+        _t_rev.sleep(1.0)
+        try:
+            _st = exchange.fetch_order(order_id, sym)
+        except Exception:
+            continue
+
+        _fq = float(_st.get('filled') or 0.0)
+        _fp = float(_st.get('average') or _st.get('price') or target)
+        _status = str(_st.get('status') or 'open')
+
+        if _fq > filled_qty:
+            _delta = _fq - filled_qty
+            total_cost += _delta * _fp
+            filled_qty = _fq
+
+        if _status == 'closed':
+            active = False
+            break
+        if _status in ('canceled', 'expired', 'rejected'):
+            active = False
+            break
+
+        # ── Physics escape check ──
+        now = _t_rev.time()
+        if (now - last_phys_check) >= escape_interval:
+            last_phys_check = now
+            try:
+                _tk = exchange.fetch_ticker(sym)
+                p_now = float(_tk.get('last') or 0)
+            except Exception:
+                p_now = 0.0
+
+            if p_now > 0 and \
+                    _physics_escape_decision(w, p_now) == 'ESCAPE':
+                log.info(f"[LiveRev] {sym} ESCAPE detected "
+                         f"(price={p_now:.6f} target={target:.6f} "
+                         f"filled={filled_qty:.6f}/{qty:.6f}) "
+                         f"→ market for remaining")
+                # Cancel GTX
+                try:
+                    exchange.cancel_order(order_id, sym)
+                except Exception:
+                    pass
+                _t_rev.sleep(0.3)
+                # Mandatory sweep — catch late fills
+                try:
+                    _st2 = exchange.fetch_order(order_id, sym)
+                    _fq2 = float(_st2.get('filled') or 0.0)
+                    if _fq2 > filled_qty:
+                        _d2 = _fq2 - filled_qty
+                        _fp2 = float(_st2.get('average') or target)
+                        total_cost += _d2 * _fp2
+                        filled_qty = _fq2
+                except Exception:
+                    pass
+
+                # Market order for REMAINING only
+                remaining = qty - filled_qty
+                _min_notional = float(getattr(CFG, 'MIN_NOTIONAL', 5.0))
+                if remaining > 0 and (remaining * target) >= _min_notional:
+                    try:
+                        _mo = exchange.create_order(
+                            sym, 'market', side, remaining, None)
+                        _v = verify_fill(exchange, _mo['id'], sym,
+                                          timeout_s=3.0)
+                        if _v and _v.get('filled'):
+                            _mq = float(_v['qty'])
+                            _mp = float(_v['avg_price'])
+                            total_cost += _mq * _mp
+                            filled_qty += _mq
+                    except Exception as _me:
+                        log.warning(f"[LiveRev] {sym} market fallback "
+                                    f"failed: {_me}")
+                elif remaining > 0:
+                    log.info(f"[LiveRev] {sym} remaining "
+                             f"{remaining:.6f} below MIN_NOTIONAL — "
+                             f"keeping partial")
+                active = False
+                break
+
+    # ── Loop exited with active=True: timeout or status change ──
+    if active:
+        try:
+            exchange.cancel_order(order_id, sym)
+        except Exception:
+            pass
+        _t_rev.sleep(0.3)
+        try:
+            _stf = exchange.fetch_order(order_id, sym)
+            _fqf = float(_stf.get('filled') or 0.0)
+            if _fqf > filled_qty:
+                _df = _fqf - filled_qty
+                _fpf = float(_stf.get('average') or target)
+                total_cost += _df * _fpf
+                filled_qty = _fqf
+        except Exception:
+            pass
+
+    if filled_qty <= 0:
+        log.info(f"[LiveRev] {sym} no fill — watcher expired")
+        w["status"] = "EXPIRED"
+        return
+
+    entry_px = total_cost / filled_qty
+    actual_qty = filled_qty
+
+    # ── SL / TP rebuild (unchanged) ──
+    orig_sl_dist = float(w["orig_sl_dist"])
+    orig_tp_dist = float(w["orig_tp_dist"])
+    if orig_sl_dist <= 1e-12:
+        orig_sl_dist = entry_px * 0.015
+        orig_tp_dist = orig_sl_dist * float(getattr(CFG, "TP_MULT", 2.0))
+
+    _max_sl_frac = 0.015 * float(getattr(CFG, "SL_WIDEN_MULT", 1.0))
+    if orig_sl_dist > entry_px * _max_sl_frac:
+        _rr = orig_tp_dist / max(orig_sl_dist, 1e-12)
+        orig_sl_dist = entry_px * _max_sl_frac
+        orig_tp_dist = orig_sl_dist * _rr
+
+    if action == "BUY":
+        new_sl = entry_px - orig_sl_dist
+        new_tp = entry_px + orig_tp_dist
+    else:
+        new_sl = entry_px + orig_sl_dist
+        new_tp = entry_px - orig_tp_dist
+
+    _sb = float(w.get("sigma_bar", 0.01))
+    _td = float(np.clip(CFG.TRAIL_KAPPA * _sb,
+                         CFG.TRAIL_MIN_FRAC, CFG.TRAIL_MAX_FRAC))
+    _ta = float(np.clip(CFG.TRAIL_ACT_KAPPA * _sb,
+                         CFG.TRAIL_ACT_MIN_FRAC, CFG.TRAIL_ACT_MAX_FRAC))
+    if _ta <= _td:
+        _ta = _td * 1.2
+
+    open_pos_live[sym] = {
+        "action": action,
+        "entry": entry_px,
+        "qty": actual_qty,
+        "sl": new_sl,
+        "tp1": new_tp,
+        "T_info": float(w.get("T_info", 0.0)),
+        "dyn_risk": float(w.get("dyn_risk", 0.01)),
+        "entry_ts": _t_rev.time(),
+        "fill_ratio": actual_qty / max(qty, 1e-9),
+        "leverage": int(w["leverage"]),
+        "trail_dist_frac": _td,
+        "trail_activate_frac": _ta,
+        "sl_dist_initial": float(abs(entry_px - new_sl)),
+        "mmr": float(w.get("mmr", CFG.LIQ_FALLBACK_MMR)),
+        "_entry_ci": 0,
+        "_trail_bars_held": 0,
+        "_trail_peak_R": 0.0,
+        "_trail_last_update_ts": 0.0,
+        "_sym": sym,
+        "_orig_score": 0.0,
+        "stage": "REVERSAL",
+    }
+
+    if getattr(CFG, "PROTECTIVE_ORDERS_ENABLED", True):
+        try:
+            if _place_protective_orders(exchange, sym,
+                                          open_pos_live[sym]):
+                open_pos_live[sym]["_prot_last_sl"] = float(new_sl)
+                open_pos_live[sym]["_prot_last_tp"] = float(new_tp)
+        except Exception as e:
+            log.warning(f"[LiveRev] prot {sym}: {e}")
+
+    log.info(f"✅ [LiveRev] {action} {sym} @ {entry_px:.6f} "
+             f"qty={actual_qty:.6f}/{qty:.6f} sl={new_sl:.6f} "
+             f"tp={new_tp:.6f}")
+    w["status"] = "FILLED"
+
+
+def _register_reversal_watcher(exchange, sym: str, side: str,
+                                qty: float, sig, leverage: int,
+                                ad=None) -> bool:
+    if sym in _REVERSAL_WATCHERS:
+        return False
+    if sym in _PENDING_ORDERS:
+        return False
+
+    close_ts = _t_rev.time()
+    try:
+        ts = pd.Timestamp(sig.timestamp)
+        if ts.tz is None:
+            ts = ts.tz_localize("UTC")
+        close_ts = float(ts.timestamp())
+    except Exception:
+        pass
+
+    sigma_bar = 0.01
+    friction_v = 0.2
+    accel_v = 0.05
+    gauge_v = 0.1
+    if ad is not None:
+        try:
+            fi = int(sig.feat_idx)
+            if 0 <= fi < len(ad.E_therm):
+                _s = float(ad.E_therm[fi])
+                if np.isfinite(_s) and _s > 1e-9:
+                    sigma_bar = _s
+            if 0 <= fi < len(ad.friction):
+                friction_v = float(ad.friction[fi])
+            if 0 <= fi < len(ad.geodesic_accel):
+                accel_v = float(ad.geodesic_accel[fi])
+            if 0 <= fi < len(ad.gauge_force):
+                gauge_v = float(ad.gauge_force[fi])
+        except Exception:
+            pass
+
+    try:
+        _mmr = float(_get_mmr_for_symbol(exchange, sym))
+    except Exception:
+        _mmr = float(getattr(CFG, "LIQ_FALLBACK_MMR", 0.02))
+
+    w = {
+        "sym": sym,
+        "side": side,
+        "action": sig.action,
+        "target": float(sig.price),
+        "qty": float(qty),
+        "leverage": int(leverage),
+        "mmr": _mmr,
+        "dyn_risk": float(sig.dynamic_risk),
+        "T_info": float(sig.T_info_val),
+        "sigma_bar": float(sigma_bar),
+        "friction": float(friction_v),
+        "accel": float(accel_v),
+        "gauge_force": float(gauge_v),
+        "close_idx": int(sig.close_idx),
+        "close_ts": float(close_ts),
+        "created_at": _t_rev.time(),
+        "status": "WAITING_TOUCH",
+        "touch_ts": 0.0,
+        "last_scan_ts": float(close_ts),
+        "signal_ref": sig,
+        "sig_ts": str(sig.timestamp),
+        "sig_price": float(sig.price),
+        "sig_sl": float(sig.sl),
+        "sig_tp1": float(sig.tp1),
+        "orig_sl_dist": float(abs(sig.price - sig.sl)),
+        "orig_tp_dist": float(abs(sig.tp1 - sig.price)),
+        "two_bar_count": 0,
+        "prev_close": None,
+    }
+    _REVERSAL_WATCHERS[sym] = w
+    log.info(f"[LiveRev] {sig.action} {sym} registered — "
+             f"target={sig.price:.6f} sl={sig.sl:.6f} tp={sig.tp1:.6f}")
+    return True
+
+
+def monitor_reversal_watchers(exchange, open_pos_live: Dict,
+                                assets: Optional[Dict] = None) -> None:
+    if not getattr(CFG, "REVERSAL_CONFIRM_ENABLED", False):
+        return
+    if not _REVERSAL_WATCHERS:
+        return
+
+    sub_tf = _get_subbars_tf(CFG.timeframe) or "15m"
+    tf_sec = _sub_tf_seconds(sub_tf)
+    now = _t_rev.time()
+    fills_this_cycle = 0
+
+    for sym in list(_REVERSAL_WATCHERS.keys()):
+        w = _REVERSAL_WATCHERS[sym]
+        status = w.get("status", "WAITING_TOUCH")
+
+        if status in ("FILLED", "EXPIRED"):
+            _REVERSAL_WATCHERS.pop(sym, None)
+            continue
+
+        age_h = (now - float(w.get("close_ts", now))) / 3600.0
+        if age_h > float(CFG.REVERSAL_MAX_HOURS):
+            log.info(f"[LiveRev] {sym} expired (age={age_h:.1f}h)")
+            _REVERSAL_WATCHERS.pop(sym, None)
+            continue
+
+        if sym in open_pos_live:
+            log.info(f"[LiveRev] {sym} already has position — dropping")
+            _REVERSAL_WATCHERS.pop(sym, None)
+            continue
+
+        df = _fetch_live_subbars(exchange, sym, sub_tf, keep_bars=200)
+        if df is None or len(df) < 3:
+            continue
+        df_closed = _only_closed_subbars(df, tf_sec)
+        if df_closed is None or len(df_closed) == 0:
+            continue
+
+        last_scan_ts = float(w.get("last_scan_ts", 0.0))
+        new_bars = df_closed[
+            (df_closed.index.astype("int64") // 10**9) > last_scan_ts
+        ]
+        if len(new_bars) == 0:
+            continue
+
+        for ts, row in new_bars.iterrows():
+            ts_unix = float(ts.value / 1e9)
+            high = float(row["High"])
+            low = float(row["Low"])
+            close = float(row["Close"])
+            action = w["action"]
+            target = float(w["target"])
+
+            # ── TOUCH ──
+            if w["status"] == "WAITING_TOUCH":
+                touched = ((action == "BUY" and low <= target) or
+                            (action == "SELL" and high >= target))
+                if touched:
+                    w["status"] = "WAITING_BOUNCE"
+                    w["touch_ts"] = ts_unix
+                    log.info(f"[LiveRev] {sym} TOUCH @ {ts}")
+                    w["last_scan_ts"] = ts_unix
+                    continue
+
+            # ── BOUNCE ──
+            if w["status"] == "WAITING_BOUNCE":
+                bounce_elapsed = ts_unix - float(w["touch_ts"])
+                if bounce_elapsed > int(CFG.REVERSAL_BOUNCE_SUBBARS) * tf_sec:
+                    w["status"] = "EXPIRED"
+                    log.info(f"[LiveRev] {sym} bounce timeout")
+                    break
+                if _bar_confirms_bounce(w, close):
+                    w["status"] = "READY_TO_FILL"
+                    log.info(f"[LiveRev] {sym} BOUNCE confirmed @ {ts}")
+
+            # ── FILL ──
+            if w["status"] == "READY_TO_FILL":
+                _execute_reversal_fill(exchange, sym, w, open_pos_live)
+                fills_this_cycle += 1
+                break
+
+            w["last_scan_ts"] = ts_unix
+
+        if w.get("status") in ("FILLED", "EXPIRED"):
+            continue
+        if fills_this_cycle >= _REV_MAX_PER_CYCLE:
+            break
+
+
+# ═══════════════════════════════════════════════════════════════
+
+
 def run_live(cfg, exchange):
     """
     محرك التداول الحي والـ Testnet عالي التردد (HFT):
@@ -13428,10 +14282,28 @@ def run_live(cfg, exchange):
     load_symbol_meta(cfg.mode)
     # ══ [Pending] Load persisted pending orders ══
     load_pending_orders(cfg.mode)
+    # ══ [LiveRev] Load persisted reversal watchers ══
+    load_reversal_watchers(cfg.mode)
+    log.info(f"  [LiveRev] Active watchers: "
+             f"{len(_REVERSAL_WATCHERS)}")
 
     # ══ [Watch] Load persisted watched signals ══
     load_watched_signals(cfg.mode)
     log.info(f"  [Watch] Active watched signals: {len(_WATCHED_SIGNALS)}")
+
+    # ══ [LiveRev] Drop watchers older than REVERSAL_MAX_HOURS ══
+    if _REVERSAL_WATCHERS:
+        _now_rev = _t_rev.time()
+        _max_s = float(CFG.REVERSAL_MAX_HOURS) * 3600.0
+        _dropped = 0
+        for _s in list(_REVERSAL_WATCHERS.keys()):
+            _w = _REVERSAL_WATCHERS[_s]
+            if _now_rev - float(_w.get("close_ts", _now_rev)) > _max_s:
+                _REVERSAL_WATCHERS.pop(_s, None)
+                _dropped += 1
+        if _dropped:
+            log.info(f"[LiveRev] Dropped {_dropped} stale watchers on startup")
+            save_reversal_watchers()
 
     _stale = _lv_pending_drop_stale(exchange, max_age_s=float(getattr(CFG, 'LIVE_PENDING_GRACE_S', 600.0)))
     if _stale > 0:
@@ -13597,6 +14469,13 @@ def run_live(cfg, exchange):
                 )
             except Exception as _e:
                 log.warning(f"[Pending] monitor error: {_e}")
+            try:
+                monitor_reversal_watchers(
+                    exchange, open_pos_live,
+                    assets=assets if 'assets' in dir() else None
+                )
+            except Exception as _e:
+                log.warning(f"[LiveRev] monitor error: {_e}")
             
             # ══ [ReconcileMeta] verify symbol metadata rarely ══
             # [PERF-FIX] 1) Init to NOW (was 0.0 → ran immediately on first loop
@@ -14733,7 +15612,8 @@ def run_live(cfg, exchange):
                         if getattr(CFG, 'PENDING_ENABLED', True):
                             _total_exposure = (len(_PENDING_ORDERS)
                                                + len(open_pos_live)
-                                               + len(_WATCHED_SIGNALS))
+                                               + len(_WATCHED_SIGNALS)
+                                               + len(_REVERSAL_WATCHERS))
                             if _total_exposure >= int(CFG.MAX_CONCURRENT_ASSETS):
                                 log.debug(
                                     f"[Watch] exposure cap "
@@ -14756,6 +15636,19 @@ def run_live(cfg, exchange):
                                         getattr(CFG, 'LIQ_FALLBACK_MMR', 0.02)
                                     )
                                     save_watched_signals()
+                                continue
+
+                            # ══ [LiveRev] register watcher instead ══
+                            if getattr(CFG, "REVERSAL_CONFIRM_ENABLED", False):
+                                _ok = _register_reversal_watcher(
+                                    exchange, sym, sd, qty, sig,
+                                    int(dynamic_leverage), assets[sym]
+                                )
+                                if _ok:
+                                    try:
+                                        save_reversal_watchers()
+                                    except Exception:
+                                        pass
                                 continue
 
                             # ── Legacy immediate placement ──
@@ -14942,6 +15835,7 @@ def run_live(cfg, exchange):
             except Exception as e:
                 log.warning(f"[State] end-of-cycle save failed: {e}")
             save_pending_orders()
+            save_reversal_watchers()
             save_watched_signals()
             save_symbol_meta()
             
@@ -15070,6 +15964,24 @@ def main():
                    help="Max Live cache entries (default 40)")
     p.add_argument("--no-fixed-price", action="store_true",
                    help="Disable fixed-price entry (allow reprice chasing)")
+    # ══ [REVERSAL-CONFIRM] Touch-and-Bounce on sub-bars ══
+    p.add_argument("--reversal-confirm", action="store_true",
+                   help="Enable Touch-and-Bounce entry on sub-bars")
+    p.add_argument("--reversal-touch-subbars", type=int, default=None,
+                   help="Max sub-bars to wait for target touch (default 20)")
+    p.add_argument("--reversal-bounce-subbars", type=int, default=None,
+                   help="Max sub-bars after touch to confirm (default 4)")
+    p.add_argument("--reversal-max-hours", type=float, default=None,
+                   help="Signal validity window in hours (default 24)")
+    p.add_argument("--reversal-mode", type=str, default=None,
+                   choices=["close_back","two_bar",
+                            "sigma_bounce","bar_color"],
+                   help="Confirmation mode (default close_back)")
+    p.add_argument("--reversal-kappa", type=float, default=None,
+                   help="sigma multiplier for sigma_bounce (default 0.20)")
+    p.add_argument("--reversal-fill", type=str, default=None,
+                   choices=["target","close","best"],
+                   help="Fill price source (default target)")
     p.add_argument("--confirm-entry", action="store_true",
                    help="[NEW] Enable 1-bar confirmation filter: "
                         "skip signal unless bar N+1 moves in our "
@@ -15282,6 +16194,9 @@ def main():
             "live_state_live.json", "live_state_testnet.json",
             "pending_orders_live.json", "pending_orders_testnet.json",
             "symbol_meta_live.json", "symbol_meta_testnet.json",
+            "reversal_watchers_live.json",
+            "reversal_watchers_testnet.json",
+            "cache_dead_gaps.json",
             "kill_switch.json",
         ]
         for _f in _state_files:
@@ -15431,6 +16346,28 @@ def main():
         CFG.PO_FIXED_PRICE = False
         log.info("[Backtest] --no-fixed-price: entry target will be derived "
                  "from close[sig.close_idx] × (1 ± PO_PENETRATION_BPS)")
+    # ══ [REVERSAL-CONFIRM] wiring ══
+    if getattr(args, "reversal_confirm", False):
+        CFG.REVERSAL_CONFIRM_ENABLED = True
+    if getattr(args, "reversal_touch_subbars", None) is not None:
+        CFG.REVERSAL_TOUCH_SUBBARS = int(args.reversal_touch_subbars)
+    if getattr(args, "reversal_bounce_subbars", None) is not None:
+        CFG.REVERSAL_BOUNCE_SUBBARS = int(args.reversal_bounce_subbars)
+    if getattr(args, "reversal_max_hours", None) is not None:
+        CFG.REVERSAL_MAX_HOURS = float(args.reversal_max_hours)
+    if getattr(args, "reversal_mode", None) is not None:
+        CFG.REVERSAL_CONFIRM_MODE = str(args.reversal_mode)
+    if getattr(args, "reversal_kappa", None) is not None:
+        CFG.REVERSAL_CONFIRM_KAPPA = float(args.reversal_kappa)
+    if getattr(args, "reversal_fill", None) is not None:
+        CFG.REVERSAL_FILL_AT = str(args.reversal_fill)
+    if CFG.REVERSAL_CONFIRM_ENABLED:
+        log.info(f"[Reversal] ENABLED "
+                 f"touch={CFG.REVERSAL_TOUCH_SUBBARS}sb "
+                 f"bounce={CFG.REVERSAL_BOUNCE_SUBBARS}sb "
+                 f"max={CFG.REVERSAL_MAX_HOURS}h "
+                 f"mode={CFG.REVERSAL_CONFIRM_MODE} "
+                 f"fill={CFG.REVERSAL_FILL_AT}")
 
     if getattr(args, "confirm_entry", False):
         CFG.CONFIRM_ENTRY_ENABLED = True

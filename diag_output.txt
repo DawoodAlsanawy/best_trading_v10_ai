@@ -1,155 +1,95 @@
-📖 File: trading_2_complete4.py
-   Size: 596,733 chars
-   Encoding check passed
 
-═══ SECTION 1: Around 'top_syms = scan_top_assets(exchange)' ═══
-Marker found at offset 483657
+════════════════════════════════════════════════════════════════════════
+  1. CACHED FILE
+════════════════════════════════════════════════════════════════════════
+  Path:      market_data_cache/BCH_USDT_4h.parquet
+  Size:      526,086 bytes
+  mtime:     2026-10-13 02:10:37.761710+00:00
+  Rows:      13,859
+  Columns:   ['Open', 'High', 'Low', 'Close', 'Volume']
+  Index tz:  UTC
+  First ts:  2020-05-18 04:00:00+00:00
+  Last  ts:  2026-10-13 00:00:00+00:00
+  Span:      2338 days 20:00:00
+  Expected:  14033.0 bars
+  Actual:    13,859 bars
 
-── Plain text (may look weird due to RTL) ──
-info(f"  [Prot] restored={_prot_ok} "
-                 f"deferred={_prot_deferred} "
-                 f"dropped={_prot_dropped_pending} "
-                 f"failed={_prot_fail}")
+  Diff stats (should all equal 14400s):
+    min:   14400s
+    max:   878400s
+    mode:  14400s
+    unique values: [ 14400.  43200.  28800.  57600. 360000. 144000. 288000. 100800. 302400.
+ 331200.]
 
-    # ══ [RE-ENTRY COOLDOWN] track last exit time per symbol ══
-    last_exit_time: Dict[str, float] = {}
+  Gaps found: 15
+  Gap sizes (bars missing):
+    2020-09-14 00:00:00+00:00  →  2020-09-14 12:00:00+00:00   (2 bars)
+    2020-09-17 08:00:00+00:00  →  2020-09-17 16:00:00+00:00   (1 bars)
+    2020-09-17 16:00:00+00:00  →  2020-09-18 00:00:00+00:00   (1 bars)
+    2020-10-09 20:00:00+00:00  →  2020-10-10 08:00:00+00:00   (2 bars)
+    2020-10-11 08:00:00+00:00  →  2020-10-11 16:00:00+00:00   (1 bars)
+    2020-10-11 16:00:00+00:00  →  2020-10-12 08:00:00+00:00   (3 bars)
+    2020-10-13 00:00:00+00:00  →  2020-10-17 04:00:00+00:00   (24 bars)
+    2020-11-23 20:00:00+00:00  →  2020-11-24 08:00:00+00:00   (2 bars)
+    2020-12-03 12:00:00+00:00  →  2020-12-05 04:00:00+00:00   (9 bars)
+    2020-12-06 04:00:00+00:00  →  2020-12-09 12:00:00+00:00   (19 bars)
+    2020-12-10 00:00:00+00:00  →  2020-12-11 04:00:00+00:00   (6 bars)
+    2020-12-11 08:00:00+00:00  →  2020-12-14 20:00:00+00:00   (20 bars)
+    2020-12-15 08:00:00+00:00  →  2020-12-16 00:00:00+00:00   (3 bars)
+    2020-12-17 08:00:00+00:00  →  2020-12-21 04:00:00+00:00   (22 bars)
+    2020-12-21 20:00:00+00:00  →  2021-01-01 00:00:00+00:00   (60 bars)
 
-    corr_cache: Dict = {}
+════════════════════════════════════════════════════════════════════════
+  2. EXCHANGE CONNECTIVITY
+════════════════════════════════════════════════════════════════════════
 
-    log.info("⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...")
-    top_syms = scan_top_assets(exchange)
+  ── live ──
+    fetch_time:        1791857971962  (latency -731ms)
+    fetch_ticker:      OK (4.58s)  last=267.45
 
-    # ══ [DATA-LENGTH-FIX] Live needs real history, not 60 days ══
-    # Backtest uses 730 days; live used 60 → KMeans collapsed (H_train ≈ 0.2).
-    # 365 days o
+    Probing gap: 2020-09-14 00:00:00+00:00 → 2020-09-14 12:00:00+00:00 (2 missing)
+      since_ms = 1600056000000  (2020-09-14 04:00:00+00:00)
+      end_ms   = 1600084800000    (2020-09-14 12:00:00+00:00)
+      fetch_ohlcv returned 1000 bars in 0.43s
+      First bar: 2020-09-14 04:00:00+00:00  O=222.64 H=225.63 L=221.9 C=225.14 V=30700.086
+      Last bar:  2021-02-27 16:00:00+00:00
+      Bars INSIDE the gap window: 3
+        → Exchange HAS data for this gap
 
-── Python repr (exact chars) ──
-'info(f"  [Prot] restored={_prot_ok} "\n                 f"deferred={_prot_deferred} "\n                 f"dropped={_prot_dropped_pending} "\n                 f"failed={_prot_fail}")\n\n    # ══ [RE-ENTRY COOLDOWN] track last exit time per symbol ══\n    last_exit_time: Dict[str, float] = {}\n\n    corr_cache: Dict = {}\n\n    log.info("⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...")\n    top_syms = scan_top_assets(exchange)\n\n    # ══ [DATA-LENGTH-FIX] Live needs real history, not 60 days ══\n    # Backtest uses 730 days; live used 60 → KMeans collapsed (H_train ≈ 0.2).\n    # 365 days o'
+    Rate-limit info:
+      last_response_headers: {'x-mbx-used-weight-1m': '63'}
+      rateLimit: 50
+      options: {'defaultNetworkCodeReplacements': {'ETH': {'primary': 'ETH', 'secondary': 'ERC20', 'default': 'secondary'}, 'CRO': {'primary': 'CRONOS', 'secondary': 'CRC20', 'default': 'secondary'}, 'TRX': {'primary': 'TRX', 'secondary': 'TRC20', 'default': 'secondary'}, 'BTC': {'primary': 'BTC', 'secondary': 'BRC20', 'default': 'primary'}}, 'backwardSupportedNetworkCodes': {'ARB': 'ARBITRUM', 'ARBONE': 'ARBITRUM', 'ARBNOVA': 'ARBITRUM_NOVA'}, 'sandboxMode': False, 'fetchMargins': True, 'fetchMarkets': {'types': ['spot', 'linear', 'inverse'], 'loadAllOptions': False}, 'fetchCurrencies': True, 'createOrder': {'timeInForce': 'GTC', 'warnOnSTPForInverse': True, 'quoteOrderQty': True}, 'defaultType': 'future', 'defaultSubType': None, 'hasAlreadyAuthenticatedSuccessfully': False, 'fetchOpenOrders': {'warnWithoutSymbol': True}, 'currencyToPrecisionRoundingMode': 0, 'setMarginMode': {'throwMarginModeAlreadySet': True}, 'fetchPositions': {'method': 'positionRisk'}, 'recvWindow': 10000, 'timeDifference': 0, 'adjustForTimeDifference': False, 'newOrderRespType': {'market': 'FULL', 'limit': 'FULL'}, 'broker': {'spot': 'x-TKT5PX2F', 'margin': 'x-TKT5PX2F', 'future': 'x-cvBPrNm9', 'delivery': 'x-xcKtGhcu', 'swap': 'x-cvBPrNm9', 'option': 'x-xcKtGhcu', 'inverse': 'x-xcKtGhcu'}, 'accountsByType': {'main': 'MAIN', 'spot': 'MAIN', 'funding': 'FUNDING', 'margin': 'MARGIN', 'cross': 'MARGIN', 'future': 'UMFUTURE', 'delivery': 'CMFUTURE', 'linear': 'UMFUTURE', 'swap': 'UMFUTURE', 'inverse': 'CMFUTURE', 'option': 'OPTION'}, 'accountsById': {'MAIN': 'spot', 'FUNDING': 'funding', 'MARGIN': 'margin', 'UMFUTURE': 'linear', 'CMFUTURE': 'inverse', 'OPTION': 'option'}, 'networks': {'BTC': 'BTC', 'BTCSEGWIT': 'SEGWITBTC', 'BTCLIGHTNING': 'LIGHTNING', 'ERC20': 'ETH', 'ETH': 'ETH', 'TRC20': 'TRX', 'TRX': 'TRX', 'BEP2': 'BNB', 'BSC': 'BSC', 'BEP20': 'BSC', 'CHZ2': 'CHZ2', 'XRP': 'XRP', 'EOS': 'EOS', 'DOGE': 'DOGE', 'SOL': 'SOL', 'SONIC': 'SONIC', 'ARBITRUM': 'ARBITRUM', 'AVAXC': 'AVAXC', 'MATIC': 'MATIC', 'BASE': 'BASE', 'SUI': 'SUI', 'OP': 'OPTIMISM', 'OPTIMISM': 'OPTIMISM', 'NEAR': 'NEAR', 'APT': 'APT', 'SCROLL': 'SCROLL', 'KAVA': 'KAVA', 'XLM': 'XLM', 'RSK': 'RSK', 'SEI': 'SEI', 'TON': 'TON', 'ADA': 'ADA', 'ALGO': 'ALGO', 'RUNE': 'RUNE', 'OSMO': 'OSMO', 'CELO': 'CELO', 'HBAR': 'HBAR', 'ZKSYNCERA': 'ZKSYNCERA', 'KLAY': 'KLAY', 'ACA': 'ACA', 'STX': 'STX', 'XTZ': 'XTZ', 'METIS': 'METIS', 'EGLD': 'EGLD', 'ASTR': 'ASTR', 'CFX': 'CFX', 'SCRT': 'SCRT', 'ONT': 'ONT', 'ZEC': 'ZEC', 'XMR': 'XMR', 'BCH': 'BCH', 'LTC': 'LTC', 'TAO': 'TAO', 'WLD': 'WLD', 'ICP': 'ICP', 'FLR': 'FLR', 'COSMOS': 'ATOM', 'ATOM': 'ATOM', 'FIL': 'FIL', 'INJ': 'INJ', 'DASH': 'DASH', 'VET': 'VET', 'FET': 'FET', 'TIA': 'TIA', 'KAIA': 'KAIA', 'DCR': 'DCR', 'IOTA': 'IOTA', 'THETA': 'THETA', 'AR': 'AR', 'DYDX': 'DYDX', 'XEC': 'XEC', 'QTUM': 'QTUM', 'ENJ': 'ENJ', 'RVN': 'RVN', 'ZIL': 'ZIL', 'BERA': 'BERA', '0G': '0G', 'MINA': 'MINA', 'AXL': 'AXL', 'ROSE': 'ROSE', 'CKB': 'CKB', 'DGB': 'DGB', 'MOVE': 'MOVE', 'XVG': 'XVG', 'SC': 'SC', 'LINEA': 'LINEA', 'WAVES': 'WAVES', 'MANTA': 'MANTA'}, 'networksById': {'BTC': 'BTC', 'SEGWITBTC': 'BTCSEGWIT', 'LIGHTNING': 'BTCLIGHTNING', 'ETH': 'ERC20', 'TRX': 'TRC20', 'BNB': 'BEP2', 'BSC': 'BEP20', 'CHZ2': 'CHZ2', 'XRP': 'XRP', 'EOS': 'EOS', 'DOGE': 'DOGE', 'SOL': 'SOL', 'SONIC': 'SONIC', 'ARBITRUM': 'ARBITRUM', 'AVAXC': 'AVAXC', 'MATIC': 'MATIC', 'BASE': 'BASE', 'SUI': 'SUI', 'OPTIMISM': 'OP', 'NEAR': 'NEAR', 'APT': 'APT', 'SCROLL': 'SCROLL', 'KAVA': 'KAVA', 'XLM': 'XLM', 'RSK': 'RSK', 'SEI': 'SEI', 'TON': 'TON', 'ADA': 'ADA', 'ALGO': 'ALGO', 'RUNE': 'RUNE', 'OSMO': 'OSMO', 'CELO': 'CELO', 'HBAR': 'HBAR', 'ZKSYNCERA': 'ZKSYNCERA', 'KLAY': 'KLAY', 'ACA': 'ACA', 'STX': 'STX', 'XTZ': 'XTZ', 'METIS': 'METIS', 'EGLD': 'EGLD', 'ASTR': 'ASTR', 'CFX': 'CFX', 'SCRT': 'SCRT', 'ONT': 'ONT', 'ZEC': 'ZEC', 'XMR': 'XMR', 'BCH': 'BCH', 'LTC': 'LTC', 'TAO': 'TAO', 'WLD': 'WLD', 'ICP': 'ICP', 'FLR': 'FLR', 'ATOM': 'ATOM', 'FIL': 'FIL', 'INJ': 'INJ', 'DASH': 'DASH', 'VET': 'VET', 'FET': 'FET', 'TIA': 'TIA', 'KAIA': 'KAIA', 'DCR': 'DCR', 'IOTA': 'IOTA', 'THETA': 'THETA', 'AR': 'AR', 'DYDX': 'DYDX', 'XEC': 'XEC', 'QTUM': 'QTUM', 'ENJ': 'ENJ', 'RVN': 'RVN', 'ZIL': 'ZIL', 'BERA': 'BERA', '0G': '0G', 'MINA': 'MINA', 'AXL': 'AXL', 'ROSE': 'ROSE', 'CKB': 'CKB', 'DGB': 'DGB', 'MOVE': 'MOVE', 'XVG': 'XVG', 'SC': 'SC', 'LINEA': 'LINEA', 'WAVES': 'WAVES', 'MANTA': 'MANTA'}, 'impliedNetworks': {'ETH': {'ERC20': 'ETH'}, 'TRX': {'TRC20': 'TRX'}}, 'legalMoney': {'MXN': True, 'UGX': True, 'SEK': True, 'CHF': True, 'VND': True, 'AED': True, 'DKK': True, 'KZT': True, 'HUF': True, 'PEN': True, 'PHP': True, 'USD': True, 'TRY': True, 'EUR': True, 'NGN': True, 'PLN': True, 'BRL': True, 'ZAR': True, 'KES': True, 'ARS': True, 'RUB': True, 'AUD': True, 'NOK': True, 'CZK': True, 'GBP': True, 'UAH': True, 'GHS': True, 'HKD': True, 'CAD': True, 'INR': True, 'JPY': True, 'NZD': True}, 'legalMoneyCurrenciesById': {'BUSD': 'USD'}, 'defaultWithdrawPrecision': 1e-08, 'defaultFiatWithdrawPrecision': 0.01, 'crossMarginPairsData': [], 'isolatedMarginPairsData': []}
 
-═══ SECTION 2: Anchor pattern tests ═══
+  ── testnet ──
+    fetch_time:        1791857978223  (latency -756ms)
+    fetch_ticker:      OK (6.14s)  last=267.35
 
-Pattern A (original from script):
-   ❌ NO MATCH
-   Found prefix '    log.info("⏳' at offset 483571
-   First 100 chars after prefix:
-   '    log.info("⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...")\n    top_syms = scan_top_assets(exchange)\n\n    # ══ [DATA-LENGTH-FIX] Live needs real history, not 60 days ══\n    # Bac'
+    Probing gap: 2020-09-14 00:00:00+00:00 → 2020-09-14 12:00:00+00:00 (2 missing)
+      since_ms = 1600056000000  (2020-09-14 04:00:00+00:00)
+      end_ms   = 1600084800000    (2020-09-14 12:00:00+00:00)
+      fetch_ohlcv returned 1000 bars in 0.36s
+      First bar: 2020-09-14 04:00:00+00:00  O=0.02 H=0.02 L=0.02 C=0.02 V=0.0
+      Last bar:  2021-02-27 16:00:00+00:00
+      Bars INSIDE the gap window: 3
+        → Exchange HAS data for this gap
 
-Pattern B (just top_syms line):
-   ✅ MATCH
+    Rate-limit info:
+      last_response_headers: {'x-mbx-used-weight-1m': '9'}
+      rateLimit: 50
+      options: {'defaultNetworkCodeReplacements': {'ETH': {'primary': 'ETH', 'secondary': 'ERC20', 'default': 'secondary'}, 'CRO': {'primary': 'CRONOS', 'secondary': 'CRC20', 'default': 'secondary'}, 'TRX': {'primary': 'TRX', 'secondary': 'TRC20', 'default': 'secondary'}, 'BTC': {'primary': 'BTC', 'secondary': 'BRC20', 'default': 'primary'}}, 'backwardSupportedNetworkCodes': {'ARB': 'ARBITRUM', 'ARBONE': 'ARBITRUM', 'ARBNOVA': 'ARBITRUM_NOVA'}, 'sandboxMode': False, 'fetchMargins': True, 'fetchMarkets': {'types': ['spot', 'linear', 'inverse'], 'loadAllOptions': False}, 'fetchCurrencies': True, 'createOrder': {'timeInForce': 'GTC', 'warnOnSTPForInverse': True, 'quoteOrderQty': True}, 'defaultType': 'future', 'defaultSubType': None, 'hasAlreadyAuthenticatedSuccessfully': False, 'fetchOpenOrders': {'warnWithoutSymbol': True}, 'currencyToPrecisionRoundingMode': 0, 'setMarginMode': {'throwMarginModeAlreadySet': True}, 'fetchPositions': {'method': 'positionRisk'}, 'recvWindow': 10000, 'timeDifference': 0, 'adjustForTimeDifference': False, 'newOrderRespType': {'market': 'FULL', 'limit': 'FULL'}, 'broker': {'spot': 'x-TKT5PX2F', 'margin': 'x-TKT5PX2F', 'future': 'x-cvBPrNm9', 'delivery': 'x-xcKtGhcu', 'swap': 'x-cvBPrNm9', 'option': 'x-xcKtGhcu', 'inverse': 'x-xcKtGhcu'}, 'accountsByType': {'main': 'MAIN', 'spot': 'MAIN', 'funding': 'FUNDING', 'margin': 'MARGIN', 'cross': 'MARGIN', 'future': 'UMFUTURE', 'delivery': 'CMFUTURE', 'linear': 'UMFUTURE', 'swap': 'UMFUTURE', 'inverse': 'CMFUTURE', 'option': 'OPTION'}, 'accountsById': {'MAIN': 'spot', 'FUNDING': 'funding', 'MARGIN': 'margin', 'UMFUTURE': 'linear', 'CMFUTURE': 'inverse', 'OPTION': 'option'}, 'networks': {'BTC': 'BTC', 'BTCSEGWIT': 'SEGWITBTC', 'BTCLIGHTNING': 'LIGHTNING', 'ERC20': 'ETH', 'ETH': 'ETH', 'TRC20': 'TRX', 'TRX': 'TRX', 'BEP2': 'BNB', 'BSC': 'BSC', 'BEP20': 'BSC', 'CHZ2': 'CHZ2', 'XRP': 'XRP', 'EOS': 'EOS', 'DOGE': 'DOGE', 'SOL': 'SOL', 'SONIC': 'SONIC', 'ARBITRUM': 'ARBITRUM', 'AVAXC': 'AVAXC', 'MATIC': 'MATIC', 'BASE': 'BASE', 'SUI': 'SUI', 'OP': 'OPTIMISM', 'OPTIMISM': 'OPTIMISM', 'NEAR': 'NEAR', 'APT': 'APT', 'SCROLL': 'SCROLL', 'KAVA': 'KAVA', 'XLM': 'XLM', 'RSK': 'RSK', 'SEI': 'SEI', 'TON': 'TON', 'ADA': 'ADA', 'ALGO': 'ALGO', 'RUNE': 'RUNE', 'OSMO': 'OSMO', 'CELO': 'CELO', 'HBAR': 'HBAR', 'ZKSYNCERA': 'ZKSYNCERA', 'KLAY': 'KLAY', 'ACA': 'ACA', 'STX': 'STX', 'XTZ': 'XTZ', 'METIS': 'METIS', 'EGLD': 'EGLD', 'ASTR': 'ASTR', 'CFX': 'CFX', 'SCRT': 'SCRT', 'ONT': 'ONT', 'ZEC': 'ZEC', 'XMR': 'XMR', 'BCH': 'BCH', 'LTC': 'LTC', 'TAO': 'TAO', 'WLD': 'WLD', 'ICP': 'ICP', 'FLR': 'FLR', 'COSMOS': 'ATOM', 'ATOM': 'ATOM', 'FIL': 'FIL', 'INJ': 'INJ', 'DASH': 'DASH', 'VET': 'VET', 'FET': 'FET', 'TIA': 'TIA', 'KAIA': 'KAIA', 'DCR': 'DCR', 'IOTA': 'IOTA', 'THETA': 'THETA', 'AR': 'AR', 'DYDX': 'DYDX', 'XEC': 'XEC', 'QTUM': 'QTUM', 'ENJ': 'ENJ', 'RVN': 'RVN', 'ZIL': 'ZIL', 'BERA': 'BERA', '0G': '0G', 'MINA': 'MINA', 'AXL': 'AXL', 'ROSE': 'ROSE', 'CKB': 'CKB', 'DGB': 'DGB', 'MOVE': 'MOVE', 'XVG': 'XVG', 'SC': 'SC', 'LINEA': 'LINEA', 'WAVES': 'WAVES', 'MANTA': 'MANTA'}, 'networksById': {'BTC': 'BTC', 'SEGWITBTC': 'BTCSEGWIT', 'LIGHTNING': 'BTCLIGHTNING', 'ETH': 'ERC20', 'TRX': 'TRC20', 'BNB': 'BEP2', 'BSC': 'BEP20', 'CHZ2': 'CHZ2', 'XRP': 'XRP', 'EOS': 'EOS', 'DOGE': 'DOGE', 'SOL': 'SOL', 'SONIC': 'SONIC', 'ARBITRUM': 'ARBITRUM', 'AVAXC': 'AVAXC', 'MATIC': 'MATIC', 'BASE': 'BASE', 'SUI': 'SUI', 'OPTIMISM': 'OP', 'NEAR': 'NEAR', 'APT': 'APT', 'SCROLL': 'SCROLL', 'KAVA': 'KAVA', 'XLM': 'XLM', 'RSK': 'RSK', 'SEI': 'SEI', 'TON': 'TON', 'ADA': 'ADA', 'ALGO': 'ALGO', 'RUNE': 'RUNE', 'OSMO': 'OSMO', 'CELO': 'CELO', 'HBAR': 'HBAR', 'ZKSYNCERA': 'ZKSYNCERA', 'KLAY': 'KLAY', 'ACA': 'ACA', 'STX': 'STX', 'XTZ': 'XTZ', 'METIS': 'METIS', 'EGLD': 'EGLD', 'ASTR': 'ASTR', 'CFX': 'CFX', 'SCRT': 'SCRT', 'ONT': 'ONT', 'ZEC': 'ZEC', 'XMR': 'XMR', 'BCH': 'BCH', 'LTC': 'LTC', 'TAO': 'TAO', 'WLD': 'WLD', 'ICP': 'ICP', 'FLR': 'FLR', 'ATOM': 'ATOM', 'FIL': 'FIL', 'INJ': 'INJ', 'DASH': 'DASH', 'VET': 'VET', 'FET': 'FET', 'TIA': 'TIA', 'KAIA': 'KAIA', 'DCR': 'DCR', 'IOTA': 'IOTA', 'THETA': 'THETA', 'AR': 'AR', 'DYDX': 'DYDX', 'XEC': 'XEC', 'QTUM': 'QTUM', 'ENJ': 'ENJ', 'RVN': 'RVN', 'ZIL': 'ZIL', 'BERA': 'BERA', '0G': '0G', 'MINA': 'MINA', 'AXL': 'AXL', 'ROSE': 'ROSE', 'CKB': 'CKB', 'DGB': 'DGB', 'MOVE': 'MOVE', 'XVG': 'XVG', 'SC': 'SC', 'LINEA': 'LINEA', 'WAVES': 'WAVES', 'MANTA': 'MANTA'}, 'impliedNetworks': {'ETH': {'ERC20': 'ETH'}, 'TRX': {'TRC20': 'TRX'}}, 'legalMoney': {'MXN': True, 'UGX': True, 'SEK': True, 'CHF': True, 'VND': True, 'AED': True, 'DKK': True, 'KZT': True, 'HUF': True, 'PEN': True, 'PHP': True, 'USD': True, 'TRY': True, 'EUR': True, 'NGN': True, 'PLN': True, 'BRL': True, 'ZAR': True, 'KES': True, 'ARS': True, 'RUB': True, 'AUD': True, 'NOK': True, 'CZK': True, 'GBP': True, 'UAH': True, 'GHS': True, 'HKD': True, 'CAD': True, 'INR': True, 'JPY': True, 'NZD': True}, 'legalMoneyCurrenciesById': {'BUSD': 'USD'}, 'defaultWithdrawPrecision': 1e-08, 'defaultFiatWithdrawPrecision': 0.01, 'enableDemoTrading': True, 'crossMarginPairsData': [], 'isolatedMarginPairsData': []}
 
-Pattern C (with newline):
-   ✅ MATCH
+════════════════════════════════════════════════════════════════════════
+  3. CONCURRENT PROBE — 10 back-to-back fetches
+════════════════════════════════════════════════════════════════════════
+  Successes: 10/10
 
-═══ SECTION 3: Line-by-line byte analysis ═══
-
-Line 12132:
-  repr  : '    top_syms = scan_top_assets(exchange)'
-  bytes : [32, 32, 32, 32, 116, 111, 112, 95, 115, 121, 109, 115, 32, 61, 32, 115, 99, 97, 110, 95, 116, 111, 112, 95, 97, 115, 115, 101, 116, 115, 40, 101, 120, 99, 104, 97, 110, 103, 101, 41]...
-  len   : 40 chars
-
-Line 12131 (previous):
-  repr  : '    log.info("⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...")'
-  len   : 81 chars
-  char-by-char (last 80 chars):
-    [   1] U+0020 ' '
-    [   2] U+0020 ' '
-    [   3] U+0020 ' '
-    [   4] U+006C 'l'
-    [   5] U+006F 'o'
-    [   6] U+0067 'g'
-    [   7] U+002E '.'
-    [   8] U+0069 'i'
-    [   9] U+006E 'n'
-    [  10] U+0066 'f'
-    [  11] U+006F 'o'
-    [  12] U+0028 '('
-    [  13] U+0022 '"'
-    [  14] U+23F3 U+23F3
-    [  15] U+0020 ' '
-    [  16] U+062C U+062C
-    [  17] U+0644 U+0644
-    [  18] U+0628 U+0628
-    [  19] U+0020 ' '
-    [  20] U+0627 U+0627
-    [  21] U+0644 U+0644
-    [  22] U+0632 U+0632
-    [  23] U+0645 U+0645
-    [  24] U+0643 U+0643
-    [  25] U+0627 U+0627
-    [  26] U+0646 U+0646
-    [  27] U+0020 ' '
-    [  28] U+0627 U+0627
-    [  29] U+0644 U+0644
-    [  30] U+0645 U+0645
-    [  31] U+0627 U+0627
-    [  32] U+0644 U+0644
-    [  33] U+064A U+064A
-    [  34] U+0020 ' '
-    [  35] U+0627 U+0627
-    [  36] U+0644 U+0644
-    [  37] U+062A U+062A
-    [  38] U+0627 U+0627
-    [  39] U+0631 U+0631
-    [  40] U+064A U+064A
-    [  41] U+062E U+062E
-    [  42] U+064A U+064A
-    [  43] U+0020 ' '
-    [  44] U+0028 '('
-    [  45] U+0647 U+0647
-    [  46] U+0630 U+0630
-    [  47] U+0647 U+0647
-    [  48] U+0020 ' '
-    [  49] U+0627 U+0627
-    [  50] U+0644 U+0644
-    [  51] U+0639 U+0639
-    [  52] U+0645 U+0645
-    [  53] U+0644 U+0644
-    [  54] U+064A U+064A
-    [  55] U+0629 U+0629
-    [  56] U+0020 ' '
-    [  57] U+062A U+062A
-    [  58] U+062D U+062D
-    [  59] U+062F U+062F
-    [  60] U+062B U+062B
-    [  61] U+0020 ' '
-    [  62] U+0645 U+0645
-    [  63] U+0631 U+0631
-    [  64] U+0629 U+0629
-    [  65] U+0020 ' '
-    [  66] U+0648 U+0648
-    [  67] U+0627 U+0627
-    [  68] U+062D U+062D
-    [  69] U+062F U+062F
-    [  70] U+0629 U+0629
-    [  71] U+0020 ' '
-    [  72] U+0641 U+0641
-    [  73] U+0642 U+0642
-    [  74] U+0637 U+0637
-    [  75] U+0029 ')'
-    [  76] U+002E '.'
-    [  77] U+002E '.'
-    [  78] U+002E '.'
-    [  79] U+0022 '"'
-    [  80] U+0029 ')'
-
-═══ SECTION 4: Suggested safe anchor ═══
-
-Suggested anchor (exact lines to copy):
-```python
-# line 12130: ''
-# line 12131: '    log.info("⏳ جلب الزمكان المالي التاريخي (هذه العملية تحدث مرة واحدة فقط)...")'
-# line 12132: '    top_syms = scan_top_assets(exchange)'
-# line 12133: ''
-# line 12134: '    # ══ [DATA-LENGTH-FIX] Live needs real history, not 60 days ══'
-```
-
-Suggested pattern to use (multi-line, avoid Arabic):
-```python
-anchor = (
-    '    top_syms = scan_top_assets(exchange)\n'
-    '\n'
-    '    # ══ [DATA-LENGTH-FIX]'
-)
-```
-
-Verification: ✅ MATCH
+════════════════════════════════════════════════════════════════════════
+  4. VERDICT
+════════════════════════════════════════════════════════════════════════
+  Read the sections above.
+  - If the exchange returns 0 bars inside a gap → genuine hole (Binance)
+  - If it returns bars but cache still shows the gap → merge bug
+  - If fetch_ohlcv raises intermittently → network / rate-limit
+  - If testnet returns fewer bars than live → testnet data is sparse
+════════════════════════════════════════════════════════════════════════
