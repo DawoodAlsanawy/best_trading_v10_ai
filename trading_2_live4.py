@@ -165,7 +165,7 @@ class Config:
     EMA_SPAN: int = 200; ATR_PERIOD: int = 14
 
     W_CURV: float=1.0; W_VOL: float=1.0; W_ENTROPY: float=2.0
-    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=-3
+    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=3
 
     CURV_THRESHOLD: float=0.01; DH_ENTROPY_THRESHOLD: float=0.005
     DH_HMM_UPPER: float=0.01;  DH_HMM_LOWER: float=-0.01
@@ -14429,11 +14429,29 @@ def _rev_scan(exchange, sym: str, w: Dict, sub_tf: str, sub_sec: int,
                     w["touch_k"] = k
                     log.info(f"[LiveRev] {sym} TOUCH k={k} "
                              f"@ {pd.Timestamp(ts, unit='s', tz='UTC')}")
+        # ── BOUNCE & FAST-FAIL ──
         elif st == "WAITING_BOUNCE":
+            # 1. صمام الأمان السعري (Fast-Fail) - فكرتك العبقرية
+            # إذا ابتعد السعر عن الهدف في الاتجاه المعاكس بمقدار 1σ، لا تنتظر الزمن!
+            sigma_bar = float(w.get("sigma_bar", 0.01))
+            target_px = float(w["target"])
+            escape_dist = sigma_bar * target_px * 1.0 # معامل k=1.0 كما ناقشنا
+            
+            is_broken = ((action == "BUY" and c < target_px - escape_dist) or
+                         (action == "SELL" and c > target_px + escape_dist))
+            
+            if is_broken:
+                _rev_expire(w, "price_break_1sigma")
+                w["last_scan_ts"] = ts
+                break
+            
+            # 2. مؤقت الزمن (Backstop)
             if k > int(w["touch_k"]) + bw:
                 _rev_expire(w, "bounce_timeout")
                 w["last_scan_ts"] = ts
                 break
+                
+            # 3. التأكيد (Bounce Confirm)
             if np.isfinite(c) and _bar_confirms_bounce(w, c):
                 w["status"] = "READY_TO_FILL"
                 w["confirm_k"] = k
@@ -14441,8 +14459,7 @@ def _rev_scan(exchange, sym: str, w: Dict, sub_tf: str, sub_sec: int,
                 w["confirm_close_ts"] = ts + sub_sec
                 w["prev_close"] = c
                 w["last_scan_ts"] = ts
-                log.info(f"[LiveRev] {sym} BOUNCE confirmed k={k} "
-                         f"close={c:.6f}")
+                log.info(f"[LiveRev] {sym} BOUNCE confirmed k={k} close={c:.6f}")
                 break
         w["prev_close"] = c
         w["last_scan_ts"] = ts
