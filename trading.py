@@ -15971,8 +15971,24 @@ def run_live(cfg, exchange):
                         is_apex, apex_rsn = check_thermodynamic_apex(
                             pos['action'], pos['entry'], price, ad, fi
                         )
+                    
+                    # ══════════════════════════════════════════════════════════
+                    # [APEX DEBOUNCER FIX] معالجة تذبذبات الـ Ticker في اللايف
+                    # لا نخرج فوراً من أول ذبذبة لحظية، بل نطلب 3 تأكيدات متتالية
+                    # (حوالي 15 ثانية من بقاء السعر في حالة القمة الحرارية)
+                    # ══════════════════════════════════════════════════════════
                     if is_apex:
-                        ex = True; rsn = apex_rsn
+                        pos['_apex_strikes'] = pos.get('_apex_strikes', 0) + 1
+                        if pos['_apex_strikes'] >= 3:
+                            ex = True
+                            rsn = apex_rsn
+                            log.info(f"[Apex] {sym} القمة الحرارية تأكدت بعد 3 ضربات متتالية. جاري الخروج.")
+                        else:
+                            # ننتظر المزيد من التأكيد ولا نخرج بعد
+                            log.debug(f"[Apex-Warn] {sym} ذبذبة قمة محتملة (الضربة {pos['_apex_strikes']}/3)")
+                    else:
+                        # إذا هبط السعر وعاد لطبيعته، نُصفر العداد (إنها مجرد ضوضاء)
+                        pos['_apex_strikes'] = 0
 
                     # Topo-Div
                     if not ex and fi > 0:

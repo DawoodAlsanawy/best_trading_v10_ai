@@ -1,0 +1,21 @@
+# ==========================================
+# Quantum Thermodynamic Trading Engine v6.1
+# ==========================================
+
+# ── Exchange API & Connectivity ──
+ccxt>=4.2.0                  # ضروري جداً إصدار 4.x وما فوق لتوافق الـ Leverage والـ Algo Orders
+
+# ── Data Processing & Mathematics ──
+# تثبيت نسخة Numpy تحت 2.0 ضروري جداً لتجنب تعارضات مكتبة Numba
+numpy>=1.24.0,<2.0.0
+pandas>=2.0.0                # لمعالجة الشموع الزمنية والـ DataFrames
+scipy>=1.10.0                # لحسابات الانحراف، التفرطح، والاحتمالات (Norm)
+
+# ── Machine Learning & Clustering ──
+scikit-learn>=1.3.0          # لمحرك K-Means ولنماذج الـ ML Filter إن تم تفعيلها
+
+# ── Performance Acceleration (C-Speed) ──
+numba>=0.58.0                # يعطي تسريع 100x لمعادلات لايبونوف والإنتروبيا
+
+# ── Visualization & Reporting ──
+matplotlib>=3.7.0            # لرسم منحنى الأسهم وتحليل نتائج الباكتيست
