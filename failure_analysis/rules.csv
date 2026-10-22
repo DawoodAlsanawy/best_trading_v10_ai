@@ -1,0 +1,7 @@
+n,n_A,n_D,p_A,p_D,conditions
+308,284,24,0.922077922077922,0.07792207792207792,E_therm <= 0.0188 AND btc_ret_24 <= 0.0717 AND T_info <= 3.7230 AND dist_high_100 <= -0.0657 AND btc_ret_24 <= -0.0031
+224,221,3,0.9866071428571429,0.013392857142857142,E_therm <= 0.0188 AND btc_ret_24 <= 0.0717 AND T_info <= 3.7230 AND dist_high_100 > -0.0657 AND rr_design > 9.3717
+128,124,4,0.96875,0.03125,E_therm <= 0.0188 AND btc_ret_24 <= 0.0717 AND T_info > 3.7230 AND ret_24 <= -0.0368 AND score > 5.1406
+77,76,1,0.987012987012987,0.012987012987012988,E_therm > 0.0188 AND ret_24 <= -0.0434 AND dist_high_100 <= -0.2552 AND btc_ret_24 <= -0.0749 AND ret_12 > -0.1396
+122,120,2,0.9836065573770492,0.01639344262295082,E_therm > 0.0188 AND ret_24 <= -0.0434 AND dist_high_100 > -0.2552 AND btc_ret_6 > -0.0590 AND ret_3 > -0.0685
+48,48,0,1.0,0.0,E_therm > 0.0188 AND ret_24 > -0.0434 AND T_info <= 7.3626 AND dynamic_risk <= 0.0190 AND btc_ema_slope <= -0.0363

@@ -6596,6 +6596,8 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
             sig.sl  = opt_px + _design_sl_dist
             sig.tp1 = opt_px - _design_tp_dist
 
+
+
         sl_distance = _design_sl_dist
         tp_distance = _design_tp_dist
 
@@ -14750,6 +14752,23 @@ def _rev_finalize(exchange, sym: str, w: Dict, open_pos_live: Dict, assets,
         except Exception as e:
             log.error(f"[LiveRev] {sym} flatten failed: {e}")
 
+#    orig_sl_dist = float(w["orig_sl_dist"])
+#    orig_tp_dist = float(w["orig_tp_dist"])
+#    if orig_sl_dist <= 1e-12:
+#        orig_sl_dist = entry_px * 0.015
+#        orig_tp_dist = orig_sl_dist * float(getattr(CFG, "TP_MULT", 2.0))
+#    _max_sl_frac = 0.015 * float(getattr(CFG, "SL_WIDEN_MULT", 1.0))
+#    if orig_sl_dist > entry_px * _max_sl_frac:
+#        _rr = orig_tp_dist / max(orig_sl_dist, 1e-12)
+#        orig_sl_dist = entry_px * _max_sl_frac
+#        orig_tp_dist = orig_sl_dist * _rr
+#    if action == "BUY":
+#        new_sl = entry_px - orig_sl_dist
+#        new_tp = entry_px + orig_tp_dist
+#    else:
+#        new_sl = entry_px + orig_sl_dist
+#        new_tp = entry_px - orig_tp_dist
+
     orig_sl_dist = float(w["orig_sl_dist"])
     orig_tp_dist = float(w["orig_tp_dist"])
     if orig_sl_dist <= 1e-12:
@@ -14760,12 +14779,70 @@ def _rev_finalize(exchange, sym: str, w: Dict, open_pos_live: Dict, assets,
         _rr = orig_tp_dist / max(orig_sl_dist, 1e-12)
         orig_sl_dist = entry_px * _max_sl_frac
         orig_tp_dist = orig_sl_dist * _rr
-    if action == "BUY":
-        new_sl = entry_px - orig_sl_dist
-        new_tp = entry_px + orig_tp_dist
+
+    # ═══════════════════════════════════════════════════════════════
+    # [SL-HYBRID] Signal levels vs Rebuilt levels
+    # ---------------------------------------------------------------
+    # المنطق:
+    #   إذا الدخول بقي قريباً من target (≤ 30% من orig_sl_dist):
+    #       استخدم مستويات الإشارة مباشرة (SL تحت الدعم الحقيقي)
+    #   إذا الدخول ابتعد أكثر:
+    #       أعد بناء SL/TP من entry_px مع الحفاظ على المسافات
+    #
+    # السبب: signal_sl يمثل الدعم الفعلي في السوق. عند الدخول
+    # فوق target، إعادة البناء ترفع SL فوق الدعم → خروج مبكر زائف.
+    # ═══════════════════════════════════════════════════════════════
+    sig_sl_v = float(w.get("sig_sl") or 0.0)
+    sig_tp_v = float(w.get("sig_tp1") or 0.0)
+    tgt_v    = float(w.get("target") or 0.0)
+
+    _max_drift = 0.30 * orig_sl_dist
+    _drift = abs(entry_px - tgt_v) if tgt_v > 0 else float("inf")
+
+    _use_signal = (
+        sig_sl_v > 0 and sig_tp_v > 0 and tgt_v > 0
+        and _drift <= _max_drift
+        and (
+            (action == "BUY"  and sig_sl_v < entry_px < sig_tp_v)
+            or (action == "SELL" and sig_tp_v < entry_px < sig_sl_v)
+        )
+    )
+
+    if _use_signal:
+        # ── نمط الإشارة: مستويات السوق الحقيقية ──
+        new_sl = sig_sl_v
+        new_tp = sig_tp_v
+        # افرض cap الـ SL_WIDEN_MULT (حماية نادرة لكن ضرورية)
+        _sl_d = abs(entry_px - new_sl)
+        if _sl_d > entry_px * _max_sl_frac:
+            _tp_d = abs(new_tp - entry_px)
+            _rr_s = _tp_d / max(_sl_d, 1e-12)
+            _new_sl_d = entry_px * _max_sl_frac
+            _new_tp_d = _new_sl_d * _rr_s
+            if action == "BUY":
+                new_sl = entry_px - _new_sl_d
+                new_tp = entry_px + _new_tp_d
+            else:
+                new_sl = entry_px + _new_sl_d
+                new_tp = entry_px - _new_tp_d
+        log.debug(f"[SL-Hybrid] signal levels: "
+                  f"entry={entry_px:.6f} target={tgt_v:.6f} "
+                  f"sl={new_sl:.6f} tp={new_tp:.6f} "
+                  f"drift={_drift:.6f}/{_max_drift:.6f}")
     else:
-        new_sl = entry_px + orig_sl_dist
-        new_tp = entry_px - orig_tp_dist
+        # ── نمط إعادة البناء: R:R محفوظ ──
+        if action == "BUY":
+            new_sl = entry_px - orig_sl_dist
+            new_tp = entry_px + orig_tp_dist
+        else:
+            new_sl = entry_px + orig_sl_dist
+            new_tp = entry_px - orig_tp_dist
+        log.debug(f"[SL-Hybrid] rebuilt: "
+                  f"entry={entry_px:.6f} target={tgt_v:.6f} "
+                  f"sl_dist={orig_sl_dist:.6f} "
+                  f"drift={_drift:.6f}/{_max_drift:.6f}")
+
+
 
     _sb = float(w.get("sigma_bar", 0.01))
     _td = float(np.clip(CFG.TRAIL_KAPPA * _sb,
