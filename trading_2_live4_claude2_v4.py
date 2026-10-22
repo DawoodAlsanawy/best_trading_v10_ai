@@ -19213,6 +19213,6 @@ if __name__=="__main__":
     main()
 
 # to run the project use the command 
-# python trading.py --mode backtest --api-key  --api-secret  --capital 100 --nassets 10 --maxcon 1 --timeframe 4h --no-fixed-price  --no-trailing --history-days 30
+# python3 trading_2_live4_claude2_v4.py --mode testnet   --api-key ${BINANCE_TESTNET_KEY} --api-secret ${BINANCE_TESTNET_SECRET}   --nassets 100 --timeframe 4h --no-fixed-price   --enable-sell --sell-gauge-pct 100   --tp-mult 7 --sl-widen-mult 1 --partial-tp-r 3   --maxcon 10 --workers 4 --history-days 730 --po-wait-s 300  --capital 100   --be-escape --be-escape-move-r 0.30 --be-escape-min-profit-r 0.1 --no-be-escape-ema  --rule-filter --rule-min-score 3
 
 # [LIVE-PARITY-FIXES] applied
