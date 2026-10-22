@@ -366,7 +366,7 @@ class Config:
     TF_SECONDS: int = 3600        # seconds per bar
     TF_HOURS: float = 1.0         # hours per bar
     # ══ [NOTIONAL CAP — anti-compounding] ══
-    MAX_ABS_NOTIONAL: float = 20_000.0     # tuned for alt liquidity
+    MAX_ABS_NOTIONAL: float = 100_000.0     # tuned for alt liquidity
     # ══ [DYNAMIC TRAILING — volatility-scaled] ══
     TRAIL_DYNAMIC: bool = True
     TRAIL_KAPPA: float = 0.30                # tuned to 1h timeframe
@@ -17129,7 +17129,10 @@ def run_live(cfg, exchange):
                     continue
 
                 # fi is only needed for physics-based checks
-                fi = (len(ad.score) - 1) if ad is not None else -1
+                # [APEX-PARITY] Use last CLOSED bar, not the forming bar.
+                # Backtest uses ad.closes[cidx] (a closed bar), so live
+                # must match. len(ad.score)-1 = forming bar; -2 = last closed.
+                fi = (len(ad.score) - 2) if ad is not None else -1
                 entry_ts = pos.get('entry_ts', 0)      # [LV05/N2] always defined before use
                 if _lv_manage_position(exchange, sym, pos, price, ad, state_file,
                                        open_pos_live, last_exit_time) == 'closed':
@@ -17142,8 +17145,14 @@ def run_live(cfg, exchange):
                     _sl_d0_be = float(pos['sl_dist_initial'])
                     _ci_now_be = (max(0, len(ad.closes) - 2)
                                   if ad is not None else 0)
+                    # [PARITY] use last CLOSED bar close to match backtest.
+                    # Ticker would trigger BEEsc more often than backtest.
+                    _be_price = (float(ad.closes[_ci_now_be])
+                                 if ad is not None
+                                 and 0 <= _ci_now_be < len(ad.closes)
+                                 else float(price))
                     _be_trig, _be_rsn = _should_breakeven_escape(
-                        ad, _ci_now_be, float(price),
+                        ad, _ci_now_be, _be_price,
                         pos['action'], float(pos['entry']),
                         _sl_d0_be, sig_opp=None,
                     )
@@ -17176,12 +17185,19 @@ def run_live(cfg, exchange):
                 rsn = ""
 
                 # ── Physics-based exits (require ad) ──
+                # [APEX-PARITY] Physics checks use the CLOSED bar's price
+                # to match the backtest exactly. SL/TP/Liq still use the
+                # live ticker (price) — only Apex/TopoDiv need parity.
                 if ad is not None:
+                    _apex_ci = fi + ad.feat_start
+                    _apex_price = (float(ad.closes[_apex_ci])
+                                   if 0 <= _apex_ci < len(ad.closes)
+                                   else float(price))
                     # Apex
                     is_apex, apex_rsn = False, ""
                     if getattr(CFG, 'APEX_ENABLED', True):
                         is_apex, apex_rsn = check_thermodynamic_apex(
-                            pos['action'], pos['entry'], price, ad, fi
+                            pos['action'], pos['entry'], _apex_price, ad, fi
                         )
                     if is_apex:
                         ex = True; rsn = apex_rsn
@@ -17247,17 +17263,28 @@ def run_live(cfg, exchange):
                     _ta = _sl_frac_init * _act_at_r
 
                     # Update peak from live price and compute MFE
+                    # [PARITY] use _hi/_lo (from 1m candles via
+                    # _lv_update_extremes) to match backtest bar highs/lows.
+                    # Falls back to ticker if extremes are missing.
                     if pos['action'] == "BUY":
                         cur_peak = float(pos.get('peak_price', entry_px))
-                        if price > cur_peak:
-                            pos['peak_price'] = price
-                            cur_peak = price
+                        _cand_peak = max(
+                            float(price),
+                            float(pos.get('_hi', entry_px)),
+                        )
+                        if _cand_peak > cur_peak:
+                            pos['peak_price'] = _cand_peak
+                            cur_peak = _cand_peak
                         _mfe = (cur_peak - entry_px) / entry_px
                     else:
                         cur_peak = float(pos.get('peak_price', entry_px))
-                        if price < cur_peak or cur_peak == entry_px:
-                            pos['peak_price'] = price
-                            cur_peak = price
+                        _cand_peak = min(
+                            float(price),
+                            float(pos.get('_lo', entry_px)),
+                        )
+                        if _cand_peak < cur_peak or cur_peak == entry_px:
+                            pos['peak_price'] = _cand_peak
+                            cur_peak = _cand_peak
                         _mfe = (entry_px - cur_peak) / entry_px
 
                     if _mfe >= _ta:
