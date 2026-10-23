@@ -691,6 +691,18 @@ class Config:
     # BEEsc and RESTORE the original TP.
     # 0.0 = never cancel (default, current behavior preserved)
     BREAKEVEN_ESCAPE_CANCEL_KAPPA: float = 0.0
+    # ══ [BEEsc-Cancel-Close] CLOSE-ONLY tracking (no wick, no ticker) ══
+    # When True, extreme tracking + bounce confirmation use the LAST
+    # CLOSED bar's close. Matches S/R philosophy and eliminates the
+    # live-vs-backtest ticker/wick gap.
+    # Default False → preserves current behavior.
+    BREAKEVEN_ESCAPE_CANCEL_CLOSE_ONLY: bool = False
+    # ══ [BEEsc-Cancel-SR] Require S/R intact before cancelling ══
+    # When True, BEEsc-Cancel is skipped if price has BROKEN (by close)
+    # the nearest swing support (BUY) or resistance (SELL).
+    # Default False → no S/R filter.
+    BREAKEVEN_ESCAPE_CANCEL_SR_CHECK: bool = False
+    BREAKEVEN_ESCAPE_CANCEL_SR_LOOKBACK: int = 60
 
     # ══ [SINGULARITY TIMING LAYER 1 — EMERGING] ══
     # طبقة توقيت تكشف الرنين الكسري قبل الانفجار بدقائق وتُعجّل
@@ -6126,50 +6138,87 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                     #)
 
         # ══ [BEEsc-CANCEL] track extremes + cancel on strong bounce ══
+        # [BEEsc-Cancel-Close] Optional close-only (no wick)
+        # [BEEsc-Cancel-SR] Optional S/R intact check
         if (getattr(pos, '_be_esc_done', False)
                 and not getattr(pos, '_be_cancelled', False)
                 and float(getattr(CFG, 'BREAKEVEN_ESCAPE_CANCEL_KAPPA', 0.0)) > 0
                 and hasattr(pos, '_be_orig_tp1')):
             try:
-                _sigma_c = float(ad.E_therm[fi]) if 0 <= fi < len(ad.E_therm) else 0.01
-                if not np.isfinite(_sigma_c) or _sigma_c <= 1e-9:
-                    _sigma_c = 0.01
-                _kappa_c = float(CFG.BREAKEVEN_ESCAPE_CANCEL_KAPPA)
-                _thr_c = _kappa_c * _sigma_c * pos.entry_px
-                if sig.action == "BUY":
-                    _low_c = min(
-                        float(getattr(pos, '_be_low', pos.entry_px)),
-                        float(ad.lows[cidx]),
-                    )
-                    pos._be_low = _low_c
-                    _bounce_c = float(p) - _low_c
-                    if _bounce_c >= _thr_c:
-                        _restore_c = float(pos._be_orig_tp1)
-                        sig.tp1 = _restore_c
-                        pos._be_cancelled = True
-#                        log.info(
-#                            f"[BEEsc-Cancel-BT] {sig.symbol} "
-#                            f"BUY bounce={_bounce_c:.6f} ≥ "
-#                            f"{_thr_c:.6f} → TP restored to "
-#                            f"{_restore_c:.6f}"
-#                        )
-                else:
-                    _high_c = max(
-                        float(getattr(pos, '_be_high', pos.entry_px)),
-                        float(ad.highs[cidx]),
-                    )
-                    pos._be_high = _high_c
-                    _bounce_c = _high_c - float(p)
-                    if _bounce_c >= _thr_c:
-                        _restore_c = float(pos._be_orig_tp1)
-                        sig.tp1 = _restore_c
-                        pos._be_cancelled = True
-                        log.info(
-                            f"[BEEsc-Cancel-BT] {sig.symbol} "
-                            f"SELL bounce={_bounce_c:.6f} ≥ "
-                            f"{_thr_c:.6f} → TP restored to "
-                            f"{_restore_c:.6f}"
+                _be_use_close = bool(getattr(
+                    CFG, 'BREAKEVEN_ESCAPE_CANCEL_CLOSE_ONLY', False))
+                _be_sr_check = bool(getattr(
+                    CFG, 'BREAKEVEN_ESCAPE_CANCEL_SR_CHECK', False))
+                _be_sr_ok = True
+                if _be_sr_check:
+                    _be_lb = int(getattr(
+                        CFG, 'BREAKEVEN_ESCAPE_CANCEL_SR_LOOKBACK', 60))
+                    _be_swing = _find_recent_swing(
+                        ad, max(0, cidx - _be_lb), cidx, sig.action)
+                    if _be_swing is not None:
+                        _be_close_now = float(ad.closes[cidx])
+                        if (sig.action == 'BUY'
+                                and _be_close_now < _be_swing):
+                            _be_sr_ok = False
+                            log.debug(
+                                f"[BEEsc-Cancel-SR] {sig.symbol} "
+                                f"BUY skip: support broken "
+                                f"close={_be_close_now:.6f}<"
+                                f"swing={_be_swing:.6f}")
+                        elif (sig.action == 'SELL'
+                                and _be_close_now > _be_swing):
+                            _be_sr_ok = False
+                            log.debug(
+                                f"[BEEsc-Cancel-SR] {sig.symbol} "
+                                f"SELL skip: resistance broken "
+                                f"close={_be_close_now:.6f}>"
+                                f"swing={_be_swing:.6f}")
+                if _be_sr_ok:
+                    _sigma_c = float(ad.E_therm[fi]) if 0 <= fi < len(ad.E_therm) else 0.01
+                    if not np.isfinite(_sigma_c) or _sigma_c <= 1e-9:
+                        _sigma_c = 0.01
+                    _kappa_c = float(CFG.BREAKEVEN_ESCAPE_CANCEL_KAPPA)
+                    _thr_c = _kappa_c * _sigma_c * pos.entry_px
+                    if sig.action == "BUY":
+                        _low_src = (float(ad.closes[cidx]) if _be_use_close
+                                    else float(ad.lows[cidx]))
+                        _low_c = min(
+                            float(getattr(pos, '_be_low', pos.entry_px)),
+                            _low_src,
                         )
+                        pos._be_low = _low_c
+                        _bounce_c = float(p) - _low_c
+                        if _bounce_c >= _thr_c:
+                            _restore_c = float(pos._be_orig_tp1)
+                            sig.tp1 = _restore_c
+                            pos._be_cancelled = True
+                            log.info(
+                                f"[BEEsc-Cancel-BT] {sig.symbol} "
+                                f"BUY bounce={_bounce_c:.6f} ≥ "
+                                f"{_thr_c:.6f} → TP restored to "
+                                f"{_restore_c:.6f} "
+                                f"(mode={'close' if _be_use_close else 'wick'})"
+                            )
+                    else:
+                        _high_src = (float(ad.closes[cidx]) if _be_use_close
+                                     else float(ad.highs[cidx]))
+                        _high_c = max(
+                            float(getattr(pos, '_be_high', pos.entry_px)),
+                            _high_src,
+                        )
+                        pos._be_high = _high_c
+                        _bounce_c = _high_c - float(p)
+                        if _bounce_c >= _thr_c:
+                            _restore_c = float(pos._be_orig_tp1)
+                            sig.tp1 = _restore_c
+                            pos._be_cancelled = True
+                            log.info(
+                                f"[BEEsc-Cancel-BT] {sig.symbol} "
+                                f"SELL bounce={_bounce_c:.6f} ≥ "
+                                f"{_thr_c:.6f} → TP restored to "
+                                f"{_restore_c:.6f} "
+                                f"(mode={'close' if _be_use_close else 'wick'})"
+                            )
             except Exception as _e_c:
                 log.debug(f"[BEEsc-Cancel-BT] {sig.symbol}: {_e_c}")
 
@@ -17366,72 +17415,110 @@ def run_live(cfg, exchange):
                                 pass
 
                 # ══ [BEEsc-CANCEL-Live] track extremes + cancel ══
+                # [BEEsc-Cancel-Close] Optional close-only (no ticker)
+                # [BEEsc-Cancel-SR] Optional S/R intact check
                 if (pos.get('_be_esc_done', False)
                         and not pos.get('_be_cancelled', False)
                         and float(getattr(CFG, 'BREAKEVEN_ESCAPE_CANCEL_KAPPA', 0.0)) > 0
                         and '_be_orig_tp1' in pos):
                     try:
-                        _sigma_c = 0.01
-                        if ad is not None:
-                            _fi_c = (len(ad.closes) - 2 - ad.feat_start)
-                            if 0 <= _fi_c < len(ad.E_therm):
-                                _sigma_c = float(ad.E_therm[_fi_c])
-                        if not np.isfinite(_sigma_c) or _sigma_c <= 1e-9:
+                        _be_use_close = bool(getattr(
+                            CFG, 'BREAKEVEN_ESCAPE_CANCEL_CLOSE_ONLY', False))
+                        _be_sr_check = bool(getattr(
+                            CFG, 'BREAKEVEN_ESCAPE_CANCEL_SR_CHECK', False))
+                        _be_sr_ok = True
+                        _be_ci = (len(ad.closes) - 2) if ad is not None else -1
+                        if _be_sr_check and ad is not None and _be_ci > 0:
+                            _be_lb = int(getattr(
+                                CFG, 'BREAKEVEN_ESCAPE_CANCEL_SR_LOOKBACK', 60))
+                            _be_swing = _find_recent_swing(
+                                ad, max(0, _be_ci - _be_lb), _be_ci, pos['action'])
+                            if _be_swing is not None:
+                                _be_close_now = float(ad.closes[_be_ci])
+                                if (pos['action'] == 'BUY'
+                                        and _be_close_now < _be_swing):
+                                    _be_sr_ok = False
+                                    log.debug(
+                                        f"[BEEsc-Cancel-SR] {sym} "
+                                        f"BUY skip: support broken "
+                                        f"close={_be_close_now:.6f}<"
+                                        f"swing={_be_swing:.6f}")
+                                elif (pos['action'] == 'SELL'
+                                        and _be_close_now > _be_swing):
+                                    _be_sr_ok = False
+                                    log.debug(
+                                        f"[BEEsc-Cancel-SR] {sym} "
+                                        f"SELL skip: resistance broken "
+                                        f"close={_be_close_now:.6f}>"
+                                        f"swing={_be_swing:.6f}")
+                        if _be_sr_ok:
                             _sigma_c = 0.01
-                        _kappa_c = float(CFG.BREAKEVEN_ESCAPE_CANCEL_KAPPA)
-                        _thr_c = _kappa_c * _sigma_c * float(pos['entry'])
-                        if pos['action'] == "BUY":
-                            _low_c = min(
-                                float(pos.get('_be_low', float(pos['entry']))),
-                                float(price),
-                            )
-                            pos['_be_low'] = _low_c
-                            _bounce_c = float(price) - _low_c
-                            if _bounce_c >= _thr_c:
-                                _restore_c = float(pos['_be_orig_tp1'])
-                                pos['tp1'] = _restore_c
-                                pos['_be_cancelled'] = True
-                                log.info(
-                                    f"[BEEsc-Cancel-LV] {sym} BUY "
-                                    f"bounce={_bounce_c:.6f} ≥ "
-                                    f"{_thr_c:.6f} → TP restored to "
-                                    f"{_restore_c:.6f}"
+                            if ad is not None:
+                                _fi_c = (len(ad.closes) - 2 - ad.feat_start)
+                                if 0 <= _fi_c < len(ad.E_therm):
+                                    _sigma_c = float(ad.E_therm[_fi_c])
+                            if not np.isfinite(_sigma_c) or _sigma_c <= 1e-9:
+                                _sigma_c = 0.01
+                            _kappa_c = float(CFG.BREAKEVEN_ESCAPE_CANCEL_KAPPA)
+                            _thr_c = _kappa_c * _sigma_c * float(pos['entry'])
+                            if _be_use_close and ad is not None and _be_ci > 0:
+                                _be_price_c = float(ad.closes[_be_ci])
+                            else:
+                                _be_price_c = float(price)
+                            if pos['action'] == "BUY":
+                                _low_c = min(
+                                    float(pos.get('_be_low', float(pos['entry']))),
+                                    _be_price_c,
                                 )
-                                try:
-                                    if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
-                                        _sync_protective_orders(exchange, sym, pos)
-                                except Exception:
-                                    pass
-                                try:
-                                    _lv_save_state(state_file, open_pos_live)
-                                except Exception:
-                                    pass
-                        else:
-                            _high_c = max(
-                                float(pos.get('_be_high', float(pos['entry']))),
-                                float(price),
-                            )
-                            pos['_be_high'] = _high_c
-                            _bounce_c = _high_c - float(price)
-                            if _bounce_c >= _thr_c:
-                                _restore_c = float(pos['_be_orig_tp1'])
-                                pos['tp1'] = _restore_c
-                                pos['_be_cancelled'] = True
-                                log.info(
-                                    f"[BEEsc-Cancel-LV] {sym} SELL "
-                                    f"bounce={_bounce_c:.6f} ≥ "
-                                    f"{_thr_c:.6f} → TP restored to "
-                                    f"{_restore_c:.6f}"
+                                pos['_be_low'] = _low_c
+                                _bounce_c = _be_price_c - _low_c
+                                if _bounce_c >= _thr_c:
+                                    _restore_c = float(pos['_be_orig_tp1'])
+                                    pos['tp1'] = _restore_c
+                                    pos['_be_cancelled'] = True
+                                    log.info(
+                                        f"[BEEsc-Cancel-LV] {sym} BUY "
+                                        f"bounce={_bounce_c:.6f} ≥ "
+                                        f"{_thr_c:.6f} → TP restored to "
+                                        f"{_restore_c:.6f} "
+                                        f"(mode={'close' if _be_use_close else 'ticker'})"
+                                    )
+                                    try:
+                                        if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
+                                            _sync_protective_orders(exchange, sym, pos)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        _lv_save_state(state_file, open_pos_live)
+                                    except Exception:
+                                        pass
+                            else:
+                                _high_c = max(
+                                    float(pos.get('_be_high', float(pos['entry']))),
+                                    _be_price_c,
                                 )
-                                try:
-                                    if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
-                                        _sync_protective_orders(exchange, sym, pos)
-                                except Exception:
-                                    pass
-                                try:
-                                    _lv_save_state(state_file, open_pos_live)
-                                except Exception:
-                                    pass
+                                pos['_be_high'] = _high_c
+                                _bounce_c = _high_c - _be_price_c
+                                if _bounce_c >= _thr_c:
+                                    _restore_c = float(pos['_be_orig_tp1'])
+                                    pos['tp1'] = _restore_c
+                                    pos['_be_cancelled'] = True
+                                    log.info(
+                                        f"[BEEsc-Cancel-LV] {sym} SELL "
+                                        f"bounce={_bounce_c:.6f} ≥ "
+                                        f"{_thr_c:.6f} → TP restored to "
+                                        f"{_restore_c:.6f} "
+                                        f"(mode={'close' if _be_use_close else 'ticker'})"
+                                    )
+                                    try:
+                                        if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
+                                            _sync_protective_orders(exchange, sym, pos)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        _lv_save_state(state_file, open_pos_live)
+                                    except Exception:
+                                        pass
                     except Exception as _e_c:
                         log.debug(f"[BEEsc-Cancel-LV] {sym}: {_e_c}")
 
@@ -18877,6 +18964,12 @@ def main():
                         "κ × σ_bar × entry BEFORE touching entry. "
                         "TP is restored to its original target. "
                         "0.0 = disabled (default)")
+    p.add_argument("--be-cancel-close-only", action="store_true",
+                   help="BEEsc-Cancel uses CLOSED bar close for "
+                        "extreme tracking + bounce (no wick, no ticker)")
+    p.add_argument("--be-cancel-sr-check", action="store_true",
+                   help="BEEsc-Cancel skipped if nearest swing "
+                        "support/resistance was BROKEN by close")
     p.add_argument("--tp-mult", type=float, default=None,
                    help="Override TP_MULT")
     p.add_argument("--partial-tp-r", type=float, default=None,
@@ -19365,12 +19458,22 @@ def main():
     if getattr(args, "be_escape_cancel_kappa", None) is not None:
         CFG.BREAKEVEN_ESCAPE_CANCEL_KAPPA = float(
             args.be_escape_cancel_kappa)
+    if getattr(args, "be_cancel_close_only", False):
+        CFG.BREAKEVEN_ESCAPE_CANCEL_CLOSE_ONLY = True
+    if getattr(args, "be_cancel_sr_check", False):
+        CFG.BREAKEVEN_ESCAPE_CANCEL_SR_CHECK = True
     if CFG.BREAKEVEN_ESCAPE_CANCEL_KAPPA > 0:
         log.info(
             f"[BEEsc] CANCEL enabled: κ="
             f"{CFG.BREAKEVEN_ESCAPE_CANCEL_KAPPA} × σ_bar — "
             f"BEEsc will be undone if bounce from extreme exceeds "
             f"this threshold before touching entry"
+        )
+        log.info(
+            f"[BEEsc] CANCEL mode: close_only="
+            f"{CFG.BREAKEVEN_ESCAPE_CANCEL_CLOSE_ONLY} "
+            f"sr_check={CFG.BREAKEVEN_ESCAPE_CANCEL_SR_CHECK} "
+            f"sr_lookback={CFG.BREAKEVEN_ESCAPE_CANCEL_SR_LOOKBACK}"
         )
     if CFG.BREAKEVEN_ESCAPE_ENABLED:
         log.info(
