@@ -339,6 +339,12 @@ class Config:
     #         مطبّق في الباكتيست واللايف بشكل متطابق.
     # CLI: --no-trailing لتعطيله، --trailing لإجباره.
     TRAIL_ENABLED: bool = True
+    # ══ [SUB-BAR-TRAIL-PARITY] Peak/SL update only on sub-bar close ══
+    # When True, peak_price and trail_sl are updated ONLY when a new
+    # sub-bar (e.g., 15m) closes. No ticker, no 1m forming bar.
+    # Matches backtest's ad.sub_highs/ad.sub_lows exactly.
+    # Default False → preserves current ticker-based behavior.
+    TRAIL_USE_SUBBARS_ONLY: bool = False
     TRAIL_ACTIVATE_MFE: float = 0.004    # activate after 0.4% MFE
     TRAIL_DISTANCE: float = 0.002        # trail 0.3% below peak
     TRAIL_MIN_STEP: float = 0.0005       # only move SL if improvement ≥ 0.05%
@@ -11989,6 +11995,9 @@ def _promote_pending_to_position(exchange, sym: str, rec: Dict,
         '_trail_bars_held': 0,
         '_trail_peak_R': 0.0,
         '_trail_last_update_ts': 0.0,
+        '_hi': float(entry_price),
+        '_lo': float(entry_price),
+        '_last_sub_ts': 0,
         '_sym': sym,
         '_orig_score': float(rec.get('_orig_score', 0.0)
                              or getattr(rec.get('signal_ref'), 'score', 0.0)),
@@ -13486,6 +13495,7 @@ def _lv_finalize_position(exchange, sym, pos, ad=None) -> None:
         if entry > 0:
             pos.setdefault('_hi', entry)
             pos.setdefault('_lo', entry)
+            pos.setdefault('_last_sub_ts', 0)
     except Exception as e:
         log.debug(f"[LV] finalize {sym} failed: {e}")
 
@@ -13643,11 +13653,101 @@ def _lv_sync_with_exchange(exchange, sym, pos) -> str:
 
 
 def _lv_update_extremes(exchange, sym, pos, price, now) -> None:
-    # running high/low since entry (ticker + 1m candles) ≙ backtest sub-bar extremes
+    """
+    Update _hi/_lo for trailing SL.
+
+    Two modes:
+      • Default (TRAIL_USE_SUBBARS_ONLY=False):
+          ticker (5s) + 1m candles (15s). Fast but not parity.
+
+      • [SUB-BAR PARITY MODE] (TRAIL_USE_SUBBARS_ONLY=True):
+          CLOSED sub-bars only. Uses OHLCV of sub_tf (e.g., 15m),
+          EXCLUDING the currently-forming bar. Matches backtest
+          ad.sub_highs/ad.sub_lows exactly.
+
+    Only _hi/_lo (peak tracking) is affected.
+    SL/TP hit detection remains ticker-based for safety.
+    """
     try:
         entry = float(pos.get('entry') or 0.0)
         if entry <= 0:
             return
+
+        # ══ [SUB-BAR PARITY MODE] ══
+        if getattr(CFG, 'TRAIL_USE_SUBBARS_ONLY', False):
+            _sub_tf = _get_subbars_tf(CFG.timeframe) or CFG.timeframe
+            try:
+                import ccxt as _cc
+                _sub_sec = int(_cc.binance().parse_timeframe(_sub_tf))
+            except Exception:
+                _sub_sec = 900  # 15m fallback
+
+            _now_ms = int(now * 1000)
+            _last_ts = int(pos.get('_last_sub_ts', 0))
+            _entry_ts_ms = int(float(pos.get('entry_ts', 0)) * 1000)
+            if _entry_ts_ms <= 0:
+                _entry_ts_ms = _now_ms - (24 * 60 * 60 * 1000)
+
+            if _last_ts <= 0:
+                _last_ts = _entry_ts_ms
+                _max_lookback_ms = _now_ms - (7 * 24 * 60 * 60 * 1000)
+                if _last_ts < _max_lookback_ms:
+                    _last_ts = _max_lookback_ms
+                    log.debug(f"[SubBar-Parity] {sym} capped lookback at 7 days")
+
+            _current_open_ms = (_now_ms // (_sub_sec * 1000)) * (_sub_sec * 1000)
+            _last_closed_open_ms = _current_open_ms - (_sub_sec * 1000)
+
+            if _last_ts >= _last_closed_open_ms:
+                return
+
+            _all_candles = []
+            _loop_since = _last_ts
+            for _ in range(20):
+                try:
+                    _rate_record(2.0)
+                    _chunk = exchange.fetch_ohlcv(
+                        sym, _sub_tf, since=_loop_since, limit=500
+                    )
+                except Exception as _e:
+                    log.debug(f"[SubBar-Parity] {sym} fetch failed: {_e}")
+                    break
+                if not _chunk:
+                    break
+                _all_candles.extend(_chunk)
+                _last_chunk_ts = int(_chunk[-1][0])
+                if _last_chunk_ts + _sub_sec * 1000 > _now_ms:
+                    break
+                if _last_chunk_ts <= _loop_since:
+                    break
+                _loop_since = _last_chunk_ts + _sub_sec * 1000
+
+            if not _all_candles:
+                return
+
+            _new_bar_count = 0
+            for _c in _all_candles:
+                _ts = int(_c[0])
+                if _ts + _sub_sec * 1000 > _now_ms:
+                    break
+                if _ts <= int(pos.get('_last_sub_ts', 0)):
+                    continue
+                _high = float(_c[2])
+                _low = float(_c[3])
+                pos['_hi'] = max(float(pos.get('_hi', entry)), _high)
+                pos['_lo'] = min(float(pos.get('_lo', entry)), _low)
+                pos['_last_sub_ts'] = _ts
+                _new_bar_count += 1
+
+            if _new_bar_count > 0:
+                log.debug(
+                    f"[SubBar-Parity] {sym} {_new_bar_count} new "
+                    f"{_sub_tf} bar(s) closed: hi={pos['_hi']:.6f} "
+                    f"lo={pos['_lo']:.6f}"
+                )
+            return
+
+        # ══ [LEGACY MODE] Current ticker-based behavior ══
         hi = max(float(pos.get('_hi', entry)), float(price))
         lo = min(float(pos.get('_lo', entry)), float(price))
         if now - float(pos.get('_ext_ts', 0.0)) >= float(_lv_cfg('LIVE_MFE_POLL_S', 15.0)):
@@ -13662,8 +13762,8 @@ def _lv_update_extremes(exchange, sym, pos, price, now) -> None:
             except Exception as e:
                 log.debug(f"[LV] 1m extremes {sym} failed: {e}")
         pos['_hi'], pos['_lo'] = hi, lo
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug(f"[LV] update_extremes {sym} failed: {e}")
 
 
 def _lv_open_orders_all(exchange, sym):
@@ -18685,6 +18785,9 @@ def main():
                    help="Disable Trailing Stop Loss entirely (SL stays fixed)")
     p.add_argument("--trailing", action="store_true",
                    help="Force-enable Trailing Stop Loss (overrides config)")
+    p.add_argument("--trail-sync-to-subbars", action="store_true",
+                   help="Update peak/SL ONLY on sub-bar close (e.g., 15m) "
+                        "— matches backtest exactly. No ticker, no 1m forming bar.")
     p.add_argument("--trail-kappa", type=float, default=None,
                    help="Trail multiplier on σ (default 1.5)")
     p.add_argument("--reentry-cooldown", type=int, default=None,
@@ -19114,6 +19217,14 @@ def main():
     elif args.trailing:
         CFG.TRAIL_ENABLED = True
         log.info("[Trail] Trailing Stop Loss FORCED ON")
+    if getattr(args, "trail_sync_to_subbars", False):
+        CFG.TRAIL_USE_SUBBARS_ONLY = True
+        _sub_tf_for_log = _get_subbars_tf(CFG.timeframe) or CFG.timeframe
+        log.info(
+            f"[Trail] SUB-BAR PARITY ON: peak/SL update only on "
+            f"sub-bar close ({_sub_tf_for_log}). "
+            f"No ticker, no 1m forming bar. Matches backtest exactly."
+        )
     if args.trail_kappa is not None:
         CFG.TRAIL_KAPPA = float(args.trail_kappa)
     if args.reentry_cooldown is not None:
