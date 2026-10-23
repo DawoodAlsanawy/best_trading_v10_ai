@@ -6141,12 +6141,12 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                         _restore_c = float(pos._be_orig_tp1)
                         sig.tp1 = _restore_c
                         pos._be_cancelled = True
-                        log.info(
-                            f"[BEEsc-Cancel-BT] {sig.symbol} "
-                            f"BUY bounce={_bounce_c:.6f} ≥ "
-                            f"{_thr_c:.6f} → TP restored to "
-                            f"{_restore_c:.6f}"
-                        )
+#                        log.info(
+#                            f"[BEEsc-Cancel-BT] {sig.symbol} "
+#                            f"BUY bounce={_bounce_c:.6f} ≥ "
+#                            f"{_thr_c:.6f} → TP restored to "
+#                            f"{_restore_c:.6f}"
+#                        )
                 else:
                     _high_c = max(
                         float(getattr(pos, '_be_high', pos.entry_px)),
