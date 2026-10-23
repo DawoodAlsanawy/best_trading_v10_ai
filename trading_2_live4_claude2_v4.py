@@ -340,7 +340,7 @@ class Config:
     # CLI: --no-trailing لتعطيله، --trailing لإجباره.
     TRAIL_ENABLED: bool = True
     TRAIL_ACTIVATE_MFE: float = 0.004    # activate after 0.4% MFE
-    TRAIL_DISTANCE: float = 0.003        # trail 0.3% below peak
+    TRAIL_DISTANCE: float = 0.002        # trail 0.3% below peak
     TRAIL_MIN_STEP: float = 0.0005       # only move SL if improvement ≥ 0.05%
 
     # ══ [PORTFOLIO RISK BUDGET] ══
@@ -614,6 +614,15 @@ class Config:
     PO_EXIT_MAX_WAIT_S: int = 12            # was 45 (still used for soft exits)
     PO_EXIT_URGENT_WAIT_S: int = 4          # for SL/TP/LiqProximity
     PO_EXIT_URGENT_CROSS_SPREAD: bool = True
+    # ══ [APEX-PARITY] Backtest↔Live parity for Apex/Topo-Div exits ══
+    # Backtest returns immediately at bar close, but live placed
+    # them as post-only GTX (often unfilled). These flags fix it:
+    #   - PO_EXIT_APEX_URGENT → treat Apex/Topo-Div as taker exits
+    #     (apply slippage in backtest, use marketable in live)
+    #   - PO_EXIT_APEX_MARKET_FALLBACK → market order if marketable
+    #     somehow fails to fill within the wait window
+    PO_EXIT_APEX_URGENT: bool = True
+    PO_EXIT_APEX_MARKET_FALLBACK: bool = True
     # ══ [BACKTEST↔LIVE PARITY] ══
     # When True, backtest behaves like live:
     #   - Uses the same entry timeout as live (PO_MAX_WAIT_S seconds)
@@ -670,6 +679,12 @@ class Config:
     BREAKEVEN_ESCAPE_SIGNAL_SCORE_MULT: float = 1.15
     BREAKEVEN_ESCAPE_MIN_PROFIT_R: float = 0.0
     BREAKEVEN_ESCAPE_RESPECT_PARTIAL: bool = False
+    # ══ [BEEsc-CANCEL] cancel escape on strong bounce ══
+    # > 0: if the bounce from the extreme (after BEEsc fires)
+    # reaches κ × σ_bar × entry BEFORE price touches entry, cancel
+    # BEEsc and RESTORE the original TP.
+    # 0.0 = never cancel (default, current behavior preserved)
+    BREAKEVEN_ESCAPE_CANCEL_KAPPA: float = 0.0
 
     # ══ [SINGULARITY TIMING LAYER 1 — EMERGING] ══
     # طبقة توقيت تكشف الرنين الكسري قبل الانفجار بدقائق وتُعجّل
@@ -2987,7 +3002,13 @@ def _exit_is_taker(exit_rsn: str) -> bool:
           (post-only GTX exit)
     """
     r = str(exit_rsn or "")
-    if ("Emergency" in r) or ("Hard TP" in r) or ("LiqProximity" in r):
+    # [APEX-PARITY] Apex/Topo-Div classified as taker (slippage)
+    # to match live's marketable-fill behavior when the parity
+    # flag PO_EXIT_APEX_URGENT is enabled.
+    _apex_urgent = bool(getattr(CFG, 'PO_EXIT_APEX_URGENT', True))
+    _apex_match = _apex_urgent and (("Apex" in r) or ("Topo-Div" in r))
+    if (("Emergency" in r) or ("Hard TP" in r)
+            or ("LiqProximity" in r) or _apex_match):
         return True
     return False
 
@@ -6087,11 +6108,64 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                     _tp_old_be = float(sig.tp1)
                     sig.tp1 = _tp_new_be
                     pos._be_esc_done = True
+                    pos._be_orig_tp1 = _tp_old_be
+                    if sig.action == "BUY":
+                        pos._be_low = float(p)
+                    else:
+                        pos._be_high = float(p)
                     #log.info(
                     #    f"[BEEsc-BT] {sig.symbol} {sig.action} "
                     #    f"TP {_tp_old_be:.6f} → {_tp_new_be:.6f} "
                     #    f"({_be_rsn})"
                     #)
+
+        # ══ [BEEsc-CANCEL] track extremes + cancel on strong bounce ══
+        if (getattr(pos, '_be_esc_done', False)
+                and not getattr(pos, '_be_cancelled', False)
+                and float(getattr(CFG, 'BREAKEVEN_ESCAPE_CANCEL_KAPPA', 0.0)) > 0
+                and hasattr(pos, '_be_orig_tp1')):
+            try:
+                _sigma_c = float(ad.E_therm[fi]) if 0 <= fi < len(ad.E_therm) else 0.01
+                if not np.isfinite(_sigma_c) or _sigma_c <= 1e-9:
+                    _sigma_c = 0.01
+                _kappa_c = float(CFG.BREAKEVEN_ESCAPE_CANCEL_KAPPA)
+                _thr_c = _kappa_c * _sigma_c * pos.entry_px
+                if sig.action == "BUY":
+                    _low_c = min(
+                        float(getattr(pos, '_be_low', pos.entry_px)),
+                        float(ad.lows[cidx]),
+                    )
+                    pos._be_low = _low_c
+                    _bounce_c = float(p) - _low_c
+                    if _bounce_c >= _thr_c:
+                        _restore_c = float(pos._be_orig_tp1)
+                        sig.tp1 = _restore_c
+                        pos._be_cancelled = True
+                        log.info(
+                            f"[BEEsc-Cancel-BT] {sig.symbol} "
+                            f"BUY bounce={_bounce_c:.6f} ≥ "
+                            f"{_thr_c:.6f} → TP restored to "
+                            f"{_restore_c:.6f}"
+                        )
+                else:
+                    _high_c = max(
+                        float(getattr(pos, '_be_high', pos.entry_px)),
+                        float(ad.highs[cidx]),
+                    )
+                    pos._be_high = _high_c
+                    _bounce_c = _high_c - float(p)
+                    if _bounce_c >= _thr_c:
+                        _restore_c = float(pos._be_orig_tp1)
+                        sig.tp1 = _restore_c
+                        pos._be_cancelled = True
+                        log.info(
+                            f"[BEEsc-Cancel-BT] {sig.symbol} "
+                            f"SELL bounce={_bounce_c:.6f} ≥ "
+                            f"{_thr_c:.6f} → TP restored to "
+                            f"{_restore_c:.6f}"
+                        )
+            except Exception as _e_c:
+                log.debug(f"[BEEsc-Cancel-BT] {sig.symbol}: {_e_c}")
 
         # ── Determine sub-bar iteration range for this bar ──
         if _use_sub and cidx == pos.entry_ci:
@@ -6706,6 +6780,11 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
                         _tp_old_be = float(_be_pos.signal.tp1)
                         _be_pos.signal.tp1 = _tp_new_be
                         _be_pos._be_esc_done = True
+                        _be_pos._be_orig_tp1 = _tp_old_be
+                        if _be_pos.signal.action == "BUY":
+                            _be_pos._be_low = float(_be_px)
+                        else:
+                            _be_pos._be_high = float(_be_px)
                         log.info(
                             f"[BEEsc-BT-Sig] {_be_pos.symbol} "
                             f"{_be_pos.signal.action} "
@@ -17166,6 +17245,11 @@ def run_live(cfg, exchange):
                             _old_tp_be = float(pos['tp1'])
                             pos['tp1'] = _tp_new_be
                             pos['_be_esc_done'] = True
+                            pos['_be_orig_tp1'] = _old_tp_be
+                            if pos['action'] == "BUY":
+                                pos['_be_low'] = float(price)
+                            else:
+                                pos['_be_high'] = float(price)
                             log.info(
                                 f"[BEEsc-LV] {sym} {pos['action']} "
                                 f"TP {_old_tp_be:.6f} → {_tp_new_be:.6f} "
@@ -17180,6 +17264,76 @@ def run_live(cfg, exchange):
                                 _lv_save_state(state_file, open_pos_live)
                             except Exception:
                                 pass
+
+                # ══ [BEEsc-CANCEL-Live] track extremes + cancel ══
+                if (pos.get('_be_esc_done', False)
+                        and not pos.get('_be_cancelled', False)
+                        and float(getattr(CFG, 'BREAKEVEN_ESCAPE_CANCEL_KAPPA', 0.0)) > 0
+                        and '_be_orig_tp1' in pos):
+                    try:
+                        _sigma_c = 0.01
+                        if ad is not None:
+                            _fi_c = (len(ad.closes) - 2 - ad.feat_start)
+                            if 0 <= _fi_c < len(ad.E_therm):
+                                _sigma_c = float(ad.E_therm[_fi_c])
+                        if not np.isfinite(_sigma_c) or _sigma_c <= 1e-9:
+                            _sigma_c = 0.01
+                        _kappa_c = float(CFG.BREAKEVEN_ESCAPE_CANCEL_KAPPA)
+                        _thr_c = _kappa_c * _sigma_c * float(pos['entry'])
+                        if pos['action'] == "BUY":
+                            _low_c = min(
+                                float(pos.get('_be_low', float(pos['entry']))),
+                                float(price),
+                            )
+                            pos['_be_low'] = _low_c
+                            _bounce_c = float(price) - _low_c
+                            if _bounce_c >= _thr_c:
+                                _restore_c = float(pos['_be_orig_tp1'])
+                                pos['tp1'] = _restore_c
+                                pos['_be_cancelled'] = True
+                                log.info(
+                                    f"[BEEsc-Cancel-LV] {sym} BUY "
+                                    f"bounce={_bounce_c:.6f} ≥ "
+                                    f"{_thr_c:.6f} → TP restored to "
+                                    f"{_restore_c:.6f}"
+                                )
+                                try:
+                                    if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
+                                        _sync_protective_orders(exchange, sym, pos)
+                                except Exception:
+                                    pass
+                                try:
+                                    _lv_save_state(state_file, open_pos_live)
+                                except Exception:
+                                    pass
+                        else:
+                            _high_c = max(
+                                float(pos.get('_be_high', float(pos['entry']))),
+                                float(price),
+                            )
+                            pos['_be_high'] = _high_c
+                            _bounce_c = _high_c - float(price)
+                            if _bounce_c >= _thr_c:
+                                _restore_c = float(pos['_be_orig_tp1'])
+                                pos['tp1'] = _restore_c
+                                pos['_be_cancelled'] = True
+                                log.info(
+                                    f"[BEEsc-Cancel-LV] {sym} SELL "
+                                    f"bounce={_bounce_c:.6f} ≥ "
+                                    f"{_thr_c:.6f} → TP restored to "
+                                    f"{_restore_c:.6f}"
+                                )
+                                try:
+                                    if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
+                                        _sync_protective_orders(exchange, sym, pos)
+                                except Exception:
+                                    pass
+                                try:
+                                    _lv_save_state(state_file, open_pos_live)
+                                except Exception:
+                                    pass
+                    except Exception as _e_c:
+                        log.debug(f"[BEEsc-Cancel-LV] {sym}: {_e_c}")
 
                 ex = False
                 rsn = ""
@@ -17465,10 +17619,15 @@ def run_live(cfg, exchange):
                 try:
                     s = 'sell' if pos['action'] == 'BUY' else 'buy'
 
+                    # [APEX-PARITY] Apex/Topo-Div urgent when enabled
+                    _apex_urgent_lv = bool(getattr(
+                        CFG, 'PO_EXIT_APEX_URGENT', True))
                     _urgent = (
                         'Emergency' in rsn
                         or 'Hard TP' in rsn
                         or 'LiqProximity' in rsn
+                        or (_apex_urgent_lv and (
+                            ('Apex' in rsn) or ('Topo-Div' in rsn)))
                     )
 
                     _exit_ok = False
@@ -17497,12 +17656,18 @@ def run_live(cfg, exchange):
                             if _urgent
                             else int(CFG.PO_EXIT_MAX_WAIT_S)
                         )
+                        # [APEX-PARITY] Market fallback for Apex/Topo-Div
+                        _apex_fallback = (
+                            bool(getattr(CFG,
+                                'PO_EXIT_APEX_MARKET_FALLBACK', True))
+                            and (('Apex' in rsn) or ('Topo-Div' in rsn))
+                        )
                         result = execute_post_only(
                             exchange, sym, s, pos['qty'],
                             max_wait_s=_wait,
-                            fallback_market=False,
+                            fallback_market=_apex_fallback,
                             cross_spread=_cross,
-                            reduce_only=True,   # ← NEW param
+                            reduce_only=True,
                         )
 
                         if not result['filled_qty'] or result['filled_qty'] <= 0:
@@ -17724,6 +17889,11 @@ def run_live(cfg, exchange):
                                 _old_be = float(_pos_be['tp1'])
                                 _pos_be['tp1'] = _tp_new_be
                                 _pos_be['_be_esc_done'] = True
+                                _pos_be['_be_orig_tp1'] = _old_be
+                                if _pos_be['action'] == "BUY":
+                                    _pos_be['_be_low'] = float(_p_be)
+                                else:
+                                    _pos_be['_be_high'] = float(_p_be)
                                 log.info(
                                     f"[BEEsc-LV-Sig] {_sig_be.symbol} "
                                     f"{_pos_be['action']} "
@@ -18595,6 +18765,15 @@ def main():
     p.add_argument("--no-be-escape-ema", action="store_true",
                    help="Disable EMA-flip requirement (pure price as "
                         "trigger — RISKIER)")
+    p.add_argument("--no-apex-parity", action="store_true",
+                   help="Disable Apex/Topo-Div parity fix (reverts "
+                        "to post-only GTX exits — NOT recommended: "
+                        "live may fail to exit Apex signals)")
+    p.add_argument("--be-escape-cancel-kappa", type=float, default=None,
+                   help="Cancel BEEsc when bounce from extreme ≥ "
+                        "κ × σ_bar × entry BEFORE touching entry. "
+                        "TP is restored to its original target. "
+                        "0.0 = disabled (default)")
     p.add_argument("--tp-mult", type=float, default=None,
                    help="Override TP_MULT")
     p.add_argument("--partial-tp-r", type=float, default=None,
@@ -19072,6 +19251,16 @@ def main():
         CFG.BREAKEVEN_ESCAPE_REQUIRE_EMA_FLIP = False
         log.warning("[BEEsc] EMA-flip requirement DISABLED — "
                     "HIGHER risk of premature exit")
+    if getattr(args, "be_escape_cancel_kappa", None) is not None:
+        CFG.BREAKEVEN_ESCAPE_CANCEL_KAPPA = float(
+            args.be_escape_cancel_kappa)
+    if CFG.BREAKEVEN_ESCAPE_CANCEL_KAPPA > 0:
+        log.info(
+            f"[BEEsc] CANCEL enabled: κ="
+            f"{CFG.BREAKEVEN_ESCAPE_CANCEL_KAPPA} × σ_bar — "
+            f"BEEsc will be undone if bounce from extreme exceeds "
+            f"this threshold before touching entry"
+        )
     if CFG.BREAKEVEN_ESCAPE_ENABLED:
         log.info(
             f"[BEEsc] ENABLED | move_R="
@@ -19079,6 +19268,20 @@ def main():
             f"min_profit_R={CFG.BREAKEVEN_ESCAPE_MIN_PROFIT_R} "
             f"require_ema={CFG.BREAKEVEN_ESCAPE_REQUIRE_EMA_FLIP} "
             f"ema_lookback={CFG.BREAKEVEN_ESCAPE_EMA_LOOKBACK}"
+        )
+    # ══ [APEX-PARITY] wiring ══
+    if getattr(args, "no_apex_parity", False):
+        CFG.PO_EXIT_APEX_URGENT = False
+        CFG.PO_EXIT_APEX_MARKET_FALLBACK = False
+        log.warning("[Apex-Parity] DISABLED via --no-apex-parity "
+                    "(NOT recommended: live may fail to exit Apex)")
+    else:
+        log.info(
+            f"[Apex-Parity] ENABLED | urgent="
+            f"{CFG.PO_EXIT_APEX_URGENT} "
+            f"market_fallback={CFG.PO_EXIT_APEX_MARKET_FALLBACK} "
+            f"(Apex/Topo-Div → taker exits in backtest, "
+            f"marketable+fallback in live)"
         )
 
     # ══ [OppTP] Opposite-Signal Adaptive TP ══
