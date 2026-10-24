@@ -192,7 +192,7 @@ class Config:
     EMA_SPAN: int = 200; ATR_PERIOD: int = 14
 
     W_CURV: float=1.0; W_VOL: float=1.0; W_ENTROPY: float=2.0
-    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=-6
+    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=0
 
     CURV_THRESHOLD: float=0.01; DH_ENTROPY_THRESHOLD: float=0.005
     DH_HMM_UPPER: float=0.01;  DH_HMM_LOWER: float=-0.01
@@ -510,7 +510,7 @@ class Config:
     LIVE_TAIL_BARS: int = 800
     LIVE_MIN_BARS_FOR_PROCESS: int = 300
     # ══ [LIQ AWARENESS] Liquidation safety envelope ══
-    LIQ_SAFETY_MULT: float = 2.5          # SL gap × this < Liq gap
+    LIQ_SAFETY_MULT: float = 1.5          # SL gap × this < Liq gap
     LIQ_EMERGENCY_PROGRESS: float = 0.7    # 70% toward Liq → emergency exit
     LIQ_FALLBACK_MMR: float = 0.02         # 2% if exchange MMR unavailable
     LIQ_ENABLED: bool = True               # master switch (for testing)

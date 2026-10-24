@@ -494,6 +494,7 @@ class Config:
     #   2.0 → recommended starting point
     #   2.5 → aggressive widening (fewer SL hits, larger drawdowns)
     SL_WIDEN_MULT: float = 1.5
+    MAX_SL_FRAC = 0.015
 
     # ══ [ADAPTIVE FIX #3] Tick-based penetration ══
     # WIF has 0.254 ticks/bps → 1 bps < 1 tick → orders can't fill properly.
@@ -4157,7 +4158,7 @@ def compute_adaptive_leverage(symbol, sig, open_pos_live, capital,
 
     try:
         _mmr = _get_mmr_for_symbol(exchange, symbol) if exchange else 0.02
-        _sl_frac_max = 0.015 * float(getattr(cfg, "SL_WIDEN_MULT", 1.0))
+        _sl_frac_max = float(getattr(CFG, 'MAX_SL_FRAC', 0.015)) * float(getattr(cfg, "SL_WIDEN_MULT", 1.0))
         L_liq = int(compute_max_leverage_by_liq(
             sl_frac_max=_sl_frac_max,
             mmr=_mmr,
@@ -6949,7 +6950,7 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
             continue
 
         # Clip SL to max_sl_frac × opt_px (entry-based cap)
-        _max_sl_frac = 0.015 * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
+        _max_sl_frac = float(getattr(CFG, 'MAX_SL_FRAC', 0.015)) * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
         if _design_sl_dist > opt_px * _max_sl_frac:
             _rr = _design_tp_dist / max(_design_sl_dist, 1e-12)
             _design_sl_dist = opt_px * _max_sl_frac
@@ -7043,7 +7044,7 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         # LIQ_FALLBACK_MMR (2%) as a proxy — same as live's fallback.
         if _sim_live and getattr(CFG, 'LIQ_ENABLED', True):
             _mmr = float(CFG.LIQ_FALLBACK_MMR)
-            _sl_frac_max = 0.015 * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
+            _sl_frac_max = float(getattr(CFG, 'MAX_SL_FRAC', 0.015)) * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
             _lev_by_liq = compute_max_leverage_by_liq(
                 sl_frac_max=_sl_frac_max,
                 mmr=_mmr,
@@ -11916,7 +11917,7 @@ def _promote_pending_to_position(exchange, sym: str, rec: Dict,
 
     rr = orig_tp_dist / orig_sl_dist
     # Cap scales with widening so the loosened SL isn't re-clipped.
-    max_sl_frac = 0.015 * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
+    max_sl_frac = float(getattr(CFG, 'MAX_SL_FRAC', 0.015)) * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
     if orig_sl_dist > entry_price * max_sl_frac:
         orig_sl_dist = entry_price * max_sl_frac
         orig_tp_dist = orig_sl_dist * rr
@@ -13496,7 +13497,7 @@ def _lv_finalize_position(exchange, sym, pos, ad=None) -> None:
 def _lv_adopt(exchange, sym, ex, assets=None, state_hint=None):
     # build a complete local record for an exchange-only position and PROTECT it now
     entry, side, qty = float(ex['entry']), ex['side'], float(ex['qty'])
-    max_sl_frac = 0.015 * float(_lv_cfg('SL_WIDEN_MULT', 1.0))
+    max_sl_frac = float(getattr(CFG, 'MAX_SL_FRAC', 0.015)) * float(_lv_cfg('SL_WIDEN_MULT', 1.0))
     tp_mult = float(_lv_cfg('TP_MULT', 1.5))
     sl_dist = tp_dist = 0.0
     src = 'fallback'
@@ -15227,7 +15228,7 @@ def _rev_finalize(exchange, sym: str, w: Dict, open_pos_live: Dict, assets,
     if orig_sl_dist <= 1e-12:
         orig_sl_dist = entry_px * 0.015
         orig_tp_dist = orig_sl_dist * float(getattr(CFG, "TP_MULT", 2.0))
-    _max_sl_frac = 0.015 * float(getattr(CFG, "SL_WIDEN_MULT", 1.0))
+    _max_sl_frac = float(getattr(CFG, 'MAX_SL_FRAC', 0.015)) * float(getattr(CFG, "SL_WIDEN_MULT", 1.0))
     if orig_sl_dist > entry_px * _max_sl_frac:
         _rr = orig_tp_dist / max(orig_sl_dist, 1e-12)
         orig_sl_dist = entry_px * _max_sl_frac
@@ -18259,7 +18260,7 @@ def run_live(cfg, exchange):
                         _mmr_sig = _get_mmr_for_symbol(exchange, sym)
                         # Keep this in sync with SL_WIDEN_MULT so LevCap
                         # accounts for the wider actual SL.
-                        _sl_frac_max = 0.015 * float(
+                        _sl_frac_max = float(getattr(CFG, 'MAX_SL_FRAC', 0.015)) * float(
                             getattr(CFG, 'SL_WIDEN_MULT', 1.0)
                         )
                         _lev_by_liq = compute_max_leverage_by_liq(
@@ -18426,7 +18427,7 @@ def run_live(cfg, exchange):
                         # الباكتيست يقصّ SL إلى max_sl_frac قبل LiqGate.
                         # اللايف يفعل نفس الشيء. فحص LiqGate يتم في STEP 3
                         # بعد هذا القص (الترتيب مقصود: قصّ أولاً، ثم فحص).
-                        _max_sl_frac_live = 0.015 * float(
+                        _max_sl_frac_live = float(getattr(CFG, 'MAX_SL_FRAC', 0.015)) * float(
                             getattr(CFG, 'SL_WIDEN_MULT', 1.0)
                         )
                         _sl_dist_now = abs(float(sig.price) - float(sig.sl))
@@ -18576,7 +18577,7 @@ def run_live(cfg, exchange):
                         rr_ratio = orig_tp_dist / orig_sl_dist
                         # [SL-CLIP-CONSISTENCY] Scale with SL_WIDEN_MULT
                         # so the widened SL isn't re-clipped back to 1.5%.
-                        max_sl_frac = 0.015 * float(
+                        max_sl_frac = float(getattr(CFG, 'MAX_SL_FRAC', 0.015)) * float(
                             getattr(CFG, 'SL_WIDEN_MULT', 1.0)
                         )
                         if orig_sl_dist > entry_price * max_sl_frac:
