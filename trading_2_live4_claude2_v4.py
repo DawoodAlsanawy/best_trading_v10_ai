@@ -1,3 +1,4 @@
+# [BEESC-SUBBARS-UPGRADE-APPLIED]
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -704,6 +705,14 @@ class Config:
     # Default False → no S/R filter.
     BREAKEVEN_ESCAPE_CANCEL_SR_CHECK: bool = False
     BREAKEVEN_ESCAPE_CANCEL_SR_LOOKBACK: int = 60
+    # ══ [BEEsc Sub-Bar Mode] ══
+    # Opt-in sub-bar BEEsc: trigger on sub-bar (e.g. 15m) closes with
+    # persistence filter, instead of waiting for main bar (e.g. 4h) close.
+    # Parity-safe: both backtest and live use the same sub-bar timeframe.
+    BE_ESC_SUBBARS_ENABLED: bool = False       # master switch (opt-in)
+    BE_ESC_PERSIST_BARS: int = 2                # consecutive sub-bars required
+    BE_ESC_ORDERBOOK_ENABLED: bool = False      # [LIVE ONLY] order book filter
+    BE_ESC_ORDERBOOK_IMBALANCE_THR: float = 0.30  # bid/ask imbalance threshold
 
     # ══ [SINGULARITY TIMING LAYER 1 — EMERGING] ══
     # طبقة توقيت تكشف الرنين الكسري قبل الانفجار بدقائق وتُعجّل
@@ -5373,6 +5382,108 @@ def _apply_breakeven_escape(action: str, entry: float, sl_dist0: float,
                 return None
     return float(tp_new)
 
+
+def _should_breakeven_escape_subbars(ad, main_ci, sub_closes_arr,
+                                       action, entry, sl_dist0, sig_opp=None):
+    """
+    [BEEsc-SubBar] Check BEEsc across N consecutive sub-bar closes.
+
+    Parameters
+    ----------
+    ad : AssetData
+    main_ci : int
+        Main bar index (for EMA lookup in _should_breakeven_escape)
+    sub_closes_arr : array-like
+        Sequence of sub-bar closes (most recent last)
+    action, entry, sl_dist0 : position parameters
+    sig_opp : optional opposite signal
+
+    Returns
+    -------
+    (triggered: bool, reason: str, last_idx: int)
+        last_idx = -1 if not triggered.
+    """
+    if not getattr(CFG, 'BE_ESC_SUBBARS_ENABLED', False):
+        return False, "subbars_disabled", -1
+    if not getattr(CFG, 'BREAKEVEN_ESCAPE_ENABLED', False):
+        return False, "be_escape_disabled", -1
+    if ad is None or main_ci < 0 or entry <= 0 or sl_dist0 <= 0:
+        return False, "invalid_inputs", -1
+
+    persist = max(1, int(getattr(CFG, 'BE_ESC_PERSIST_BARS', 2)))
+    n = len(sub_closes_arr)
+    if n < persist:
+        return False, f"insufficient({n}<{persist})", -1
+
+    # Require the LAST `persist` sub-bars to ALL trigger consecutively
+    for j in range(n - persist, n):
+        try:
+            p = float(sub_closes_arr[j])
+        except Exception:
+            return False, f"invalid_at_{j}", -1
+        if not np.isfinite(p) or p <= 0:
+            return False, f"invalid_price_at_{j}", -1
+        trig, rsn = _should_breakeven_escape(
+            ad, main_ci, p, action, entry, sl_dist0, sig_opp
+        )
+        if not trig:
+            return False, f"no_trigger_at_{j}({rsn})", -1
+
+    return True, f"persist={persist}", n - 1
+
+
+def _be_esc_orderbook_check(exchange, sym, action, current_price,
+                              entry, sl_dist0):
+    """
+    [BEEsc-OrderBook] Live-only confirmation filter (opt-in).
+
+    Delay-only philosophy: this filter can POSTPONE BEEsc but cannot
+    ACCELERATE it. Ensures live never exits before backtest (safe parity).
+
+    Returns
+    -------
+    (verdict, reason, imbalance) where verdict is:
+      'confirm' — order book confirms adverse move -> activate BEEsc
+      'hold'    — order book shows support -> delay BEEsc one sub-bar
+      'neutral' — no clear signal -> activate (default behavior)
+    """
+    if not getattr(CFG, 'BE_ESC_ORDERBOOK_ENABLED', False):
+        return 'neutral', 'ob_disabled', 0.0
+
+    try:
+        ob = exchange.fetch_order_book(sym, limit=20)
+        bids = ob.get('bids') or []
+        asks = ob.get('asks') or []
+        if not bids or not asks:
+            return 'neutral', 'ob_empty', 0.0
+
+        bid_sz = sum(float(x[1]) for x in bids[:5])
+        ask_sz = sum(float(x[1]) for x in asks[:5])
+        total = bid_sz + ask_sz
+        if total <= 0:
+            return 'neutral', 'ob_zero_volume', 0.0
+
+        imbalance = (bid_sz - ask_sz) / total
+        thr = float(getattr(CFG, 'BE_ESC_ORDERBOOK_IMBALANCE_THR', 0.30))
+
+        if action == "BUY":
+            # BUY losing (price < entry). BEEsc wants to exit.
+            # Heavy bids -> support -> HOLD (delay BEEsc)
+            if imbalance > thr:
+                return 'hold', f'bids_strong({imbalance:+.2f})', float(imbalance)
+            # Heavy asks -> selling pressure -> CONFIRM (exit now)
+            if imbalance < -thr:
+                return 'confirm', f'asks_strong({imbalance:+.2f})', float(imbalance)
+        else:  # SELL
+            if imbalance < -thr:
+                return 'hold', f'asks_strong({imbalance:+.2f})', float(imbalance)
+            if imbalance > thr:
+                return 'confirm', f'bids_strong({imbalance:+.2f})', float(imbalance)
+
+        return 'neutral', f'balanced({imbalance:+.2f})', float(imbalance)
+    except Exception as e:
+        return 'neutral', f'error:{e}', 0.0
+
 # ═══════════════════════════════════════════════════════════════
 
 
@@ -6238,8 +6349,45 @@ def _advance(pos, ad, to_ci, partial_cb=None):
             for j in range(j_start, j_end):
                 s_high = ad.sub_highs[cidx, j]
                 s_low = ad.sub_lows[cidx, j]
+                s_close = (ad.sub_closes[cidx, j]
+                           if ad.sub_closes is not None else np.nan)
                 if not np.isfinite(s_high) or not np.isfinite(s_low):
                     continue
+
+                # ══ [BEEsc-SubBar] early trigger on sub-bar closes ══
+                if (getattr(CFG, 'BE_ESC_SUBBARS_ENABLED', False)
+                        and not getattr(pos, '_be_esc_done', False)
+                        and pos.sl_dist_initial > 0
+                        and np.isfinite(s_close) and s_close > 0):
+                    _be_persist_n = max(1, int(getattr(CFG, 'BE_ESC_PERSIST_BARS', 2)))
+                    _be_seq_start = max(j_start, j - _be_persist_n + 1)
+                    _be_seq_len = j - _be_seq_start + 1
+                    if _be_seq_len >= _be_persist_n:
+                        _be_seq = ad.sub_closes[cidx, _be_seq_start:j + 1]
+                        _be_trig_sb, _be_rsn_sb, _be_idx_sb = _should_breakeven_escape_subbars(
+                            ad, cidx, _be_seq, sig.action,
+                            pos.entry_px, pos.sl_dist_initial, sig_opp=None
+                        )
+                        if _be_trig_sb:
+                            _tp_old_sb = float(sig.tp1)
+                            _tp_new_sb = _apply_breakeven_escape(
+                                sig.action, pos.entry_px, pos.sl_dist_initial,
+                                _tp_old_sb,
+                                bool(getattr(pos, 'partial_taken', False))
+                            )
+                            if _tp_new_sb is not None:
+                                sig.tp1 = _tp_new_sb
+                                pos._be_esc_done = True
+                                pos._be_orig_tp1 = _tp_old_sb
+                                if sig.action == "BUY":
+                                    pos._be_low = float(s_close)
+                                else:
+                                    pos._be_high = float(s_close)
+                                log.debug(
+                                    f"[BEEsc-SubBar-BT] {sig.symbol} {sig.action} "
+                                    f"TP {_tp_old_sb:.6f}->{_tp_new_sb:.6f} "
+                                    f"({_be_rsn_sb})"
+                                )
 
                 # MFE update from sub-bar extremes
                 if sig.action == "BUY":
@@ -17367,6 +17515,87 @@ def run_live(cfg, exchange):
                                        open_pos_live, last_exit_time) == 'closed':
                     continue
 
+                # ══ [BEEsc-SubBar-Live] ══ (earlier than main-bar close)
+                if (getattr(CFG, 'BE_ESC_SUBBARS_ENABLED', False)
+                        and not pos.get('_be_esc_done', False)
+                        and float(pos.get('sl_dist_initial', 0)) > 0
+                        and ad is not None):
+                    try:
+                        _be_sub_tf_lv = _get_subbars_tf(CFG.timeframe) or "15m"
+                        try:
+                            import ccxt as _ccxt_be_lv
+                            _be_sub_sec_lv = int(_ccxt_be_lv.binance().parse_timeframe(_be_sub_tf_lv))
+                        except Exception:
+                            _be_sub_sec_lv = {"1m": 60, "5m": 300, "15m": 900,
+                                              "30m": 1800, "1h": 3600}.get(_be_sub_tf_lv, 900)
+                        _be_persist_lv = max(1, int(getattr(CFG, 'BE_ESC_PERSIST_BARS', 2)))
+                        _be_now_ms_lv = int(time.time() * 1000)
+                        _be_cur_open_lv = (_be_now_ms_lv // (_be_sub_sec_lv * 1000)) * (_be_sub_sec_lv * 1000)
+                        _be_last_lv = int(pos.get('_be_last_sub_fetch_ms', 0))
+                        if _be_cur_open_lv > _be_last_lv:
+                            _be_since_lv = _be_cur_open_lv - (_be_persist_lv + 2) * _be_sub_sec_lv * 1000
+                            _be_raw_lv = exchange.fetch_ohlcv(
+                                sym, _be_sub_tf_lv, since=_be_since_lv,
+                                limit=_be_persist_lv + 5
+                            )
+                            if _be_raw_lv:
+                                _be_closed_lv = [
+                                    float(c[4]) for c in _be_raw_lv
+                                    if int(c[0]) + _be_sub_sec_lv * 1000 <= _be_now_ms_lv
+                                ]
+                                if len(_be_closed_lv) >= _be_persist_lv:
+                                    _be_ci_lv = max(0, len(ad.closes) - 2)
+                                    _be_trig_lv, _be_rsn_lv, _ = _should_breakeven_escape_subbars(
+                                        ad, _be_ci_lv, _be_closed_lv[-_be_persist_lv:],
+                                        pos['action'], float(pos['entry']),
+                                        float(pos['sl_dist_initial']), sig_opp=None
+                                    )
+                                    if _be_trig_lv:
+                                        _be_ob_ok_lv = True
+                                        if getattr(CFG, 'BE_ESC_ORDERBOOK_ENABLED', False):
+                                            _ob_v, _ob_r, _ = _be_esc_orderbook_check(
+                                                exchange, sym, pos['action'],
+                                                float(price), float(pos['entry']),
+                                                float(pos['sl_dist_initial'])
+                                            )
+                                            if _ob_v == 'hold':
+                                                _be_ob_ok_lv = False
+                                                log.debug(f"[BEEsc-OB] {sym} held: {_ob_r}")
+                                        if _be_ob_ok_lv:
+                                            _be_sd0_lv = float(pos['sl_dist_initial'])
+                                            _tp_old_lv = float(pos['tp1'])
+                                            _tp_new_lv = _apply_breakeven_escape(
+                                                pos['action'], float(pos['entry']),
+                                                _be_sd0_lv, _tp_old_lv,
+                                                bool(pos.get('_partial_taken', False))
+                                            )
+                                            if _tp_new_lv is not None:
+                                                pos['tp1'] = _tp_new_lv
+                                                pos['_be_esc_done'] = True
+                                                pos['_be_orig_tp1'] = _tp_old_lv
+                                                _be_last_close_lv = float(_be_closed_lv[-1])
+                                                if pos['action'] == "BUY":
+                                                    pos['_be_low'] = _be_last_close_lv
+                                                else:
+                                                    pos['_be_high'] = _be_last_close_lv
+                                                log.info(
+                                                    f"[BEEsc-SubBar-LV] {sym} {pos['action']} "
+                                                    f"TP {_tp_old_lv:.6f}->{_tp_new_lv:.6f} "
+                                                    f"({_be_rsn_lv})"
+                                                )
+                                                try:
+                                                    if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
+                                                        _sync_protective_orders(exchange, sym, pos)
+                                                except Exception as _e:
+                                                    log.debug(f"[BEEsc-SubBar-LV] {sym} prot: {_e}")
+                                                try:
+                                                    _lv_save_state(state_file, open_pos_live)
+                                                except Exception:
+                                                    pass
+                            pos['_be_last_sub_fetch_ms'] = _be_cur_open_lv
+                    except Exception as _e:
+                        log.debug(f"[BEEsc-SubBar-LV] {sym} error: {_e}")
+
                 # ══ [BREAKEVEN ESCAPE — Price Trigger — Live] ══
                 if (getattr(CFG, 'BREAKEVEN_ESCAPE_ENABLED', False)
                         and not pos.get('_be_esc_done', False)
@@ -18947,6 +19176,14 @@ def main():
     p.add_argument("--be-escape-move-r", type=float, default=None,
                    help="Adverse move in R units to trigger escape "
                         "(default 0.30)")
+    p.add_argument("--be-esc-subbars", action="store_true",
+                   help="[BEEsc] Enable sub-bar BEEsc (e.g. 15m) with "
+                        "persistence filter — faster than main-bar (4h)")
+    p.add_argument("--be-esc-persist", type=int, default=None,
+                   help="[BEEsc] Consecutive sub-bars required (default 2)")
+    p.add_argument("--be-esc-orderbook", action="store_true",
+                   help="[BEEsc] [LIVE ONLY] Use order book to confirm/hold "
+                        "BEEsc — delay-only, opt-in, breaks strict parity")
     p.add_argument("--be-escape-min-profit-r", type=float, default=None,
                    help="Small profit at exit in R units (default 0.0 "
                         "= pure breakeven)")
@@ -19446,6 +19683,21 @@ def main():
         log.info("[BEEsc] ENABLED via --be-escape")
     if getattr(args, "be_escape_move_r", None) is not None:
         CFG.BREAKEVEN_ESCAPE_PRICE_MOVE_R = float(args.be_escape_move_r)
+
+    if getattr(args, "be_esc_subbars", False):
+        CFG.BE_ESC_SUBBARS_ENABLED = True
+        log.info("[BEEsc-SubBar] ENABLED (sub-bar closes with persistence)")
+    if getattr(args, "be_esc_persist", None) is not None:
+        CFG.BE_ESC_PERSIST_BARS = max(1, int(args.be_esc_persist))
+        log.info(f"[BEEsc-SubBar] Persistence = {CFG.BE_ESC_PERSIST_BARS} sub-bars")
+    if getattr(args, "be_esc_orderbook", False):
+        if CFG.mode not in ("live", "testnet"):
+            log.warning("[BEEsc-OB] --be-esc-orderbook ignored in backtest "
+                        "(live-only feature)")
+        else:
+            CFG.BE_ESC_ORDERBOOK_ENABLED = True
+            log.info("[BEEsc-OB] Order book filter ENABLED "
+                     "(delay-only, breaks strict parity)")
     if getattr(args, "be_escape_min_profit_r", None) is not None:
         CFG.BREAKEVEN_ESCAPE_MIN_PROFIT_R = float(
             args.be_escape_min_profit_r)
