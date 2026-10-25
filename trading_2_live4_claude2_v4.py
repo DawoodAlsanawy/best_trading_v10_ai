@@ -1,3 +1,6 @@
+# [SMART-CENTER-MIGRATION-V4-PRECISION]
+# [SMART-CENTER-MIGRATION-V3-FIXED-APPLIED]
+# [SMART-CENTER-MIGRATION-V2-APPLIED]
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -927,6 +930,29 @@ class Config:
     REV_OPT_STATS: bool = True                # backtest: account the option cost per touched signal
     REV_OPT_REPORT: bool = True               # backtest: print the estimator at exit
 
+    # ══ [SMART CENTER TRAILING v3 — Migration v2] ══
+    SMART_CENTER_ENABLED: bool = True
+    SC_HEALTHY_THRESHOLD: float = 0.65
+    SC_BROKEN_THRESHOLD: float = 0.40
+    SC_BROKEN_EXTREME_THRESHOLD: float = 0.15
+    SC_BROKEN_PERSIST_BARS: int = 2
+    SC_PRICE_DIST_MAX: float = 3.0
+    SC_PRICE_DIST_EXTREME: float = 6.0
+    SC_FLASH_SIGMA_1BAR: float = 8.0
+    SC_FLASH_SIGMA_2BAR: float = 3.0
+    SC_RESCUE_ENABLED: bool = True
+    SC_RESCUE_MARGIN: float = 0.05
+    SC_RESCUE_FLOOR: float = 0.15
+    SC_HEALTHY_TRAIL_KAPPA: float = 2.0   # [V4-TRAIL-ACT-LOW] أضيق من 3.0
+    SC_WEAK_TRAIL_KAPPA: float = 1.5
+    SC_ACTIVATE_R_HEALTHY: float = 0.3   # [V4-TRAIL-ACT-LOW]
+    SC_ACTIVATE_R_WEAK: float = 0.3
+    SC_BE_ESC_BUFFER: float = 0.001
+    SC_TRAIL_MIN_STEP: float = 0.0005
+    SC_HEALTH_WEIGHTS: tuple = (0.30, 0.20, 0.15, 0.15, 0.10, 0.05, 0.05)
+    SC_MU_HIST_BARS: int = 20
+
+
 CFG = Config()
 
 
@@ -1127,6 +1153,8 @@ def _trade_log_from_live(pos: Dict, exit_px: float, exit_rsn: str,
             'fill_ratio': float(pos.get('fill_ratio', 0.0)),
             'action': str(pos.get('action', '?')),
             'stage': str(pos.get('stage', 'S1')),
+            'health_at_exit': float(pos.get('_health', -1.0)),
+            'rescue_p_at_exit': float(pos.get('_rescue_p', -1.0)),
             '_entry_fi': int(pos.get('_entry_fi', -1)),
             '_entry_ci': int(pos.get('_entry_ci', -1)),
         }
@@ -3026,8 +3054,10 @@ def _exit_is_taker(exit_rsn: str) -> bool:
     # flag PO_EXIT_APEX_URGENT is enabled.
     _apex_urgent = bool(getattr(CFG, 'PO_EXIT_APEX_URGENT', True))
     _apex_match = _apex_urgent and (("Apex" in r) or ("Topo-Div" in r))
+    _sc_match = (("Rescue" in r) or ("BROKEN" in r)
+                 or ("FlashCrash" in r))
     if (("Emergency" in r) or ("Hard TP" in r)
-            or ("LiqProximity" in r) or _apex_match):
+            or ("LiqProximity" in r) or _apex_match or _sc_match):
         return True
     return False
 
@@ -3153,13 +3183,16 @@ class OpenPosition:
     slip_paid: float; opt_entry: bool; tri_entry: float
     mfe_frac: float = 0.0
     peak_price: float = 0.0
-    trail_dist_frac: float = 0.003
-    trail_activate_frac: float = 0.004
+    sigma_entry: float = 0.01
+    entry_fi: int = 0
     sl_dist_initial: float = 0.0
     trail_peak_R: float = 0.0
     entry_sub_idx: int = 0
-    partial_taken: bool = False      # [FIX 4]
-    partial_pnl: float = 0.0         # [FIX 4] accumulated partial profit
+    partial_taken: bool = False
+    partial_pnl: float = 0.0
+    _broken_streak: int = 0
+    _health: float = 0.5
+    _rescue_p: float = 1.0
 
 
 # ════════════════════════════════════════════════════════════════
@@ -4745,6 +4778,442 @@ def _trade_filter_check(sig, ad, fi, ci) -> Tuple[bool, str]:
         log.debug(f"[Filter] exception (fail-open): {e}")
         return False, "filter_error"
 
+
+# ═══════════════════════════════════════════════════════════════
+# [SMART CENTER TRAILING v3] — Migration v2 (CORRECTED)
+# ═══════════════════════════════════════════════════════════════
+
+def _compute_health_score(ad, fi, entry_fi, action, config):
+    """Composite health score H in [0,1]. Returns (H, components)."""
+    try:
+        if ad is None or fi < 3:
+            return 0.5, {}
+        n = len(getattr(ad, 'geodesic_accel', []))
+        if n == 0 or fi >= n:
+            return 0.5, {}
+    except Exception:
+        return 0.5, {}
+    sign = 1.0 if action == "BUY" else -1.0
+    comp = {}
+    try:
+        a_now = float(ad.geodesic_accel[fi])
+        win = ad.geodesic_accel[max(0, fi - 100):fi + 1]
+        a_std = float(np.std(win)) + 1e-9
+        z = sign * a_now / a_std
+        comp['accel'] = float(1.0 / (1.0 + np.exp(-np.clip(z - 0.5, -10, 10))))
+    except Exception:
+        comp['accel'] = 0.5
+    try:
+        g_now = float(ad.gauge_force[fi])
+        g_past = ad.gauge_force[max(0, fi - 100):fi + 1]
+        g_p90 = float(np.percentile(g_past, 90)) + 1e-9
+        comp['gauge'] = float(np.clip(g_now / g_p90, 0.0, 1.0))
+    except Exception:
+        comp['gauge'] = 0.5
+    try:
+        f_now = float(ad.friction[fi])
+        f_past = ad.friction[max(0, fi - 100):fi + 1]
+        f_med = float(np.median(f_past)) + 1e-9
+        comp['friction'] = float(np.clip((2.0 - f_now / f_med) / 1.5, 0.0, 1.0))
+    except Exception:
+        comp['friction'] = 0.5
+    try:
+        df_now = float(ad.dF[fi])
+        df_past = ad.dF[max(0, fi - 100):fi + 1]
+        df_std = float(np.std(df_past)) + 1e-9
+        comp['dfree'] = float(1.0 / (1.0 + np.exp(np.clip(sign * df_now / df_std, -10, 10))))
+    except Exception:
+        comp['dfree'] = 0.5
+    try:
+        dh_now = float(ad.dH[fi])
+        dh_past = ad.dH[max(0, fi - 100):fi + 1]
+        dh_std = float(np.std(dh_past)) + 1e-9
+        comp['dh'] = float(1.0 / (1.0 + np.exp(np.clip(sign * dh_now / dh_std, -10, 10))))
+    except Exception:
+        comp['dh'] = 0.5
+    try:
+        if fi >= 50 and fi < len(ad.ema200):
+            slope = (float(ad.ema200[fi]) - float(ad.ema200[fi - 50])) / 50.0
+            sn = sign * slope / (float(ad.closes[fi]) * 0.01 + 1e-9)
+            comp['ema'] = float(np.clip(0.5 + sn * 0.5, 0.2, 1.0))
+        else:
+            comp['ema'] = 0.5
+    except Exception:
+        comp['ema'] = 0.5
+    try:
+        sc_n = float(ad.score[fi]) if 0 <= fi < len(ad.score) else 0.0
+        sc_e = float(ad.score[entry_fi]) if 0 <= entry_fi < len(ad.score) else sc_n
+        comp['score'] = float(np.clip(sc_n / sc_e, 0.0, 1.2)) / 1.2 if sc_e > 1e-6 else 0.5
+    except Exception:
+        comp['score'] = 0.5
+    w = list(getattr(config, 'SC_HEALTH_WEIGHTS', (0.30, 0.20, 0.15, 0.15, 0.10, 0.05, 0.05)))
+    keys = ('accel', 'gauge', 'friction', 'dfree', 'dh', 'ema', 'score')
+    H = sum(w[i] * comp[keys[i]] for i in range(7))
+    return float(np.clip(H, 0.0, 1.0)), comp
+
+
+def _compute_rescue_probability(ad, fi, action, entry, sl, tp, price,
+                                 bars_held, max_hold, config, entry_fi=0):
+    out = {'P_rescue': 1.0, 'P_BM': 0.5, 'f_phys': 1.0, 'f_time': 1.0,
+           'a': 0.0, 'b': 0.0, 'mu': 0.0, 'sigma': 0.01, 'threshold': 0.5,
+           'L_now_frac': 0.0, 'L_sl_frac': 0.01, 'health': 0.5,
+           'components': {}, 'error': None}
+    try:
+        if ad is None or fi < 3 or entry <= 0 or sl <= 0 or price <= 0:
+            out['error'] = 'invalid_inputs'
+            return out
+        if action == "BUY" and price >= entry:
+            return out
+        if action == "SELL" and price <= entry:
+            return out
+        if action == "BUY":
+            a = float(np.log(entry / price)); b = float(np.log(price / sl))
+        else:
+            a = float(np.log(price / entry)); b = float(np.log(sl / price))
+        if a <= 0 or b <= 0:
+            out['error'] = 'invalid_distances'
+            return out
+        out['a'] = a; out['b'] = b
+        sigma = float(ad.E_therm[fi]) if 0 <= fi < len(ad.E_therm) else 0.01
+        if not np.isfinite(sigma) or sigma <= 1e-6:
+            sigma = 0.01
+        out['sigma'] = sigma
+        sv = sigma * sigma
+        n_h = int(getattr(config, 'SC_MU_HIST_BARS', 20))
+        try:
+            lo = max(1, fi - n_h)
+            cl = ad.closes[lo:fi + 1]
+            r_hist = float(np.mean(np.diff(np.log(np.maximum(cl, 1e-12))))) if len(cl) >= 2 else 0.0
+        except Exception:
+            r_hist = 0.0
+        sign = 1.0 if action == "BUY" else -1.0
+        try:
+            acc = float(ad.geodesic_accel[fi]) if 0 <= fi < len(ad.geodesic_accel) else 0.0
+        except Exception:
+            acc = 0.0
+        mu = r_hist + 0.5 * sign * acc
+        if abs(mu) < 1e-9:
+            mu = 1e-9 * (1.0 if r_hist >= 0 else -1.0)
+        out['mu'] = mu
+        z = -2.0 * mu / sv
+        try:
+            na = -z * b; da = -z * (a + b)
+            num = 1.0 - np.exp(na) if abs(na) < 40 else (1.0 if na > 0 else -1.0)
+            den = 1.0 - np.exp(da) if abs(da) < 40 else (1.0 if da > 0 else -1.0)
+            P_BM = num / den if abs(den) > 1e-9 else b / (a + b)
+            if not np.isfinite(P_BM) or P_BM < 0 or P_BM > 1:
+                P_BM = b / (a + b)
+        except Exception:
+            P_BM = b / (a + b)
+        out['P_BM'] = float(np.clip(P_BM, 0.0, 1.0))
+        H, comps = _compute_health_score(ad, fi, entry_fi, action, config)
+        out['health'] = H; out['components'] = comps
+        out['f_phys'] = float(np.clip(1.0 + 0.5 * (H - 0.5) * 2.0, 0.4, 1.6))
+        t_rem = max(0.0, float(max_hold) - float(bars_held))
+        t_need = a / (abs(mu) + 1e-9)
+        out['f_time'] = 0.0 if t_rem <= 0 else (1.0 if t_need <= 0 else float(min(1.0, t_rem / t_need)))
+        out['P_rescue'] = float(np.clip(out['P_BM'] * out['f_phys'] * out['f_time'], 0.0, 1.0))
+        L_now = abs(entry - price) / entry
+        L_sl = abs(entry - sl) / entry
+        out['L_now_frac'] = float(L_now); out['L_sl_frac'] = float(max(L_sl, 1e-9))
+        th = max(1.0 - L_now / max(L_sl, 1e-9) - float(getattr(config, 'SC_RESCUE_MARGIN', 0.05)),
+                 float(getattr(config, 'SC_RESCUE_FLOOR', 0.15)))
+        out['threshold'] = float(np.clip(th, 0.0, 1.0))
+        return out
+    except Exception as e:
+        out['error'] = f'exception:{e}'
+        return out
+
+
+def _structure_broken(ad, current_ci, entry_ci, action, config=None):
+    try:
+        if ad is None or current_ci is None or entry_ci is None:
+            return False
+        if current_ci - entry_ci < 3:
+            return False
+        lookback = max(5, int(current_ci - entry_ci))
+        lo = max(1, current_ci - lookback)
+        hi = min(current_ci, len(ad.lows) - 1)
+        if hi - lo < 3:
+            return False
+        price = float(ad.closes[current_ci])
+        atr = float(ad.atr14[current_ci]) if current_ci < len(ad.atr14) else 0.0
+        buf = 0.3 * atr if atr > 0 else price * 0.005
+        if action == "BUY":
+            for j in range(hi - 1, lo, -1):
+                if ad.lows[j] < ad.lows[j - 1] and ad.lows[j] < ad.lows[j + 1]:
+                    return price < float(ad.lows[j]) - buf
+        else:
+            for j in range(hi - 1, lo, -1):
+                if ad.highs[j] > ad.highs[j - 1] and ad.highs[j] > ad.highs[j + 1]:
+                    return price > float(ad.highs[j]) + buf
+    except Exception:
+        return False
+    return False
+
+
+def _smart_center_decision(pos_snap, price, ad, fi, entry_fi,
+                            bars_held, current_ci, entry_ci, config):
+    res = {'action': 'hold', 'new_sl': float(pos_snap.get('sl', 0.0)),
+           'new_streak': int(pos_snap.get('broken_streak', 0)),
+           'health': 0.5, 'tier': 'UNKNOWN', 'rescue_p': 1.0,
+           'reason': 'init', 'components': {}}
+    if not getattr(config, 'SMART_CENTER_ENABLED', True):
+        res['reason'] = 'sc_disabled'
+        return res
+    action = pos_snap.get('action', 'BUY')
+    entry = float(pos_snap.get('entry', 0.0))
+    sl_cur = float(pos_snap.get('sl', 0.0))
+    tp = float(pos_snap.get('tp', 0.0))
+    peak = float(pos_snap.get('peak', entry))
+    sigma_entry = float(pos_snap.get('sigma_entry', 0.01))
+    if sigma_entry <= 1e-9:
+        sigma_entry = 0.01
+    if ad is None:
+        res['reason'] = 'data_missing'
+        return res
+    try:
+        sigma = float(ad.E_therm[fi]) if 0 <= fi < len(ad.E_therm) else 0.01
+        if sigma <= 1e-6:
+            sigma = 0.01
+        # ══ [SC-V3-FLASH-FIX] use current_ci (not fi) for price comparisons ══
+        _cc = int(current_ci) if current_ci is not None else -1
+        if _cc >= 0 and _cc < len(ad.closes) and price > 0:
+            _close_at_cc = float(ad.closes[_cc])
+            if _close_at_cc > 1e-9:
+                # Detect backtest (price == close[_cc]) vs live (ticker)
+                _is_bt = abs(price - _close_at_cc) / _close_at_cc < 1e-4
+                # 1-bar flash
+                _ref1_ci = (_cc - 1) if _is_bt else _cc
+                if _ref1_ci >= 0:
+                    _p_ref1 = float(ad.closes[_ref1_ci])
+                    if _p_ref1 > 1e-9:
+                        r1 = abs(float(np.log(price / _p_ref1)))
+                        if r1 / sigma > float(getattr(config, 'SC_FLASH_SIGMA_1BAR', 8.0)):
+                            res['action'] = 'exit'
+                            res['reason'] = f'FlashCrash(1bar={r1/sigma:.1f}s)'
+                            return res
+                # 2-bar flash
+                _ref2_ci = (_cc - 2) if _is_bt else (_cc - 1)
+                if _ref2_ci >= 0:
+                    _p_ref2 = float(ad.closes[_ref2_ci])
+                    if _p_ref2 > 1e-9:
+                        r2 = abs(float(np.log(price / _p_ref2)))
+                        if r2 / (sigma * 1.4142) > float(getattr(config, 'SC_FLASH_SIGMA_2BAR', 3.0)):
+                            res['action'] = 'exit'
+                            res['reason'] = f'FlashCrash(2bar={r2/(sigma*1.4142):.1f}s)'
+                            return res
+    except Exception:
+        pass
+    H, comps = _compute_health_score(ad, fi, entry_fi, action, config)
+    res['health'] = H; res['components'] = comps
+    # sl_initial is a DISTANCE, not a price
+    sl_d0 = float(pos_snap.get('sl_initial', 0.0))
+    if sl_d0 <= 1e-12:
+        sl_d0 = abs(entry - sl_cur) if sl_cur > 0 else max(sigma_entry * entry * 3.0, entry * 0.002)
+    try:
+        d_tp = abs(tp - price) if tp > 0 else 0.0
+        try:
+            _max_hold_eff = effective_bars(int(getattr(config, 'MAX_HOLD_BARS', 168)))
+        except Exception:
+            _max_hold_eff = int(getattr(config, 'MAX_HOLD_BARS', 168))
+        rem = max(1.0, float(_max_hold_eff) - float(bars_held))
+        S_p = d_tp / max(sigma * price * np.sqrt(rem), 1e-12)
+    except Exception:
+        S_p = 0.0
+    if H <= float(getattr(config, 'SC_BROKEN_EXTREME_THRESHOLD', 0.15)) or S_p > float(getattr(config, 'SC_PRICE_DIST_EXTREME', 6.0)):
+        res['action'] = 'exit'; res['tier'] = 'BROKEN_EXTREME'
+        res['reason'] = f'BROKEN_EXTREME(H={H:.2f},S={S_p:.1f})'
+        return res
+    if getattr(config, 'APEX_ENABLED', True):
+        try:
+            ap, ar = check_thermodynamic_apex(action, entry, price, ad, fi)
+            if ap:
+                res['action'] = 'exit'; res['reason'] = ar
+                return res
+        except Exception:
+            pass
+    # ══ [V4-BROKEN-H-STRICT] BROKEN(H) يتطلب H < 0.55 ALSO ══
+    # السبب: H قد تنخفض لـ 0.38 في تقلب طبيعي ثم ترتد. شرط إضافي: H
+    # يجب أن تكون ضعيفة أصلاً (ميزة التقلب التاريخية قريبة أيضاً).
+    _h_hist = []
+    try:
+        _h_hist = [ad.score[max(0, fi - k)] for k in range(1, 4)]
+    except Exception:
+        pass
+    _really_weak = (H <= float(getattr(config, 'SC_BROKEN_THRESHOLD', 0.40))
+                    and (not _h_hist or np.mean(_h_hist) <= 0.55))
+    new_streak = (res['new_streak'] + 1) if _really_weak else 0
+    res['new_streak'] = new_streak
+    struct_br = _structure_broken(ad, current_ci, entry_ci, action, config)
+    if (new_streak >= int(getattr(config, 'SC_BROKEN_PERSIST_BARS', 2))
+            or S_p > float(getattr(config, 'SC_PRICE_DIST_MAX', 3.0))
+            or struct_br):
+        res['action'] = 'exit'; res['tier'] = 'BROKEN'
+        rsn = 'H' if new_streak >= 2 else ('S' if S_p > 3.0 else 'struct')
+        res['reason'] = f'BROKEN({rsn},H={H:.2f},S={S_p:.1f})'
+        return res
+    if getattr(config, 'SC_RESCUE_ENABLED', True):
+        is_losing = (action == "BUY" and price < entry) or (action == "SELL" and price > entry)
+        # ══ [V4-RESCUE-WEAK-H] Rescue يتطلب H < 0.50 (وليس فقط الخسارة) ══
+        _rescue_h_ok = (H <= float(getattr(config, 'SC_BROKEN_THRESHOLD', 0.40)) + 0.10)
+        if is_losing and bars_held >= 1 and _rescue_h_ok:
+            _mh_for_rescue = locals().get('_max_hold_eff',
+                                            int(getattr(config, 'MAX_HOLD_BARS', 168)))
+            ri = _compute_rescue_probability(ad, fi, action, entry, sl_cur, tp, price,
+                                              bars_held, _mh_for_rescue,
+                                              config, entry_fi)
+            res['rescue_p'] = ri['P_rescue']
+            if ri['error'] is None and ri['P_rescue'] < ri['threshold']:
+                res['action'] = 'exit'; res['tier'] = 'RESCUE'
+                res['reason'] = f"Rescue(P={ri['P_rescue']:.2f}<{ri['threshold']:.2f})"
+                return res
+    mfe_R = ((peak - entry) if action == "BUY" else (entry - peak)) / sl_d0 if sl_d0 > 0 else 0.0
+    if H > float(getattr(config, 'SC_HEALTHY_THRESHOLD', 0.65)):
+        tier = 'HEALTHY'
+        act_r = float(getattr(config, 'SC_ACTIVATE_R_HEALTHY', 0.5))
+        kappa = float(getattr(config, 'SC_HEALTHY_TRAIL_KAPPA', 3.0))
+    else:
+        tier = 'WEAKENING'
+        act_r = float(getattr(config, 'SC_ACTIVATE_R_WEAK', 0.3))
+        kappa = float(getattr(config, 'SC_WEAK_TRAIL_KAPPA', 1.5))
+    res['tier'] = tier
+    if mfe_R >= act_r:
+        td = kappa * sigma_entry
+        new_sl = peak * (1.0 - td) if action == "BUY" else peak * (1.0 + td)
+        # ══ [V4-CLAMP-FIX] Clamp فقط قبل +1R — يمنح SC حرية بعد الإثبات ══
+        if bool(pos_snap.get('be_esc_armed', True)) and mfe_R < 1.0:
+            kb = float(getattr(config, 'BREAKEVEN_ESCAPE_PRICE_MOVE_R', 0.30))
+            buf = float(getattr(config, 'SC_BE_ESC_BUFFER', 0.001))
+            if action == "BUY":
+                lvl = entry - kb * sl_d0
+                new_sl = min(new_sl, lvl * (1.0 - buf))
+            else:
+                lvl = entry + kb * sl_d0
+                new_sl = max(new_sl, lvl * (1.0 + buf))
+        ms = float(getattr(config, 'SC_TRAIL_MIN_STEP', 0.0005))
+        if action == "BUY":
+            new_sl = min(new_sl, price * 0.999)
+            if new_sl > sl_cur * (1.0 + ms):
+                res['action'] = 'update_sl'; res['new_sl'] = float(new_sl)
+                res['reason'] = f'{tier}(H={H:.2f},MFE={mfe_R:.2f}R)'
+                return res
+        else:
+            new_sl = max(new_sl, price * 1.001)
+            if new_sl < sl_cur * (1.0 - ms):
+                res['action'] = 'update_sl'; res['new_sl'] = float(new_sl)
+                res['reason'] = f'{tier}(H={H:.2f},MFE={mfe_R:.2f}R)'
+                return res
+    res['reason'] = f'{tier}(H={H:.2f})'
+    return res
+
+
+def _smart_trail_apply(pos, ad, sig, cidx, fi, high, low, trail_sl):
+    # CRITICAL FIX: update MFE and peak ALWAYS (needed by Partial TP,
+    # regardless of whether Smart Center is enabled).
+    try:
+        mfe_c = ((high - pos.entry_px) if sig.action == "BUY" else (pos.entry_px - low)) / pos.entry_px
+        if mfe_c > pos.mfe_frac:
+            pos.mfe_frac = mfe_c
+        if sig.action == "BUY":
+            if high > pos.peak_price:
+                pos.peak_price = float(high)
+        else:
+            if pos.peak_price == 0 or low < pos.peak_price:
+                pos.peak_price = float(low)
+    except Exception:
+        pass
+    if not getattr(CFG, 'SMART_CENTER_ENABLED', True):
+        return trail_sl, None
+    try:
+        price_now = float(ad.closes[cidx])
+        snap = {
+            'entry': float(pos.entry_px), 'sl': float(trail_sl),
+            'sl_initial': float(getattr(pos, 'sl_dist_initial', 0.0)),
+            'tp': float(sig.tp1), 'peak': float(pos.peak_price),
+            'sigma_entry': float(getattr(pos, 'sigma_entry', 0.01)),
+            'broken_streak': int(getattr(pos, '_broken_streak', 0)),
+            'action': sig.action,
+            'be_esc_armed': not bool(getattr(pos, '_be_esc_done', False)),
+        }
+        result = _smart_center_decision(
+            snap, price_now, ad, fi, int(getattr(pos, 'entry_fi', 0)),
+            cidx - pos.entry_ci, cidx, pos.entry_ci, CFG
+        )
+        try:
+            pos._broken_streak = int(result.get('new_streak', 0))
+            pos._health = float(result.get('health', 0.5))
+            pos._rescue_p = float(result.get('rescue_p', 1.0))
+        except Exception:
+            pass
+        if result['action'] == 'exit':
+            return trail_sl, (price_now, result['reason'], cidx)
+        if result['action'] == 'update_sl':
+            ns = float(result['new_sl'])
+            ms = float(getattr(CFG, 'SC_TRAIL_MIN_STEP', 0.0005))
+            if sig.action == "BUY":
+                if ns > trail_sl * (1.0 + ms):
+                    trail_sl = ns
+            else:
+                if ns < trail_sl * (1.0 - ms):
+                    trail_sl = ns
+    except Exception as e:
+        log.debug(f"[SmartTrail] apply failed {getattr(pos, 'symbol', '?')}: {e}")
+    return trail_sl, None
+
+
+def _smart_center_decision_live(exchange, sym, pos, price, ad):
+    try:
+        if not getattr(CFG, 'SMART_CENTER_ENABLED', True) or ad is None or price <= 0:
+            return {'action': 'hold', 'reason': 'sc_off_or_missing'}
+        entry_ci = int(pos.get('_entry_ci', 0))
+        fi = max(0, len(ad.closes) - 2 - ad.feat_start)
+        entry_fi = max(0, entry_ci - ad.feat_start)
+        tf_sec = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
+        bars_held = int(max(0.0, (time.time() - float(pos.get('entry_ts', time.time()))) / max(tf_sec, 1)))
+        snap = {
+            'entry': float(pos.get('entry', 0)),
+            'sl': float(pos.get('sl', 0)),
+            'sl_initial': float(pos.get('sl_dist_initial', 0)),
+            'tp': float(pos.get('tp1', 0)),
+            'peak': float(pos.get('peak_price', pos.get('entry', 0))),
+            'sigma_entry': float(pos.get('sigma_entry', 0.01)),
+            'broken_streak': int(pos.get('_broken_streak', 0)),
+            'action': str(pos.get('action', 'BUY')),
+            'be_esc_armed': not bool(pos.get('_be_esc_done', False)),
+        }
+        # ══ [SC-V3] Peak from _hi/_lo (1m candles) for parity with backtest ══
+        _sc_hi = float(pos.get('_hi', snap['peak']) or snap['peak'])
+        _sc_lo = float(pos.get('_lo', snap['peak']) or snap['peak'])
+        if snap['action'] == "BUY":
+            _sc_cand = max(float(price), _sc_hi)
+            if _sc_cand > snap['peak']:
+                snap['peak'] = _sc_cand; pos['peak_price'] = _sc_cand
+        else:
+            _sc_cand = (min(float(price), _sc_lo)
+                        if _sc_lo > 0 else float(price))
+            if snap['peak'] == 0 or _sc_cand < snap['peak']:
+                snap['peak'] = _sc_cand; pos['peak_price'] = _sc_cand
+        result = _smart_center_decision(snap, float(price), ad, fi, entry_fi,
+                                         bars_held, len(ad.closes) - 2, entry_ci, CFG)
+        pos['_broken_streak'] = int(result.get('new_streak', 0))
+        pos['_health'] = float(result.get('health', 0.5))
+        pos['_rescue_p'] = float(result.get('rescue_p', 1.0))
+        if result['action'] == 'update_sl':
+            old = float(pos.get('sl', 0))
+            pos['sl'] = float(result['new_sl'])
+            try:
+                if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
+                    _sync_protective_orders(exchange, sym, pos)
+            except Exception as e:
+                log.debug(f"[SmartCenter-Live] sync {sym}: {e}")
+            log.debug(f"[SmartCenter-Live] {sym} SL {old:.6f}->{pos['sl']:.6f} ({result['reason']})")
+        return result
+    except Exception as e:
+        log.debug(f"[SmartCenter-Live] {sym} failed: {e}")
+        return {'action': 'hold', 'reason': f'err:{e}'}
+
+
 def build_signals(assets, mode="backtest"):
     """
     محرك استشعار الإشارات الكمي:
@@ -6267,36 +6736,21 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                             if pos.entry_px < trail_sl:
                                 trail_sl = pos.entry_px
 
-                # Legacy trailing (uses sub-bar high/low as peak candidate)
-                _td = pos.trail_dist_frac if pos.trail_dist_frac > 0 else CFG.TRAIL_DISTANCE
-                _ta = pos.trail_activate_frac if pos.trail_activate_frac > 0 else CFG.TRAIL_ACTIVATE_MFE
-                # ══ [FIX 1] Activation tied to R-multiple, not fixed MFE ══
-                _sl_frac_init = (pos.sl_dist_initial / pos.entry_px
-                                 if pos.entry_px > 0 and pos.sl_dist_initial > 0
-                                 else 0.01)
-                _act_at_r = float(getattr(CFG, 'TRAIL_ACTIVATE_AT_R', 1.0))
-                _ta_eff = _sl_frac_init * _act_at_r
-                if CFG.TRAIL_ENABLED and pos.mfe_frac >= _ta_eff:
-                    if sig.action == "BUY":
-                        peak = pos.peak_price if pos.peak_price > 0 else pos.entry_px
-                        if s_high > peak:
-                            peak = s_high; pos.peak_price = peak
-                        new_sl = peak * (1.0 - _td)
-                        if new_sl > trail_sl * (1.0 + CFG.TRAIL_MIN_STEP):
-                            trail_sl = new_sl
-                    else:
-                        peak = pos.peak_price if pos.peak_price > 0 else pos.entry_px
-                        if s_low < peak or peak == 0:
-                            peak = s_low; pos.peak_price = peak
-                        new_sl = peak * (1.0 + _td)
-                        if new_sl < trail_sl * (1.0 - CFG.TRAIL_MIN_STEP):
-                            trail_sl = new_sl
+                # ══ [SMART CENTER v3] ══
+                _new_trail, _exit_t = _smart_trail_apply(
+                    pos, ad, sig, cidx, fi, s_high, s_low, trail_sl
+                )
+                trail_sl = _new_trail
+                if _exit_t is not None:
+                    pos.trail_sl = trail_sl; pos.current_ci = cidx
+                    return _exit_t[0], _exit_t[1], _exit_t[2]
 
                 # ══ [FIX 4] Partial TP trigger ══
                 if (getattr(CFG, 'PARTIAL_TP_ENABLED', False)
                         and not getattr(pos, 'partial_taken', False)
                         and partial_cb is not None
-                        and pos.sl_dist_initial > 0):
+                        and pos.sl_dist_initial > 0
+                        and getattr(pos, '_health', 0.5) > float(getattr(CFG, 'SC_BROKEN_THRESHOLD', 0.40))):
                     _ptr = float(getattr(CFG, 'PARTIAL_TP_R', 1.0))
                     if sig.action == "BUY":
                         _trig = pos.entry_px + pos.sl_dist_initial * _ptr
@@ -6332,29 +6786,14 @@ def _advance(pos, ad, to_ci, partial_cb=None):
             if mfe_cand > pos.mfe_frac:
                 pos.mfe_frac = mfe_cand
 
-            _td = pos.trail_dist_frac if pos.trail_dist_frac > 0 else CFG.TRAIL_DISTANCE
-            _ta = pos.trail_activate_frac if pos.trail_activate_frac > 0 else CFG.TRAIL_ACTIVATE_MFE
-            # ══ [FIX 1] Activation tied to R-multiple, not fixed MFE ══
-            _sl_frac_init = (pos.sl_dist_initial / pos.entry_px
-                             if pos.entry_px > 0 and pos.sl_dist_initial > 0
-                             else 0.01)
-            _act_at_r = float(getattr(CFG, 'TRAIL_ACTIVATE_AT_R', 1.0))
-            _ta_eff = _sl_frac_init * _act_at_r
-            if CFG.TRAIL_ENABLED and pos.mfe_frac >= _ta_eff:
-                if sig.action == "BUY":
-                    peak = pos.peak_price if pos.peak_price > 0 else pos.entry_px
-                    if high > peak:
-                        peak = high; pos.peak_price = peak
-                    new_sl = peak * (1.0 - _td)
-                    if new_sl > trail_sl * (1.0 + CFG.TRAIL_MIN_STEP):
-                        trail_sl = new_sl
-                else:
-                    peak = pos.peak_price if pos.peak_price > 0 else pos.entry_px
-                    if low < peak or peak == 0:
-                        peak = low; pos.peak_price = peak
-                    new_sl = peak * (1.0 + _td)
-                    if new_sl < trail_sl * (1.0 - CFG.TRAIL_MIN_STEP):
-                        trail_sl = new_sl
+            # ══ [SMART CENTER v3] ══
+            _new_trail, _exit_t = _smart_trail_apply(
+                pos, ad, sig, cidx, fi, high, low, trail_sl
+            )
+            trail_sl = _new_trail
+            if _exit_t is not None:
+                pos.trail_sl = trail_sl; pos.current_ci = cidx
+                return _exit_t[0], _exit_t[1], _exit_t[2]
 
             res, px = _check_sl_tp(high, low, p, fi)
             if res == "SL":
@@ -7104,21 +7543,29 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
 
         if not_ < CFG.MIN_NOTIONAL: continue
 
-        # ══ [DYNAMIC TRAIL] compute σ-scaled trail params at entry ══
+        # ══ [SMART CENTER v3] compute sigma_entry at entry ══
         entry_fi = max(0, min(opt_ci - ad.feat_start,
                               len(ad.E_therm) - 1))
-        trail_d, trail_a = compute_trail_params(ad, entry_fi)
+        try:
+            _sigma_entry = float(ad.E_therm[entry_fi])
+            if not np.isfinite(_sigma_entry) or _sigma_entry <= 1e-9:
+                _sigma_entry = 0.01
+        except Exception:
+            _sigma_entry = 0.01
 
         open_pos[sym] = OpenPosition(
             symbol=sym, signal=sig,
             entry_px=eff_px, pos_size=qty, trail_sl=sl_h,
             entry_cap=capital, entry_ci=opt_ci, current_ci=opt_ci,
             slip_paid=slip_paid, opt_entry=opt_entry, tri_entry=sig.tri_val,
-            trail_dist_frac=trail_d,
-            trail_activate_frac=trail_a,
+            sigma_entry=_sigma_entry,
+            entry_fi=entry_fi,
             sl_dist_initial=float(abs(eff_px - sl_h)),
             trail_peak_R=0.0,
             entry_sub_idx=opt_sub_idx,
+            _broken_streak=0,
+            _health=0.5,
+            _rescue_p=1.0,
         )
 
     for sym, pos in list(open_pos.items()):
@@ -7182,6 +7629,9 @@ def compute_metrics(trades, equity, init):
         'avg_T_info': avg_T_info,
         'avg_dynamic_risk': avg_dyn_risk,
         'buy_count': buy_count, 'sell_count': sell_count,
+        'rescue_exits': sum(1 for t in trades if 'Rescue' in t.exit_reason),
+        'broken_exits': sum(1 for t in trades if 'BROKEN' in t.exit_reason),
+        'flash_exits': sum(1 for t in trades if 'FlashCrash' in t.exit_reason),
     }
 
 
@@ -7233,6 +7683,23 @@ def print_report(m, mode):
     print(f"\n▶ توزيع أسباب الخروج")
     for r,c in sorted(m['exit_distribution'].items(), key=lambda x:-x[1]):
         print(f"   {r:25s}: {c:7,}  ({c/m['n_trades']*100:.1f}%)")
+
+    # ══ [SC-V3] Smart Center exit breakdown ══
+    _sc_rescue = m.get('rescue_exits', 0)
+    _sc_broken = m.get('broken_exits', 0)
+    _sc_flash = m.get('flash_exits', 0)
+    _sc_total = _sc_rescue + _sc_broken + _sc_flash
+    if _sc_total > 0:
+        print(f"\n▶ Smart Center Exits (v3)")
+        print(f"   Rescue exits    : {_sc_rescue:7,}  "
+              f"({_sc_rescue/m['n_trades']*100:.1f}%)")
+        print(f"   BROKEN exits    : {_sc_broken:7,}  "
+              f"({_sc_broken/m['n_trades']*100:.1f}%)")
+        print(f"   Flash exits     : {_sc_flash:7,}  "
+              f"({_sc_flash/m['n_trades']*100:.1f}%)")
+        print(f"   ─────────────────────────────────────")
+        print(f"   Total SC exits  : {_sc_total:7,}  "
+              f"({_sc_total/m['n_trades']*100:.1f}%)")
 
     # ══ [FILTER REPORT] ══
     if CFG.FILTER_ENABLED and _FILTER_STATS['total_signals'] > 0:
@@ -7360,6 +7827,11 @@ def plot_results(trades, equity, m, out="quantum_v6_results.png"):
 
     # ملخص إحصائي
     ax9 = fig.add_subplot(gs[2,3]); ax9.axis('off'); ax9.set_facecolor(bk)
+    _sc_total_v3 = (m.get('rescue_exits', 0) + m.get('broken_exits', 0)
+                    + m.get('flash_exits', 0))
+    _sc_line = (f"\nSC_v3: R{m.get('rescue_exits',0)} "
+                f"B{m.get('broken_exits',0)} "
+                f"F{m.get('flash_exits',0)}") if _sc_total_v3 > 0 else ""
     summ=(f"صفقات: {m['n_trades']:,}\n"
           f"نجاح:  {m['win_rate']*100:.1f}%\n"
           f"PF:    {m['profit_factor']:.2f}\n"
@@ -7370,7 +7842,8 @@ def plot_results(trades, equity, m, out="quantum_v6_results.png"):
           f"Opt:   {m['opt_entry_pct']:.1f}%\n"
           f"T_avg: {m['avg_T_info']:.3f}\n"
           f"r_avg: {m['avg_dynamic_risk']*100:.3f}%\n"
-          f"Slip:  ${m['total_slip']:,.0f}")
+          f"Slip:  ${m['total_slip']:,.0f}"
+          f"{_sc_line}")
     ax9.text(0.05,0.95,summ,transform=ax9.transAxes,va='top',color=tc,fontsize=9,
              fontfamily='monospace',
              bbox=dict(boxstyle='round',fc='#1e1e1e',alpha=0.85))
@@ -10384,6 +10857,8 @@ def check_thermodynamic_apex(pos_action, entry_price, current_price, ad, fi):
     """
     if fi < 3:
         return False, ""
+    if not getattr(CFG, 'APEX_ENABLED', True):
+        return False, ""
 
     # ── σ-scaled base ──
     try:
@@ -11959,13 +12434,15 @@ def _promote_pending_to_position(exchange, sym: str, rec: Dict,
         _liq_estimated = compute_liquidation_price(entry_price, rec['action'],
                                                      _lev, _mmr)
 
-    # σ-scaled trailing params at entry
-    trail_d, trail_a = (0.003, 0.004)
+    # [SMART CENTER v3] compute sigma_entry at fill
+    _sigma_entry = 0.01
     try:
         ad = rec.get('ad_ref')
-        entry_fi = int(rec.get('entry_fi') or 0)
+        _entry_fi_p = int(rec.get('entry_fi') or 0)
         if ad is not None:
-            trail_d, trail_a = compute_trail_params(ad, entry_fi)
+            _s = float(ad.E_therm[_entry_fi_p]) if 0 <= _entry_fi_p < len(ad.E_therm) else 0.01
+            if np.isfinite(_s) and _s > 1e-9:
+                _sigma_entry = _s
     except Exception:
         pass
 
@@ -11980,11 +12457,13 @@ def _promote_pending_to_position(exchange, sym: str, rec: Dict,
         'entry_ts': time.time(),
         'fill_ratio': fill_ratio,
         'leverage': int(rec.get('leverage') or 1),
-        'trail_dist_frac': float(trail_d),
-        'trail_activate_frac': float(trail_a),
+        'sigma_entry': float(_sigma_entry),
         'liq_price_estimated': _liq_estimated,
         'mmr': _mmr,
         'sl_dist_initial': float(abs(entry_price - adapted_sl)),
+        '_broken_streak': 0,
+        '_health': 0.5,
+        '_rescue_p': 1.0,
         '_entry_ci': int(rec.get('close_idx') or 0),
         '_trail_bars_held': 0,
         '_trail_peak_R': 0.0,
@@ -13461,6 +13940,28 @@ def _lv_finalize_position(exchange, sym, pos, ad=None) -> None:
     # make sure every live position record carries all fields the manager relies on
     try:
         pos.setdefault('_sym', sym)
+        # ══ [SC-V3] ensure Smart Center fields exist ══
+        pos.setdefault('_broken_streak', 0)
+        pos.setdefault('_health', 0.5)
+        pos.setdefault('_rescue_p', 1.0)
+        if 'sigma_entry' not in pos or float(pos.get('sigma_entry') or 0) <= 0:
+            _sc_sigma = 0.01
+            if ad is not None:
+                try:
+                    _sc_ci = len(ad.closes) - 2
+                    _sc_fi = max(0, min(_sc_ci - ad.feat_start,
+                                        len(ad.E_therm) - 1))
+                    _sc_s = float(ad.E_therm[_sc_fi])
+                    if np.isfinite(_sc_s) and _sc_s > 1e-9:
+                        _sc_sigma = _sc_s
+                except Exception:
+                    pass
+            if _sc_sigma <= 1e-9:
+                _sl_d = float(pos.get('sl_dist_initial') or 0)
+                _e_px = float(pos.get('entry') or 1)
+                if _e_px > 0 and _sl_d > 0:
+                    _sc_sigma = _sl_d / _e_px / 3.0
+            pos['sigma_entry'] = float(max(_sc_sigma, 0.001))
         entry = float(pos.get('entry') or 0.0)
         if not pos.get('sl_dist_initial') and entry > 0 and pos.get('sl'):
             pos['sl_dist_initial'] = float(abs(entry - float(pos['sl'])))
@@ -13884,7 +14385,12 @@ def _lv_breakeven(exchange, sym, pos, now) -> None:
       * Exchange SL at a different price            → cancel it, then
                                                       place the new SL
       * No exchange SL                              → place the new SL
+
+    [SC-V3] Early return when Smart Center is enabled — SC handles
+    SL movement (including a stricter breakeven via BEEsc clamp).
     """
+    if getattr(CFG, 'SMART_CENTER_ENABLED', True):
+        return
     if getattr(CFG, 'TRAIL_ENABLED', True) or not getattr(CFG, 'BREAKEVEN_ENABLED', True):
         return
     if pos.get('_be_done'):
@@ -15241,12 +15747,7 @@ def _rev_finalize(exchange, sym: str, w: Dict, open_pos_live: Dict, assets,
         new_tp = entry_px - orig_tp_dist
 
     _sb = float(w.get("sigma_bar", 0.01))
-    _td = float(np.clip(CFG.TRAIL_KAPPA * _sb,
-                        CFG.TRAIL_MIN_FRAC, CFG.TRAIL_MAX_FRAC))
-    _ta = float(np.clip(CFG.TRAIL_ACT_KAPPA * _sb,
-                        CFG.TRAIL_ACT_MIN_FRAC, CFG.TRAIL_ACT_MAX_FRAC))
-    if _ta <= _td:
-        _ta = _td * 1.2
+    _sigma_entry = float(max(_sb, 0.001))
 
     _lev = int(w["leverage"])
     _mmr = float(w.get("mmr", getattr(CFG, "LIQ_FALLBACK_MMR", 0.02)))
@@ -15272,8 +15773,10 @@ def _rev_finalize(exchange, sym: str, w: Dict, open_pos_live: Dict, assets,
         "entry_ts": _t_rev.time(),
         "fill_ratio": filled / max(qty_target, 1e-9),
         "leverage": _lev,
-        "trail_dist_frac": _td,
-        "trail_activate_frac": _ta,
+        "sigma_entry": _sigma_entry,
+        "_broken_streak": 0,
+        "_health": 0.5,
+        "_rescue_p": 1.0,
         "liq_price_estimated": _liq,
         "mmr": _mmr,
         "sl_dist_initial": float(abs(entry_px - new_sl)),
@@ -17588,70 +18091,18 @@ def run_live(cfg, exchange):
                                 ex = True
                                 rsn = f"TimeKill({_r_now:.2f}R)"
 
-                # ── Trailing SL (dynamic σ-scaled) ──
-                # [GATE] يُشغّل Trailing فقط إذا كان TRAIL_ENABLED=True.
-                # إذا كان False، لا يتحرك SL أبداً بعد الدخول (يبقى كما
-                # وُضع عند الدخول). هذا مطابق لسلوك الباكتيست.
-                if not ex and getattr(CFG, 'TRAIL_ENABLED', True):
-                    entry_px = float(pos['entry'])
-                    _sl_before = float(pos['sl'])
-                    _td = float(pos.get('trail_dist_frac', CFG.TRAIL_DISTANCE))
-                    # ══ [FIX 1] Activation at R-multiple of initial SL ══
-                    _sl_dist_init = float(pos.get('sl_dist_initial', 0) or 0)
-                    _sl_frac_init = (_sl_dist_init / entry_px
-                                     if entry_px > 0 and _sl_dist_init > 0
-                                     else 0.01)
-                    _act_at_r = float(getattr(CFG, 'TRAIL_ACTIVATE_AT_R', 1.0))
-                    _ta = _sl_frac_init * _act_at_r
-
-                    # Update peak from live price and compute MFE
-                    # [PARITY] use _hi/_lo (from 1m candles via
-                    # _lv_update_extremes) to match backtest bar highs/lows.
-                    # Falls back to ticker if extremes are missing.
-                    if pos['action'] == "BUY":
-                        cur_peak = float(pos.get('peak_price', entry_px))
-                        _cand_peak = max(
-                            float(price),
-                            float(pos.get('_hi', entry_px)),
-                        )
-                        if _cand_peak > cur_peak:
-                            pos['peak_price'] = _cand_peak
-                            cur_peak = _cand_peak
-                        _mfe = (cur_peak - entry_px) / entry_px
-                    else:
-                        cur_peak = float(pos.get('peak_price', entry_px))
-                        _cand_peak = min(
-                            float(price),
-                            float(pos.get('_lo', entry_px)),
-                        )
-                        if _cand_peak < cur_peak or cur_peak == entry_px:
-                            pos['peak_price'] = _cand_peak
-                            cur_peak = _cand_peak
-                        _mfe = (entry_px - cur_peak) / entry_px
-
-                    if _mfe >= _ta:
-                        if pos['action'] == "BUY":
-                            new_sl = cur_peak * (1.0 - _td)
-                            if new_sl > pos['sl']:
-                                pos['sl'] = new_sl
-                        else:
-                            new_sl = cur_peak * (1.0 + _td)
-                            if new_sl < pos['sl']:
-                                pos['sl'] = new_sl
-
-                    # ══ [LAYER 7] If SL moved, sync protective orders ══
-                    if (getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True)
-                            and abs(float(pos['sl']) - _sl_before) > 1e-12):
-                        try:
-                            _sync_protective_orders(exchange, sym, pos)
-                        except Exception as _e:
-                            log.debug(f"[Prot] {sym} sync error: {_e}")
+                # ── [SMART CENTER v3] ──
+                if not ex and getattr(CFG, 'SMART_CENTER_ENABLED', True):
+                    _sc_result = _smart_center_decision_live(exchange, sym, pos, price, ad)
+                    if _sc_result.get('action') == 'exit':
+                        ex = True; rsn = _sc_result.get('reason', 'SmartCenter')
 
                 # ── [FIX 4] Partial TP ──
                 if (not ex
                         and getattr(CFG, 'PARTIAL_TP_ENABLED', False)
                         and not pos.get('_broker_partial', False)
-                        and not pos.get('_partial_taken', False)):
+                        and not pos.get('_partial_taken', False)
+                        and float(pos.get('_health', 0.5)) > float(getattr(CFG, 'SC_BROKEN_THRESHOLD', 0.40))):
                     _entry_px_p = float(pos['entry'])
                     _sl_d0_p = float(pos.get('sl_dist_initial', 0) or 0)
                     if _sl_d0_p > 0 and _entry_px_p > 0:
@@ -18794,17 +19245,6 @@ def main():
                    help="Reject if #failure-rules matched >= this (default 2)")
     p.add_argument("--max-notional", type=float, default=None,
                    help="Absolute notional cap in USD (default 100000)")
-    p.add_argument("--no-dynamic-trail", action="store_true",
-                   help="Use fixed TRAIL_DISTANCE instead of σ-scaled trailing")
-    p.add_argument("--no-trailing", action="store_true",
-                   help="Disable Trailing Stop Loss entirely (SL stays fixed)")
-    p.add_argument("--trailing", action="store_true",
-                   help="Force-enable Trailing Stop Loss (overrides config)")
-    p.add_argument("--trail-sync-to-subbars", action="store_true",
-                   help="Update peak/SL ONLY on sub-bar close (e.g., 15m) "
-                        "— matches backtest exactly. No ticker, no 1m forming bar.")
-    p.add_argument("--trail-kappa", type=float, default=None,
-                   help="Trail multiplier on σ (default 1.5)")
     p.add_argument("--reentry-cooldown", type=int, default=None,
                    help="Bars to wait after exit before re-entry (default 3)")
     p.add_argument("--no-reentry-cooldown", action="store_true",
@@ -18934,6 +19374,18 @@ def main():
     # [ABLATION-FLAGS]
     p.add_argument("--no-apex", action="store_true",
                    help="Disable Apex exit")
+    p.add_argument("--no-smart-center", action="store_true",
+                   help="Disable Smart Center (fallback: no dynamic SL management)")
+    p.add_argument("--sc-broken-threshold", type=float, default=None,
+                   help="Override SC_BROKEN_THRESHOLD (default 0.40)")
+    p.add_argument("--sc-rescue-floor", type=float, default=None,
+                   help="Override SC_RESCUE_FLOOR (default 0.15)")
+    p.add_argument("--sc-healthy-threshold", type=float, default=None,
+                   help="Override SC_HEALTHY_THRESHOLD (default 0.65)")
+    p.add_argument("--sc-kappa-healthy", type=float, default=None,
+                   help="Override SC_HEALTHY_TRAIL_KAPPA (default 2.0 after v4)")
+    p.add_argument("--sc-kappa-weak", type=float, default=None,
+                   help="Override SC_WEAK_TRAIL_KAPPA (default 1.5)")
     p.add_argument("--no-partial", action="store_true",
                    help="Disable Partial TP")
     p.add_argument("--no-breakeven", action="store_true",
@@ -19230,24 +19682,6 @@ def main():
         CFG.RULE_MIN_SCORE = int(args.rule_min_score)
     if args.max_notional is not None:
         CFG.MAX_ABS_NOTIONAL = float(args.max_notional)
-    if args.no_dynamic_trail:
-        CFG.TRAIL_DYNAMIC = False
-    if args.no_trailing:
-        CFG.TRAIL_ENABLED = False
-        log.info("[Trail] Trailing Stop Loss DISABLED — SL is fixed")
-    elif args.trailing:
-        CFG.TRAIL_ENABLED = True
-        log.info("[Trail] Trailing Stop Loss FORCED ON")
-    if getattr(args, "trail_sync_to_subbars", False):
-        CFG.TRAIL_USE_SUBBARS_ONLY = True
-        _sub_tf_for_log = _get_subbars_tf(CFG.timeframe) or CFG.timeframe
-        log.info(
-            f"[Trail] SUB-BAR PARITY ON: peak/SL update only on "
-            f"sub-bar close ({_sub_tf_for_log}). "
-            f"No ticker, no 1m forming bar. Matches backtest exactly."
-        )
-    if args.trail_kappa is not None:
-        CFG.TRAIL_KAPPA = float(args.trail_kappa)
     if args.reentry_cooldown is not None:
         CFG.REENTRY_COOLDOWN_BARS = int(args.reentry_cooldown)
     if args.no_reentry_cooldown:
@@ -19378,6 +19812,24 @@ def main():
     if getattr(args, "no_apex", False):
         CFG.APEX_ENABLED = False
         log.info("[Ablation] APEX DISABLED")
+    if getattr(args, "no_smart_center", False):
+        CFG.SMART_CENTER_ENABLED = False
+        log.warning("[Ablation] SMART CENTER DISABLED — SL management fallback OFF")
+    if getattr(args, "sc_broken_threshold", None) is not None:
+        CFG.SC_BROKEN_THRESHOLD = float(args.sc_broken_threshold)
+        log.info(f"[SC-v4] SC_BROKEN_THRESHOLD = {CFG.SC_BROKEN_THRESHOLD}")
+    if getattr(args, "sc_rescue_floor", None) is not None:
+        CFG.SC_RESCUE_FLOOR = float(args.sc_rescue_floor)
+        log.info(f"[SC-v4] SC_RESCUE_FLOOR = {CFG.SC_RESCUE_FLOOR}")
+    if getattr(args, "sc_healthy_threshold", None) is not None:
+        CFG.SC_HEALTHY_THRESHOLD = float(args.sc_healthy_threshold)
+        log.info(f"[SC-v4] SC_HEALTHY_THRESHOLD = {CFG.SC_HEALTHY_THRESHOLD}")
+    if getattr(args, "sc_kappa_healthy", None) is not None:
+        CFG.SC_HEALTHY_TRAIL_KAPPA = float(args.sc_kappa_healthy)
+        log.info(f"[SC-v4] SC_HEALTHY_TRAIL_KAPPA = {CFG.SC_HEALTHY_TRAIL_KAPPA}")
+    if getattr(args, "sc_kappa_weak", None) is not None:
+        CFG.SC_WEAK_TRAIL_KAPPA = float(args.sc_kappa_weak)
+        log.info(f"[SC-v4] SC_WEAK_TRAIL_KAPPA = {CFG.SC_WEAK_TRAIL_KAPPA}")
     if getattr(args, "no_partial", False):
         CFG.PARTIAL_TP_ENABLED = False
         log.info("[Ablation] PARTIAL_TP DISABLED")
@@ -19597,9 +20049,15 @@ def main():
         )
 
 
+    _sc_status = "ENABLED" if getattr(CFG, 'SMART_CENTER_ENABLED', True) else "DISABLED"
+    log.info(f"[SmartCenter v3] {_sc_status}  "
+             f"(Healthy={getattr(CFG,'SC_HEALTHY_THRESHOLD',0.65):.2f}, "
+             f"Broken={getattr(CFG,'SC_BROKEN_THRESHOLD',0.40):.2f}, "
+             f"Rescue={'ON' if getattr(CFG,'SC_RESCUE_ENABLED',True) else 'OFF'})")
     print("╔"+"═"*70+"╗")
     print(f"  [Level-1] Parallel: {CFG.PARALLEL_PROCESSING}  "
           f"Cache: {CFG.ASSET_CACHE_ENABLED}")
+    print(f"  [SmartCenter v3] {_sc_status}")
     print(f"  [Level-2] Numba: {_NUMBA_AVAILABLE and CFG.NUMBA_ENABLED}\n")
     print(f"║  محرك التداول الثرموديناميكي الكمي v6.0 – Singularity Engine     ║")
     print(f"║  الوضع: {CFG.mode.upper():10s}  |  رأس المال: ${CFG.INITIAL_CAPITAL:.2f}              ║")
