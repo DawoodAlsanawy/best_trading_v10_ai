@@ -1,3 +1,5 @@
+# [TRAIL-SUBBARS-ONLY-APPLIED]
+# [SIGNAL-BASED-SL-APPLIED]
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -792,6 +794,38 @@ class Config:
     OPP_TP_MIN_DELTA_R: float = 0.3          # تحسّن أدنى لنقل TP
     OPP_TP_MAX_AGE_BARS: int = 4             # عمر الإشارة المعاكسة
     OPP_TP_RESPECT_PARTIAL: bool = True      # لا تنقل TP تحت trigger partial
+
+    # ══ [SIGNAL-BASED SL] ══
+    # When enabled, if a NEW same-direction signal appears on a symbol
+    # with an open position, raise SL to the new signal's SL level
+    # (ratchet-only, never widens).
+    #
+    # Ratchet rule (BUY):  new_sl = max(current_sl, sig.sl)
+    # Ratchet rule (SELL): new_sl = min(current_sl, sig.sl)
+    #
+    # Filters (all must pass):
+    #   - S_new.action == pos.action
+    #   - S_new.score >= pos.score × SIGNAL_SL_MIN_SCORE_RATIO
+    #   - |new_sl - current_sl| / current_sl >= SIGNAL_SL_MIN_IMPROVEMENT
+    #   - new_sl is SIGNAL_SL_SAFETY_MARGIN away from current price
+    #   - If SIGNAL_SL_PROTECT_PROFIT_ONLY: new_sl above entry (BUY) / below (SELL)
+    #
+    # BEEsc interaction:
+    #   - SIGNAL_SL_ALLOW_ABOVE_BEESC=True: SL may cross BEEsc level.
+    #     When it does, BEEsc is disabled for this trade (SL takes priority).
+    #   - False: SL clamped to BEEsc level.
+    #
+    # Design note: SL updates are EVENT-DRIVEN (only on new signals),
+    # NOT continuous trailing. This avoids the "cut every winner" failure
+    # mode of Smart Center, while still protecting unrealized gains.
+    #
+    # Enable via --signal-based-sl CLI flag.
+    SIGNAL_BASED_SL_ENABLED: bool = False
+    SIGNAL_SL_MIN_SCORE_RATIO: float = 1.5
+    SIGNAL_SL_MIN_IMPROVEMENT: float = 0.005
+    SIGNAL_SL_SAFETY_MARGIN: float = 0.001
+    SIGNAL_SL_PROTECT_PROFIT_ONLY: bool = False
+    SIGNAL_SL_ALLOW_ABOVE_BEESC: bool = True
     # ══ [WATCH ENTRY OFFSET — dynamic, fills on touch] ══
     # الأمر يُوضع في اتجاه يواجه السعر الهابط/الصاعد، ليملأ عند أول تلامس.
     # BUY : order = tunnel + offset  (above)
@@ -1596,7 +1630,7 @@ _SUBBARS_TF_MAP = {
     "30m": "5m",   # 6 sub-bars
     "1h":  "5m",   # 12 sub-bars
     "2h":  "15m",  # 8 sub-bars
-    "4h":  "15m",  # 16 sub-bars
+    "4h":  "5m",  # 16 sub-bars
     "6h":  "30m",  # 12 sub-bars
     "8h":  "30m",  # 16 sub-bars
     "12h": "1h",   # 12 sub-bars
@@ -3160,6 +3194,7 @@ class OpenPosition:
     entry_sub_idx: int = 0
     partial_taken: bool = False      # [FIX 4]
     partial_pnl: float = 0.0         # [FIX 4] accumulated partial profit
+    _signal_sl_above_beesc: bool = False   # [Signal-SL] BEEsc disabled flag
 
 
 # ════════════════════════════════════════════════════════════════
@@ -5373,7 +5408,177 @@ def _apply_breakeven_escape(action: str, entry: float, sl_dist0: float,
                 return None
     return float(tp_new)
 
+# ══ [SIGNAL-SL] Live: track last processed signal close_idx per symbol ══
+_SIGNAL_SL_LAST_PROCESSED: Dict[str, int] = {}
+
+
+def _maybe_update_sl_from_signal(pos, sig, current_price, ad):
+    """
+    [Signal-SL] Try to raise SL when a new same-direction signal appears
+    on a symbol with an open position.
+
+    Ratchet-only: SL moves only in the favorable direction (up for BUY,
+    down for SELL). Never widens.
+
+    Works with both OpenPosition dataclass (backtest) and pos dict (live).
+
+    Returns
+    -------
+    (updated: bool, new_sl: float, reason: str)
+        - updated=False → new_sl equals current pos SL (no change).
+        - updated=True  → new_sl is the proposed SL; caller must apply it.
+    """
+    # ── 0. Validate inputs ──
+    try:
+        if ad is None or sig is None:
+            return False, 0.0, "no_data"
+        if current_price is None or current_price <= 0:
+            return False, 0.0, "invalid_price"
+    except Exception as e:
+        return False, 0.0, f"input_err:{e}"
+
+    is_dict = isinstance(pos, dict)
+
+    # ── 1. Extract position fields ──
+    try:
+        if is_dict:
+            pos_action = str(pos.get('action', '?'))
+            pos_sl_cur = float(pos.get('sl') or 0)
+            pos_entry = float(pos.get('entry') or 0)
+            pos_score = float(pos.get('_orig_score') or 0)
+            pos_sl_dist0 = float(pos.get('sl_dist_initial') or 0)
+            be_esc_done = bool(pos.get('_be_esc_done', False))
+            sl_above_beesc = bool(pos.get('_signal_sl_above_beesc', False))
+        else:
+            pos_action = str(pos.signal.action)
+            pos_sl_cur = float(pos.trail_sl)
+            pos_entry = float(pos.entry_px)
+            pos_score = float(pos.signal.score)
+            pos_sl_dist0 = float(getattr(pos, 'sl_dist_initial', 0.0))
+            be_esc_done = bool(getattr(pos, '_be_esc_done', False))
+            sl_above_beesc = bool(getattr(pos, '_signal_sl_above_beesc', False))
+    except Exception as e:
+        return False, 0.0, f"extract_err:{e}"
+
+    # ── 2. Same-direction guard ──
+    if pos_action not in ('BUY', 'SELL'):
+        return False, pos_sl_cur, "invalid_pos_action"
+    if sig.action != pos_action:
+        return False, pos_sl_cur, "opposite_direction"
+
+    # ── 3. Basic validity ──
+    if pos_sl_cur <= 0 or pos_entry <= 0:
+        return False, pos_sl_cur, "invalid_position"
+    if be_esc_done:
+        return False, pos_sl_cur, "be_esc_already_done"
+
+    # ── 4. Score filter ──
+    score_ratio = float(getattr(CFG, 'SIGNAL_SL_MIN_SCORE_RATIO', 1.5))
+    sig_score = float(getattr(sig, 'score', 0.0))
+    if pos_score > 0 and sig_score > 0:
+        if sig_score < pos_score * score_ratio:
+            return False, pos_sl_cur, (
+                f"score_below_ratio({sig_score:.2f}<{pos_score * score_ratio:.2f})")
+
+    # ── 5. Signal SL validity ──
+    sig_sl = float(getattr(sig, 'sl', 0.0))
+    if sig_sl <= 0 or not np.isfinite(sig_sl):
+        return False, pos_sl_cur, "invalid_sig_sl"
+
+    # ── 6. Ratchet: only improve ──
+    if pos_action == 'BUY':
+        if sig_sl <= pos_sl_cur:
+            return False, pos_sl_cur, (
+                f"ratchet_no_improve(BUY {sig_sl:.6f}<={pos_sl_cur:.6f})")
+    else:  # SELL
+        if sig_sl >= pos_sl_cur:
+            return False, pos_sl_cur, (
+                f"ratchet_no_improve(SELL {sig_sl:.6f}>={pos_sl_cur:.6f})")
+
+    # ── 7. Minimum improvement ──
+    min_imp = float(getattr(CFG, 'SIGNAL_SL_MIN_IMPROVEMENT', 0.005))
+    improvement = abs(sig_sl - pos_sl_cur) / max(abs(pos_sl_cur), 1e-12)
+    if improvement < min_imp:
+        return False, pos_sl_cur, (
+            f"tiny_improvement({improvement*100:.3f}%<{min_imp*100:.3f}%)")
+
+    # ── 8. Protect profit only (optional) ──
+    if getattr(CFG, 'SIGNAL_SL_PROTECT_PROFIT_ONLY', False):
+        if pos_action == 'BUY' and sig_sl <= pos_entry:
+            return False, pos_sl_cur, (
+                f"not_protecting_profit(BUY {sig_sl:.6f}<={pos_entry:.6f})")
+        if pos_action == 'SELL' and sig_sl >= pos_entry:
+            return False, pos_sl_cur, (
+                f"not_protecting_profit(SELL {sig_sl:.6f}>={pos_entry:.6f})")
+
+    # ── 9. Safety margin: SL must be away from current price ──
+    safety = float(getattr(CFG, 'SIGNAL_SL_SAFETY_MARGIN', 0.001))
+    new_sl = sig_sl
+    if pos_action == 'BUY':
+        max_allowed = current_price * (1.0 - safety)
+        if new_sl > max_allowed:
+            new_sl = max_allowed
+    else:
+        min_allowed = current_price * (1.0 + safety)
+        if new_sl < min_allowed:
+            new_sl = min_allowed
+
+    # Re-check ratchet after safety clamp
+    if pos_action == 'BUY' and new_sl <= pos_sl_cur:
+        return False, pos_sl_cur, "safety_clamp_no_improve"
+    if pos_action == 'SELL' and new_sl >= pos_sl_cur:
+        return False, pos_sl_cur, "safety_clamp_no_improve"
+
+    # ── 10. BEEsc interaction ──
+    allow_above = bool(getattr(CFG, 'SIGNAL_SL_ALLOW_ABOVE_BEESC', True))
+    set_above_flag = False
+
+    if (not be_esc_done
+            and not sl_above_beesc
+            and getattr(CFG, 'BREAKEVEN_ESCAPE_ENABLED', False)
+            and pos_sl_dist0 > 0):
+        kb = float(getattr(CFG, 'BREAKEVEN_ESCAPE_PRICE_MOVE_R', 0.30))
+        be_buffer = 0.001
+        if pos_action == 'BUY':
+            be_level = pos_entry - kb * pos_sl_dist0
+            be_max = be_level * (1.0 - be_buffer)
+            if new_sl > be_max:
+                if allow_above:
+                    set_above_flag = True
+                else:
+                    new_sl = be_max
+                    if new_sl <= pos_sl_cur:
+                        return False, pos_sl_cur, "beesc_clamp_no_improve"
+        else:  # SELL
+            be_level = pos_entry + kb * pos_sl_dist0
+            be_min = be_level * (1.0 + be_buffer)
+            if new_sl < be_min:
+                if allow_above:
+                    set_above_flag = True
+                else:
+                    new_sl = be_min
+                    if new_sl >= pos_sl_cur:
+                        return False, pos_sl_cur, "beesc_clamp_no_improve"
+
+    # ── 11. Apply BEEsc-disable flag (sticky) ──
+    if set_above_flag:
+        try:
+            if is_dict:
+                pos['_signal_sl_above_beesc'] = True
+            else:
+                pos._signal_sl_above_beesc = True
+        except Exception:
+            pass
+
+    reason = (f"signal_sl {pos_sl_cur:.6f}->{new_sl:.6f} "
+              f"(imp={improvement*100:.2f}%")
+    if set_above_flag:
+        reason += ",beesc_disabled"
+    reason += ")"
+    return True, new_sl, reason
+
 # ═══════════════════════════════════════════════════════════════
+
 
 
 # ════════════════════════════════════════════════════════════════
@@ -6110,8 +6315,10 @@ def _advance(pos, ad, to_ci, partial_cb=None):
         fi = cidx - ad.feat_start
 
         # ══ [BREAKEVEN ESCAPE — Price Trigger] ══
+        # [Signal-SL] skip BEEsc if SL already above (Signal-SL took priority)
         if (getattr(CFG, 'BREAKEVEN_ESCAPE_ENABLED', False)
                 and not getattr(pos, '_be_esc_done', False)
+                and not getattr(pos, '_signal_sl_above_beesc', False)
                 and pos.sl_dist_initial > 0):
             _be_trig, _be_rsn = _should_breakeven_escape(
                 ad, cidx, float(p), sig.action,
@@ -6805,6 +7012,35 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
                 open_pos[sig.symbol], sig, assets[sig.symbol],
                 int(sig.close_idx)
             )
+
+        # ══ [SIGNAL-SL] رفع SL من إشارة جديدة (نفس الاتجاه) ══
+        if (getattr(CFG, 'SIGNAL_BASED_SL_ENABLED', False)
+                and sig.symbol in open_pos):
+            try:
+                _ssl_pos = open_pos[sig.symbol]
+                _ssl_ad = assets.get(sig.symbol)
+                _ssl_ci = int(sig.close_idx)
+                if _ssl_ad is not None and 0 <= _ssl_ci < len(_ssl_ad.closes):
+                    _ssl_price = float(_ssl_ad.closes[_ssl_ci])
+                else:
+                    _ssl_price = float(sig.price)
+                _ssl_ok, _ssl_new, _ssl_rsn = _maybe_update_sl_from_signal(
+                    _ssl_pos, sig, _ssl_price, _ssl_ad
+                )
+                if _ssl_ok:
+                    _ssl_old = float(_ssl_pos.trail_sl)
+                    _ssl_pos.trail_sl = _ssl_new
+                    log.debug(
+                        f"[Signal-SL-BT] {sig.symbol} {sig.action} "
+                        f"SL {_ssl_old:.6f}->{_ssl_new:.6f} ({_ssl_rsn})"
+                    )
+                elif VERBOSE:
+                    log.debug(
+                        f"[Signal-SL-BT] {sig.symbol} {sig.action} "
+                        f"rejected: {_ssl_rsn}"
+                    )
+            except Exception as _ssl_e:
+                log.debug(f"[Signal-SL-BT] {sig.symbol} error: {_ssl_e}")
 
         # ══ [BREAKEVEN ESCAPE — Signal Trigger] ══
         if (getattr(CFG, 'BREAKEVEN_ESCAPE_ENABLED', False)
@@ -17590,62 +17826,84 @@ def run_live(cfg, exchange):
 
                 # ── Trailing SL (dynamic σ-scaled) ──
                 # [GATE] يُشغّل Trailing فقط إذا كان TRAIL_ENABLED=True.
-                # إذا كان False، لا يتحرك SL أبداً بعد الدخول (يبقى كما
-                # وُضع عند الدخول). هذا مطابق لسلوك الباكتيست.
+                # [SUB-BAR-GATE] عند TRAIL_USE_SUBBARS_ONLY=True:
+                #   • SL يُحدَّث فقط عند إغلاق sub-bar جديد
+                #   • peak يُحسب من _hi/_lo (sub-bar) فقط، بلا ticker
+                #   • مطابق تماماً لسلوك الـ backtest
                 if not ex and getattr(CFG, 'TRAIL_ENABLED', True):
-                    entry_px = float(pos['entry'])
-                    _sl_before = float(pos['sl'])
-                    _td = float(pos.get('trail_dist_frac', CFG.TRAIL_DISTANCE))
-                    # ══ [FIX 1] Activation at R-multiple of initial SL ══
-                    _sl_dist_init = float(pos.get('sl_dist_initial', 0) or 0)
-                    _sl_frac_init = (_sl_dist_init / entry_px
-                                     if entry_px > 0 and _sl_dist_init > 0
-                                     else 0.01)
-                    _act_at_r = float(getattr(CFG, 'TRAIL_ACTIVATE_AT_R', 1.0))
-                    _ta = _sl_frac_init * _act_at_r
-
-                    # Update peak from live price and compute MFE
-                    # [PARITY] use _hi/_lo (from 1m candles via
-                    # _lv_update_extremes) to match backtest bar highs/lows.
-                    # Falls back to ticker if extremes are missing.
-                    if pos['action'] == "BUY":
-                        cur_peak = float(pos.get('peak_price', entry_px))
-                        _cand_peak = max(
-                            float(price),
-                            float(pos.get('_hi', entry_px)),
-                        )
-                        if _cand_peak > cur_peak:
-                            pos['peak_price'] = _cand_peak
-                            cur_peak = _cand_peak
-                        _mfe = (cur_peak - entry_px) / entry_px
-                    else:
-                        cur_peak = float(pos.get('peak_price', entry_px))
-                        _cand_peak = min(
-                            float(price),
-                            float(pos.get('_lo', entry_px)),
-                        )
-                        if _cand_peak < cur_peak or cur_peak == entry_px:
-                            pos['peak_price'] = _cand_peak
-                            cur_peak = _cand_peak
-                        _mfe = (entry_px - cur_peak) / entry_px
-
-                    if _mfe >= _ta:
+                    _use_subbars_trail = bool(getattr(
+                        CFG, 'TRAIL_USE_SUBBARS_ONLY', False))
+                    _allow_trail_update = True
+                    _cur_sub_ts_t = 0
+                    if _use_subbars_trail:
+                        _cur_sub_ts_t = int(pos.get('_last_sub_ts', 0))
+                        _last_upd_ts_t = int(
+                            pos.get('_trail_last_update_sub_ts', -1))
+                        if _cur_sub_ts_t == 0 or _cur_sub_ts_t <= _last_upd_ts_t:
+                            _allow_trail_update = False
+                    
+                    if _allow_trail_update:
+                        entry_px = float(pos['entry'])
+                        _sl_before = float(pos['sl'])
+                        _td = float(pos.get('trail_dist_frac',
+                                            CFG.TRAIL_DISTANCE))
+                        _sl_dist_init = float(
+                            pos.get('sl_dist_initial', 0) or 0)
+                        _sl_frac_init = (_sl_dist_init / entry_px
+                                         if entry_px > 0 and _sl_dist_init > 0
+                                         else 0.01)
+                        _act_at_r = float(getattr(
+                            CFG, 'TRAIL_ACTIVATE_AT_R', 1.0))
+                        _ta = _sl_frac_init * _act_at_r
+                        
                         if pos['action'] == "BUY":
-                            new_sl = cur_peak * (1.0 - _td)
-                            if new_sl > pos['sl']:
-                                pos['sl'] = new_sl
+                            cur_peak = float(pos.get('peak_price', entry_px))
+                            if _use_subbars_trail:
+                                _cand_peak = float(
+                                    pos.get('_hi', entry_px) or entry_px)
+                            else:
+                                _cand_peak = max(
+                                    float(price),
+                                    float(pos.get('_hi', entry_px)),
+                                )
+                            if _cand_peak > cur_peak:
+                                pos['peak_price'] = _cand_peak
+                                cur_peak = _cand_peak
+                            _mfe = (cur_peak - entry_px) / entry_px
                         else:
-                            new_sl = cur_peak * (1.0 + _td)
-                            if new_sl < pos['sl']:
-                                pos['sl'] = new_sl
-
-                    # ══ [LAYER 7] If SL moved, sync protective orders ══
-                    if (getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True)
-                            and abs(float(pos['sl']) - _sl_before) > 1e-12):
-                        try:
-                            _sync_protective_orders(exchange, sym, pos)
-                        except Exception as _e:
-                            log.debug(f"[Prot] {sym} sync error: {_e}")
+                            cur_peak = float(pos.get('peak_price', entry_px))
+                            if _use_subbars_trail:
+                                _cand_peak = float(
+                                    pos.get('_lo', entry_px) or entry_px)
+                            else:
+                                _cand_peak = min(
+                                    float(price),
+                                    float(pos.get('_lo', entry_px) or price),
+                                )
+                            if _cand_peak < cur_peak or cur_peak == entry_px:
+                                pos['peak_price'] = _cand_peak
+                                cur_peak = _cand_peak
+                            _mfe = (entry_px - cur_peak) / entry_px
+                        
+                        if _mfe >= _ta:
+                            if pos['action'] == "BUY":
+                                new_sl = cur_peak * (1.0 - _td)
+                                if new_sl > pos['sl']:
+                                    pos['sl'] = new_sl
+                            else:
+                                new_sl = cur_peak * (1.0 + _td)
+                                if new_sl < pos['sl']:
+                                    pos['sl'] = new_sl
+                        
+                        if (getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True)
+                                and abs(float(pos['sl']) - _sl_before) > 1e-12):
+                            try:
+                                _sync_protective_orders(exchange, sym, pos)
+                            except Exception as _e:
+                                log.debug(f"[Prot] {sym} sync error: {_e}")
+                        
+                        if _use_subbars_trail:
+                            pos['_trail_last_update_sub_ts'] = _cur_sub_ts_t
 
                 # ── [FIX 4] Partial TP ──
                 if (not ex
@@ -18098,6 +18356,60 @@ def run_live(cfg, exchange):
                                     _lv_save_state(state_file, open_pos_live)
                                 except Exception:
                                     pass
+
+                # ══ [SIGNAL-SL] رفع SL من إشارة جديدة (نفس الاتجاه) ══
+                if (getattr(CFG, 'SIGNAL_BASED_SL_ENABLED', False)
+                        and 'assets' in dir() and assets):
+                    for _ssl_sig in sigs:
+                        _ssl_sym = _ssl_sig.symbol
+                        if _ssl_sym not in open_pos_live:
+                            continue
+                        _ssl_key = int(_ssl_sig.close_idx)
+                        if _ssl_key <= _SIGNAL_SL_LAST_PROCESSED.get(_ssl_sym, -1):
+                            continue
+                        _ssl_pos = open_pos_live[_ssl_sym]
+                        _ssl_ad = assets.get(_ssl_sym)
+                        if _ssl_ad is None:
+                            continue
+                        _SIGNAL_SL_LAST_PROCESSED[_ssl_sym] = _ssl_key
+                        try:
+                            _ssl_ci_now = max(0, len(_ssl_ad.closes) - 2)
+                            _ssl_price = (
+                                float(_ssl_ad.closes[_ssl_ci_now])
+                                if 0 <= _ssl_ci_now < len(_ssl_ad.closes)
+                                else float(_ssl_sig.price))
+                            _ssl_ok, _ssl_new, _ssl_rsn = _maybe_update_sl_from_signal(
+                                _ssl_pos, _ssl_sig, _ssl_price, _ssl_ad
+                            )
+                            if _ssl_ok:
+                                _ssl_old = float(_ssl_pos.get('sl', 0))
+                                _ssl_pos['sl'] = _ssl_new
+                                _ssl_pos['_signal_sl_last_reason'] = _ssl_rsn
+                                log.info(
+                                    f"[Signal-SL-LV] {_ssl_sym} "
+                                    f"{_ssl_sig.action} SL "
+                                    f"{_ssl_old:.6f}->{_ssl_new:.6f} "
+                                    f"({_ssl_rsn})"
+                                )
+                                try:
+                                    if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
+                                        _sync_protective_orders(
+                                            exchange, _ssl_sym, _ssl_pos)
+                                except Exception as _ssl_e:
+                                    log.debug(
+                                        f"[Signal-SL-LV] {_ssl_sym} "
+                                        f"prot sync: {_ssl_e}")
+                                try:
+                                    _lv_save_state(state_file, open_pos_live)
+                                except Exception:
+                                    pass
+                            elif VERBOSE:
+                                log.debug(
+                                    f"[Signal-SL-LV] {_ssl_sym} "
+                                    f"{_ssl_sig.action} rejected: {_ssl_rsn}")
+                        except Exception as _ssl_e:
+                            log.debug(
+                                f"[Signal-SL-LV] {_ssl_sym} error: {_ssl_e}")
 
                 for sig in reversed(sigs):
                     sym = sig.symbol
@@ -19003,6 +19315,21 @@ def main():
                         "(default 0.3)")
     p.add_argument("--opp-tp-max-age-bars", type=int, default=None,
                    help="Max age of opposite signal in bars (default 4)")
+    p.add_argument("--signal-based-sl", action="store_true",
+                   help="[Signal-SL] Raise SL when a same-direction new signal "
+                        "appears on an open position (ratchet-only, never widens)")
+    p.add_argument("--signal-sl-score-ratio", type=float, default=None,
+                   help="[Signal-SL] New signal score must be >= this × original "
+                        "score (default 1.5)")
+    p.add_argument("--signal-sl-min-improvement", type=float, default=None,
+                   help="[Signal-SL] Minimum SL improvement ratio "
+                        "(default 0.005 = 0.5%%)")
+    p.add_argument("--signal-sl-protect-profit", action="store_true",
+                   help="[Signal-SL] Only accept SL updates that move above "
+                        "entry (BUY) / below entry (SELL)")
+    p.add_argument("--signal-sl-clamp-beesc", action="store_true",
+                   help="[Signal-SL] Clamp SL below BEEsc level (default: "
+                        "allow crossing — BEEsc disabled when crossed)")
     # ══ [MFAL] CLI args ══
     p.add_argument("--mfal", action="store_true",
                    help="Enable Multi-Factor Adaptive Leverage")
@@ -19232,6 +19559,15 @@ def main():
         CFG.MAX_ABS_NOTIONAL = float(args.max_notional)
     if args.no_dynamic_trail:
         CFG.TRAIL_DYNAMIC = False
+        # [SUB-BAR-GATE] Auto-enable sub-bar-only trailing in live/testnet
+        # so live matches backtest (SL updates once per sub-bar close).
+        if CFG.mode in ('live', 'testnet') and not CFG.TRAIL_USE_SUBBARS_ONLY:
+            CFG.TRAIL_USE_SUBBARS_ONLY = True
+            log.info(
+                "[Trail] --no-dynamic-trail in live → "
+                "TRAIL_USE_SUBBARS_ONLY=True (SL updates only on "
+                "sub-bar close, parity with backtest)"
+            )
     if args.no_trailing:
         CFG.TRAIL_ENABLED = False
         log.info("[Trail] Trailing Stop Loss DISABLED — SL is fixed")
@@ -19517,6 +19853,29 @@ def main():
                  f"max_age={CFG.OPP_TP_MAX_AGE_BARS}")
     else:
         log.info("[OppTP] Opposite-Signal Adaptive TP DISABLED")
+
+    if getattr(args, "signal_based_sl", False):
+        CFG.SIGNAL_BASED_SL_ENABLED = True
+        log.info("[Signal-SL] ENABLED — same-direction signals may raise SL "
+                 "(ratchet-only, event-driven)")
+        if args.signal_sl_score_ratio is not None:
+            CFG.SIGNAL_SL_MIN_SCORE_RATIO = float(args.signal_sl_score_ratio)
+            log.info(f"[Signal-SL] score_ratio = {CFG.SIGNAL_SL_MIN_SCORE_RATIO}")
+        if args.signal_sl_min_improvement is not None:
+            CFG.SIGNAL_SL_MIN_IMPROVEMENT = float(args.signal_sl_min_improvement)
+            log.info(f"[Signal-SL] min_improvement = "
+                     f"{CFG.SIGNAL_SL_MIN_IMPROVEMENT*100:.2f}%")
+        if args.signal_sl_protect_profit:
+            CFG.SIGNAL_SL_PROTECT_PROFIT_ONLY = True
+            log.info("[Signal-SL] protect_profit = ON")
+        if args.signal_sl_clamp_beesc:
+            CFG.SIGNAL_SL_ALLOW_ABOVE_BEESC = False
+            log.info("[Signal-SL] BEEsc clamp = ON (SL cannot cross BEEsc)")
+        else:
+            log.info("[Signal-SL] BEEsc clamp = OFF "
+                     "(SL may cross BEEsc → BEEsc disabled for that trade)")
+    else:
+        log.info("[Signal-SL] Disabled (use --signal-based-sl to enable)")
     # ══ [TRADE FILTER] ══
     if args.filter:
         CFG.FILTER_ENABLED = True
