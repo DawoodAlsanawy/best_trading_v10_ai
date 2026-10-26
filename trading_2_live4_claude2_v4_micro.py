@@ -1,3 +1,4 @@
+# [TRAIL-SUBBARS-ONLY-APPLIED]
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -192,7 +193,7 @@ class Config:
     EMA_SPAN: int = 200; ATR_PERIOD: int = 14
 
     W_CURV: float=1.0; W_VOL: float=1.0; W_ENTROPY: float=2.0
-    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=0
+    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=-3
 
     CURV_THRESHOLD: float=0.01; DH_ENTROPY_THRESHOLD: float=0.005
     DH_HMM_UPPER: float=0.01;  DH_HMM_LOWER: float=-0.01
@@ -17645,62 +17646,84 @@ def run_live(cfg, exchange):
 
                 # ── Trailing SL (dynamic σ-scaled) ──
                 # [GATE] يُشغّل Trailing فقط إذا كان TRAIL_ENABLED=True.
-                # إذا كان False، لا يتحرك SL أبداً بعد الدخول (يبقى كما
-                # وُضع عند الدخول). هذا مطابق لسلوك الباكتيست.
+                # [SUB-BAR-GATE] عند TRAIL_USE_SUBBARS_ONLY=True:
+                #   • SL يُحدَّث فقط عند إغلاق sub-bar جديد
+                #   • peak يُحسب من _hi/_lo (sub-bar) فقط، بلا ticker
+                #   • مطابق تماماً لسلوك الـ backtest
                 if not ex and getattr(CFG, 'TRAIL_ENABLED', True):
-                    entry_px = float(pos['entry'])
-                    _sl_before = float(pos['sl'])
-                    _td = float(pos.get('trail_dist_frac', CFG.TRAIL_DISTANCE))
-                    # ══ [FIX 1] Activation at R-multiple of initial SL ══
-                    _sl_dist_init = float(pos.get('sl_dist_initial', 0) or 0)
-                    _sl_frac_init = (_sl_dist_init / entry_px
-                                     if entry_px > 0 and _sl_dist_init > 0
-                                     else 0.01)
-                    _act_at_r = float(getattr(CFG, 'TRAIL_ACTIVATE_AT_R', 1.0))
-                    _ta = _sl_frac_init * _act_at_r
-
-                    # Update peak from live price and compute MFE
-                    # [PARITY] use _hi/_lo (from 1m candles via
-                    # _lv_update_extremes) to match backtest bar highs/lows.
-                    # Falls back to ticker if extremes are missing.
-                    if pos['action'] == "BUY":
-                        cur_peak = float(pos.get('peak_price', entry_px))
-                        _cand_peak = max(
-                            float(price),
-                            float(pos.get('_hi', entry_px)),
-                        )
-                        if _cand_peak > cur_peak:
-                            pos['peak_price'] = _cand_peak
-                            cur_peak = _cand_peak
-                        _mfe = (cur_peak - entry_px) / entry_px
-                    else:
-                        cur_peak = float(pos.get('peak_price', entry_px))
-                        _cand_peak = min(
-                            float(price),
-                            float(pos.get('_lo', entry_px)),
-                        )
-                        if _cand_peak < cur_peak or cur_peak == entry_px:
-                            pos['peak_price'] = _cand_peak
-                            cur_peak = _cand_peak
-                        _mfe = (entry_px - cur_peak) / entry_px
-
-                    if _mfe >= _ta:
+                    _use_subbars_trail = bool(getattr(
+                        CFG, 'TRAIL_USE_SUBBARS_ONLY', False))
+                    _allow_trail_update = True
+                    _cur_sub_ts_t = 0
+                    if _use_subbars_trail:
+                        _cur_sub_ts_t = int(pos.get('_last_sub_ts', 0))
+                        _last_upd_ts_t = int(
+                            pos.get('_trail_last_update_sub_ts', -1))
+                        if _cur_sub_ts_t == 0 or _cur_sub_ts_t <= _last_upd_ts_t:
+                            _allow_trail_update = False
+                    
+                    if _allow_trail_update:
+                        entry_px = float(pos['entry'])
+                        _sl_before = float(pos['sl'])
+                        _td = float(pos.get('trail_dist_frac',
+                                            CFG.TRAIL_DISTANCE))
+                        _sl_dist_init = float(
+                            pos.get('sl_dist_initial', 0) or 0)
+                        _sl_frac_init = (_sl_dist_init / entry_px
+                                         if entry_px > 0 and _sl_dist_init > 0
+                                         else 0.01)
+                        _act_at_r = float(getattr(
+                            CFG, 'TRAIL_ACTIVATE_AT_R', 1.0))
+                        _ta = _sl_frac_init * _act_at_r
+                        
                         if pos['action'] == "BUY":
-                            new_sl = cur_peak * (1.0 - _td)
-                            if new_sl > pos['sl']:
-                                pos['sl'] = new_sl
+                            cur_peak = float(pos.get('peak_price', entry_px))
+                            if _use_subbars_trail:
+                                _cand_peak = float(
+                                    pos.get('_hi', entry_px) or entry_px)
+                            else:
+                                _cand_peak = max(
+                                    float(price),
+                                    float(pos.get('_hi', entry_px)),
+                                )
+                            if _cand_peak > cur_peak:
+                                pos['peak_price'] = _cand_peak
+                                cur_peak = _cand_peak
+                            _mfe = (cur_peak - entry_px) / entry_px
                         else:
-                            new_sl = cur_peak * (1.0 + _td)
-                            if new_sl < pos['sl']:
-                                pos['sl'] = new_sl
-
-                    # ══ [LAYER 7] If SL moved, sync protective orders ══
-                    if (getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True)
-                            and abs(float(pos['sl']) - _sl_before) > 1e-12):
-                        try:
-                            _sync_protective_orders(exchange, sym, pos)
-                        except Exception as _e:
-                            log.debug(f"[Prot] {sym} sync error: {_e}")
+                            cur_peak = float(pos.get('peak_price', entry_px))
+                            if _use_subbars_trail:
+                                _cand_peak = float(
+                                    pos.get('_lo', entry_px) or entry_px)
+                            else:
+                                _cand_peak = min(
+                                    float(price),
+                                    float(pos.get('_lo', entry_px) or price),
+                                )
+                            if _cand_peak < cur_peak or cur_peak == entry_px:
+                                pos['peak_price'] = _cand_peak
+                                cur_peak = _cand_peak
+                            _mfe = (entry_px - cur_peak) / entry_px
+                        
+                        if _mfe >= _ta:
+                            if pos['action'] == "BUY":
+                                new_sl = cur_peak * (1.0 - _td)
+                                if new_sl > pos['sl']:
+                                    pos['sl'] = new_sl
+                            else:
+                                new_sl = cur_peak * (1.0 + _td)
+                                if new_sl < pos['sl']:
+                                    pos['sl'] = new_sl
+                        
+                        if (getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True)
+                                and abs(float(pos['sl']) - _sl_before) > 1e-12):
+                            try:
+                                _sync_protective_orders(exchange, sym, pos)
+                            except Exception as _e:
+                                log.debug(f"[Prot] {sym} sync error: {_e}")
+                        
+                        if _use_subbars_trail:
+                            pos['_trail_last_update_sub_ts'] = _cur_sub_ts_t
 
                 # ── [FIX 4] Partial TP ──
                 if (not ex
@@ -19304,6 +19327,15 @@ def main():
         CFG.MAX_ABS_NOTIONAL = float(args.max_notional)
     if args.no_dynamic_trail:
         CFG.TRAIL_DYNAMIC = False
+        # [SUB-BAR-GATE] Auto-enable sub-bar-only trailing in live/testnet
+        # so live matches backtest (SL updates once per sub-bar close).
+        if CFG.mode in ('live', 'testnet') and not CFG.TRAIL_USE_SUBBARS_ONLY:
+            CFG.TRAIL_USE_SUBBARS_ONLY = True
+            log.info(
+                "[Trail] --no-dynamic-trail in live → "
+                "TRAIL_USE_SUBBARS_ONLY=True (SL updates only on "
+                "sub-bar close, parity with backtest)"
+            )
     if args.no_trailing:
         CFG.TRAIL_ENABLED = False
         log.info("[Trail] Trailing Stop Loss DISABLED — SL is fixed")

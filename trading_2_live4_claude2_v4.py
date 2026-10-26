@@ -1630,7 +1630,7 @@ _SUBBARS_TF_MAP = {
     "30m": "5m",   # 6 sub-bars
     "1h":  "5m",   # 12 sub-bars
     "2h":  "15m",  # 8 sub-bars
-    "4h":  "5m",  # 16 sub-bars
+    "4h":  "15m",  # 16 sub-bars
     "6h":  "30m",  # 12 sub-bars
     "8h":  "30m",  # 16 sub-bars
     "12h": "1h",   # 12 sub-bars

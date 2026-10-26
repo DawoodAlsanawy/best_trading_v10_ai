@@ -34,7 +34,7 @@ import ast, os, shutil, sys
 from datetime import datetime
 
 MARKER = "# [TRAIL-SUBBARS-ONLY-APPLIED]"
-DEFAULT_TARGET = "trading_2_live4_claude2_v4.py"
+DEFAULT_TARGET = "trading_2_live4_claude2_v4_micro.py"
 VERBOSE = False
 
 
