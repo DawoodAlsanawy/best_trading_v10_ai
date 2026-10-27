@@ -959,7 +959,7 @@ class Config:
     LIVE_GAP_HEAL_PER_CYCLE: int = 5
     LIVE_KEEPALIVE_S: float = 5.0             # watcher monitoring cadence during retrain
     REV_UNIV_BACKGROUND: bool = True          # universe refresh in a background thread
-    UNIVERSE_REFRESH_S: float = 14400.0
+    UNIVERSE_REFRESH_S: float = 100000000 # 604800.0  # 7 أيام
     UNIVERSE_RETRY_S: float = 600.0
     # ══ [REV-FIX v3] Maker Ladder (Phase 1) - opt-in ══
     REV_LADDER_ENABLED: bool = False
@@ -1414,7 +1414,7 @@ def _default_assets():
         "SOL/USDT",    # سولانا - رافعة 50x
 #        "XRP/USDT",    # ريبل - رافعة 50x
 #        "DOGE/USDT",   # دوجكوين - رافعة 50x
-        "ADA/USDT",    # كاردانو - رافعة 50x
+#        "ADA/USDT",    # كاردانو - رافعة 50x
         "AVAX/USDT",   # أفالانش - رافعة 50x
         "LINK/USDT",   # تشين لينك - رافعة 50x
         "DOT/USDT",    # بولكادوت - رافعة 50x
@@ -1463,7 +1463,7 @@ def _default_assets():
 #        "ONE/USDT",    # هارموني - رافعة 50x
         "IOTA/USDT",   # أيوتا - رافعة 50x
         "NEO/USDT",    # نيو - رافعة 50x
-        "KAVA/USDT",   # كافا - رافعة 50x
+#        "KAVA/USDT",   # كافا - رافعة 50x
         "CRV/USDT",    # كورف - رافعة 50x
         "SNX/USDT",    # سينثيتيكس - رافعة 50x
         "COMP/USDT",   # كومباووند - رافعة 50x
@@ -1520,7 +1520,7 @@ def _default_assets():
 #        "REZ/USDT",    # رينزو - رافعة 50x
         "BB/USDT",     # باونس بيت - رافعة 50x
         "IO/USDT",     # آي أو نت - رافعة 50x
-        "ZK/USDT",     # zkSync - رافعة 50x
+#        "ZK/USDT",     # zkSync - رافعة 50x
         "LISTA/USDT",  # ليستا - رافعة 50x
         "TAIKO/USDT",  # تايكو - رافعة 50x
         "ZRO/USDT",    # لاير زيرو - رافعة 50x

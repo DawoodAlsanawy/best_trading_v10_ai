@@ -855,7 +855,7 @@ class Config:
     SELL_MIN_ZDEV: float = 1.5              # independent from BUY
     SELL_GAUGE_PCT: float = 0.95            # current default
     SELL_REQUIRE_EMA_DOWN: bool = False     # trend-aligned SELL
-    SELL_MAJOR_ONLY: bool = False           # only BTC/ETH/SOL/BNB
+    SELL_MAJOR_ONLY: bool = False           # only BTC/comETH/SOL/BNB
     SELL_MIN_ATR_FRAC: float = 0.0          # 0 = no gate
     SELL_MAJOR_PAIRS: Tuple = ("BTC/USDT", "ETH/USDT",
                                 "SOL/USDT", "BNB/USDT")
@@ -924,7 +924,7 @@ class Config:
     LIVE_GAP_HEAL_PER_CYCLE: int = 5
     LIVE_KEEPALIVE_S: float = 5.0             # watcher monitoring cadence during retrain
     REV_UNIV_BACKGROUND: bool = True          # universe refresh in a background thread
-    UNIVERSE_REFRESH_S: float = 14400.0
+    UNIVERSE_REFRESH_S: float = 100000000 # 604800.0  # 7 أيام
     UNIVERSE_RETRY_S: float = 600.0
     # ══ [REV-FIX v3] Maker Ladder (Phase 1) - opt-in ══
     REV_LADDER_ENABLED: bool = False
@@ -1374,7 +1374,7 @@ def _default_assets():
     return [
         # --- الطبقة الأولى: أعلى سيولة ورافعة (75x-125x) ---
         "BTC/USDT",    # بيتكوين - رافعة 125x
-        "ETH/USDT",    # إيثيريوم - رافعة 100x
+#        "ETH/USDT",    # إيثيريوم - رافعة 100x
         "BNB/USDT",    # بيнанс كوين - رافعة 75x
         "SOL/USDT",    # سولانا - رافعة 50x
         "XRP/USDT",    # ريبل - رافعة 50x
@@ -1431,7 +1431,7 @@ def _default_assets():
         "KAVA/USDT",   # كافا - رافعة 50x
         "CRV/USDT",    # كورف - رافعة 50x
         "SNX/USDT",    # سينثيتيكس - رافعة 50x
-        "COMP/USDT",   # كومباووند - رافعة 50x
+#        "COMP/USDT",   # كومباووند - رافعة 50x
 #        "MKR/USDT",    # ميكر - رافعة 50x
         "SUSHI/USDT",  # سوشي سواب - رافعة 50x
         "YFI/USDT",    # يرن فايننس - رافعة 50x
@@ -1443,7 +1443,7 @@ def _default_assets():
         "BAND/USDT",   # باند بروتوكول - رافعة 50x
         "NMR/USDT",    # نوميرا - رافعة 50x
 #        "STORJ/USDT",  # ستورج - رافعة 50x
-        "KSM/USDT",    # كوساما - رافعة 50x
+#        "KSM/USDT",    # كوساما - رافعة 50x
 #        "WAVES/USDT",  # ويفز - رافعة 50x
         "ZEN/USDT",    # هوريزن - رافعة 50x
 #        "ICP/USDT",    # إنترنت كمبيوتر - رافعة 50x
@@ -1460,7 +1460,7 @@ def _default_assets():
         "CYBER/USDT",  # سايبر كونكت - رافعة 50x
         "ARKM/USDT",   # أركهام - رافعة 50x
         "WLD/USDT",    # وورلد كوين - رافعة 50x
-        "BLUR/USDT",   # بلور - رافعة 50x
+#        "BLUR/USDT",   # بلور - رافعة 50x
         "ID/USDT",     # سبيس آي دي - رافعة 50x
         "EDU/USDT",    # إيدي - رافعة 50x
 #        "PEPE/USDT",   # بيبي - رافعة 50x
@@ -1487,7 +1487,7 @@ def _default_assets():
         "IO/USDT",     # آي أو نت - رافعة 50x
         "ZK/USDT",     # zkSync - رافعة 50x
         "LISTA/USDT",  # ليستا - رافعة 50x
-        "TAIKO/USDT",  # تايكو - رافعة 50x
+#        "TAIKO/USDT",  # تايكو - رافعة 50x
         "ZRO/USDT",    # لاير زيرو - رافعة 50x
         "G/USDT",      # جي - رافعة 50x
         "RARE/USDT",   # رير - رافعة 50x
