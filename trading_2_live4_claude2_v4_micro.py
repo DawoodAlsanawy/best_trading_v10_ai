@@ -1377,7 +1377,7 @@ def _default_assets():
         "ETH/USDT",    # إيثيريوم - رافعة 100x
         "BNB/USDT",    # بيнанс كوين - رافعة 75x
         "SOL/USDT",    # سولانا - رافعة 50x
-#        "XRP/USDT",    # ريبل - رافعة 50x
+        "XRP/USDT",    # ريبل - رافعة 50x
 #        "DOGE/USDT",   # دوجكوين - رافعة 50x
         "ADA/USDT",    # كاردانو - رافعة 50x
         "AVAX/USDT",   # أفالانش - رافعة 50x
