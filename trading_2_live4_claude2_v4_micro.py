@@ -698,7 +698,7 @@ class Config:
     BREAKEVEN_ESCAPE_PRICE_MOVE_R: float = 0.30
     BREAKEVEN_ESCAPE_REQUIRE_EMA_FLIP: bool = True
     BREAKEVEN_ESCAPE_EMA_LOOKBACK: int = 50
-    BREAKEVEN_ESCAPE_SIGNAL_ENABLED: bool = True
+    BREAKEVEN_ESCAPE_SIGNAL_ENABLED: bool = False
     BREAKEVEN_ESCAPE_SIGNAL_MAX_AGE_BARS: int = 6
     BREAKEVEN_ESCAPE_SIGNAL_SCORE_MULT: float = 1.15
     BREAKEVEN_ESCAPE_MIN_PROFIT_R: float = 0.0
@@ -5966,6 +5966,20 @@ def _should_breakeven_escape(ad, current_ci: int, current_price: float,
         return False, "disabled"
     if entry <= 0 or sl_dist0 <= 0 or current_price <= 0:
         return False, "invalid"
+
+    # ════════════════════════════════════════════════════════════════
+    # [LOSS-ONLY-GUARD] BEEsc works ONLY in loss territory.
+    # In profit zone, protection comes from Partial TP + Trailing + TP.
+    # Without this guard, BEEsc kills genuine profits:
+    #   - Trade at +5R with opposite signal → BEEsc → close at ~entry
+    #   - Fees make it a small loss despite +5R MFE
+    # ════════════════════════════════════════════════════════════════
+    if action == "BUY" and current_price >= entry:
+        _pnl_pct = (current_price - entry) / entry * 100.0
+        return False, f"in_profit({_pnl_pct:+.2f}%)"
+    if action == "SELL" and current_price <= entry:
+        _pnl_pct = (entry - current_price) / entry * 100.0
+        return False, f"in_profit({_pnl_pct:+.2f}%)"
 
     # Trigger 1: price-based
     price_trig = False

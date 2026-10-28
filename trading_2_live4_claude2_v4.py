@@ -1,3 +1,4 @@
+# [RESCUE-EXIT-APPLIED]
 # [LIVE-PERF-FIX-APPLIED]
 # [ANALYTICS-V1-APPLIED]
 # [TRAIL-SUBBARS-ONLY-APPLIED]
@@ -428,7 +429,7 @@ class Config:
 #    SL_REF_KAPPA: float = 2.0             # SL/σ = κ × uncertainty / (1 + fric×5)
 #    SL_MIN_SIGMA: float = 1.0             # أدنى SL بوحدة σ
 #    SL_MAX_SIGMA: float = 5.0             # أقصى SL بوحدة σ
-    SL_REF_KAPPA: float = 0.8     # كان 2.0
+    SL_REF_KAPPA: float = 1.2     # كان 2.0
     SL_MIN_SIGMA: float = 3.0     # كان 1.0
     SL_MAX_SIGMA: float = 8.0     # كان 5.0
     N_HOURS: float = 24.0                 # نافذة الميزات (ساعات)
@@ -697,11 +698,11 @@ class Config:
     # When the market is confirmed reversed against our position,
     # the TP is moved to entry ± small_gain. Bounces exit flat
     # instead of a full SL loss. Zero additional risk.
-    BREAKEVEN_ESCAPE_ENABLED: bool = True
+    BREAKEVEN_ESCAPE_ENABLED: bool = False
     BREAKEVEN_ESCAPE_PRICE_MOVE_R: float = 0.30
     BREAKEVEN_ESCAPE_REQUIRE_EMA_FLIP: bool = True
     BREAKEVEN_ESCAPE_EMA_LOOKBACK: int = 50
-    BREAKEVEN_ESCAPE_SIGNAL_ENABLED: bool = True
+    BREAKEVEN_ESCAPE_SIGNAL_ENABLED: bool = False
     BREAKEVEN_ESCAPE_SIGNAL_MAX_AGE_BARS: int = 6
     BREAKEVEN_ESCAPE_SIGNAL_SCORE_MULT: float = 1.15
     BREAKEVEN_ESCAPE_MIN_PROFIT_R: float = 0.0
@@ -844,6 +845,28 @@ class Config:
     SIGNAL_SL_SAFETY_MARGIN: float = 0.001
     SIGNAL_SL_PROTECT_PROFIT_ONLY: bool = False
     SIGNAL_SL_ALLOW_ABOVE_BEESC: bool = True
+
+    # ══ [RESCUE EXIT — Loss Zone Guardian] ══
+    # Fills the "dead zone" between BEEsc trigger and SL.
+    # Math: P_rescue = P_BM × f_phys × f_time
+    #       Exit if P_rescue < max(1 - L/L_SL - margin, floor)
+    #
+    # Opt-in only: enable via --rescue-exit
+    # Behavior with flag OFF: zero overhead, zero behavior change
+    RESCUE_EXIT_ENABLED: bool = False
+    RESCUE_EXIT_MODE: str = "conservative"   # conservative | moderate | aggressive
+    RESCUE_ONLY_AFTER_BEESC: bool = True     # start rescue only after BEEsc fired
+    RESCUE_MIN_BARS_AFTER_BEESC: int = 2     # min bars in dead zone before rescue
+    RESCUE_MARGIN: float = 0.05              # safety buffer for exit rule
+    RESCUE_FLOOR: float = 0.15               # absolute P_floor (min hope to stay)
+    RESCUE_ACCEL_KAPPA: float = 0.5          # accel contribution to drift
+    RESCUE_GAUGE_KAPPA: float = 0.3          # gauge contribution to drift
+    RESCUE_PHYS_GAMMA: float = 0.5           # physics multiplier strength
+    RESCUE_PHYS_MIN: float = 0.4             # clip f_phys low
+    RESCUE_PHYS_MAX: float = 1.6             # clip f_phys high
+    RESCUE_DRIFT_HIST_BARS: int = 20         # drift estimation window
+    RESCUE_LOG_VERBOSE: bool = False         # log every rescue check
+
     # ══ [WATCH ENTRY OFFSET — dynamic, fills on touch] ══
     # الأمر يُوضع في اتجاه يواجه السعر الهابط/الصاعد، ليملأ عند أول تلامس.
     # BUY : order = tunnel + offset  (above)
@@ -1152,6 +1175,8 @@ def _trade_log_from_backtest(pos, ad, exit_px, exit_rsn, exit_ci,
             'exit_ci': int(exit_ci),
             'hold_bars': int(exit_ci - pos.entry_ci),
             'sl_dist_initial': float(getattr(pos, 'sl_dist_initial', 0.0)),
+            'be_esc_done': bool(getattr(pos, '_be_esc_done', False)),
+            'rescue_p': float(getattr(pos, '_rescue_p', -1.0)),
         }
         rec.update(_extract_entry_features_for_log(sig, ad))
         try:
@@ -5450,6 +5475,340 @@ def _analytics_update_manifest_results(mode: str, trades: List, equity: List,
 # ═══════════════════════════════════════════════════════════════
 
 
+
+# ═══════════════════════════════════════════════════════════════
+# [RESCUE EXIT] — Loss Zone Guardian
+# Fills the "dead zone" between BEEsc trigger and SL with a
+# state-based early exit.
+# ═══════════════════════════════════════════════════════════════
+
+
+def _rescue_compute_physics_z(ad, fi, action):
+    """
+    Compute physics z-score in [-1, +1] for the current bar.
+
+    Each component is normalized to [-1, +1]:
+        +1 = physics supports holding (hopeful)
+        -1 = physics against holding (breaking)
+    """
+    sign = 1.0 if action == "BUY" else -1.0
+    components = {}
+    weights = {
+        'accel':    0.30,
+        'gauge':    0.20,
+        'friction': 0.10,
+        'dfree':    0.10,
+        'dh':       0.10,
+        'ema':      0.15,
+        'score':    0.05,
+    }
+
+    # 1. Accel alignment
+    try:
+        a_now = float(ad.geodesic_accel[fi])
+        win = ad.geodesic_accel[max(0, fi - 100):fi + 1]
+        a_std = float(np.std(win)) + 1e-9
+        z = sign * a_now / a_std
+        components['accel'] = float(np.tanh(z * 0.5))
+    except Exception:
+        components['accel'] = 0.0
+
+    # 2. Gauge strength vs p90 (normalized to [-1, +1])
+    try:
+        g_now = float(ad.gauge_force[fi])
+        g_past = ad.gauge_force[max(0, fi - 100):fi + 1]
+        g_p90 = float(np.percentile(g_past, 90)) + 1e-9
+        components['gauge'] = float(np.clip(2.0 * (g_now / g_p90) - 1.0,
+                                             -1.0, 1.0))
+    except Exception:
+        components['gauge'] = 0.0
+
+    # 3. Friction (low = good) normalized
+    try:
+        f_now = float(ad.friction[fi])
+        f_past = ad.friction[max(0, fi - 100):fi + 1]
+        f_med = float(np.median(f_past)) + 1e-9
+        ratio = f_now / f_med
+        components['friction'] = float(np.clip(2.0 - 2.0 * ratio, -1.0, 1.0))
+    except Exception:
+        components['friction'] = 0.0
+
+    # 4. dF (free energy change)
+    try:
+        df_now = float(ad.dF[fi])
+        df_past = ad.dF[max(0, fi - 100):fi + 1]
+        df_std = float(np.std(df_past)) + 1e-9
+        components['dfree'] = float(np.tanh(-sign * df_now / (2.0 * df_std)))
+    except Exception:
+        components['dfree'] = 0.0
+
+    # 5. dH (entropy change)
+    try:
+        dh_now = float(ad.dH[fi])
+        dh_past = ad.dH[max(0, fi - 100):fi + 1]
+        dh_std = float(np.std(dh_past)) + 1e-9
+        components['dh'] = float(np.tanh(-sign * dh_now / (2.0 * dh_std)))
+    except Exception:
+        components['dh'] = 0.0
+
+    # 6. EMA slope
+    try:
+        if fi >= 50 and fi < len(ad.ema200):
+            slope = (float(ad.ema200[fi])
+                     - float(ad.ema200[fi - 50])) / 50.0
+            components['ema'] = float(np.tanh(sign * slope * 100.0))
+        else:
+            components['ema'] = 0.0
+    except Exception:
+        components['ema'] = 0.0
+
+    # 7. Score freshness
+    try:
+        sc_now = float(ad.score[fi]) if 0 <= fi < len(ad.score) else 0.0
+        components['score'] = float(np.tanh(sc_now * 0.3))
+    except Exception:
+        components['score'] = 0.0
+
+    z_phys = 0.0
+    for k, w in weights.items():
+        z_phys += w * components[k]
+
+    return float(np.clip(z_phys, -1.0, 1.0)), components
+
+
+def _rescue_compute_physics_multiplier(ad, fi, action):
+    """f_phys = clip(1 + gamma * z_phys, min, max)"""
+    try:
+        z_phys, _ = _rescue_compute_physics_z(ad, fi, action)
+    except Exception:
+        return 1.0
+    gamma = float(getattr(CFG, 'RESCUE_PHYS_GAMMA', 0.5))
+    lo = float(getattr(CFG, 'RESCUE_PHYS_MIN', 0.4))
+    hi = float(getattr(CFG, 'RESCUE_PHYS_MAX', 1.6))
+    return float(np.clip(1.0 + gamma * z_phys, lo, hi))
+
+
+def _rescue_compute_drift(ad, fi, action, cfg):
+    """
+    μ_eff = mean_return(window) + κ_a·sign·accel + κ_g·sign·gauge·sign(dH)
+    """
+    sign = 1.0 if action == "BUY" else -1.0
+    n_hist = int(getattr(cfg, 'RESCUE_DRIFT_HIST_BARS', 20))
+    n_hist = max(5, n_hist)
+
+    # Base drift (mean of last N log-returns)
+    r_hist = 0.0
+    try:
+        lo = max(1, fi - n_hist)
+        cl = ad.closes[lo:fi + 1]
+        if len(cl) >= 2:
+            lr = np.diff(np.log(np.maximum(cl, 1e-12)))
+            r_hist = float(np.mean(lr)) if len(lr) > 0 else 0.0
+    except Exception:
+        r_hist = 0.0
+
+    # Accel contribution
+    kappa_a = float(getattr(cfg, 'RESCUE_ACCEL_KAPPA', 0.5))
+    try:
+        accel = float(ad.geodesic_accel[fi]) if fi < len(ad.geodesic_accel) else 0.0
+    except Exception:
+        accel = 0.0
+    mu_accel = kappa_a * sign * accel
+
+    # Gauge contribution
+    kappa_g = float(getattr(cfg, 'RESCUE_GAUGE_KAPPA', 0.3))
+    try:
+        gauge = float(ad.gauge_force[fi]) if fi < len(ad.gauge_force) else 0.0
+        dH_now = float(ad.dH[fi]) if fi < len(ad.dH) else 0.0
+        dH_sign = 1.0 if dH_now >= 0 else -1.0
+    except Exception:
+        gauge = 0.0
+        dH_sign = 0.0
+    mu_gauge = kappa_g * sign * gauge * dH_sign
+
+    mu_eff = r_hist + mu_accel + mu_gauge
+    # Guard against zero drift (avoid division by zero)
+    if abs(mu_eff) < 1e-9:
+        mu_eff = 1e-9 * sign if sign != 0 else 1e-9
+    return float(mu_eff)
+
+
+def _rescue_compute_P_BM(mu, sigma, a, b):
+    """
+    Classic two-sided barrier Brownian probability:
+        P_BM = (1 - exp(-2μb/σ²)) / (1 - exp(-2μ(a+b)/σ²))
+
+    - μ: drift (log-return per bar)
+    - σ: volatility (log-return std per bar)
+    - a: log distance to entry (positive)
+    - b: log distance to SL (positive)
+    """
+    if sigma <= 1e-9:
+        return 0.5
+    sv = sigma * sigma
+    try:
+        z = -2.0 * mu / sv
+        na = z * b
+        da = z * (a + b)
+        # Numerically stable exp for small/large args
+        if abs(na) > 40.0:
+            num = 1.0 if na > 0 else -1.0
+        else:
+            num = 1.0 - np.exp(na)
+        if abs(da) > 40.0:
+            den = 1.0 if da > 0 else -1.0
+        else:
+            den = 1.0 - np.exp(da)
+        if abs(den) < 1e-9:
+            P = b / (a + b) if (a + b) > 0 else 0.5
+        else:
+            P = num / den
+        if not np.isfinite(P):
+            P = b / (a + b) if (a + b) > 0 else 0.5
+        return float(np.clip(P, 0.0, 1.0))
+    except Exception:
+        return b / (a + b) if (a + b) > 0 else 0.5
+
+
+def _rescue_compute_P(ad, fi, action, entry, sl, price, bars_held, cfg):
+    """
+    Unified rescue probability:
+        P_rescue = P_BM(μ_eff, σ, a, b) × f_phys × f_time
+    Returns dict with all components.
+    """
+    out = {
+        'P': 1.0, 'P_BM': 0.5, 'f_phys': 1.0, 'f_time': 1.0,
+        'a': 0.0, 'b': 0.0, 'mu': 0.0, 'sigma': 0.01,
+        'L_now_frac': 0.0, 'L_sl_frac': 0.01,
+        'threshold': 0.5, 'error': None,
+    }
+    try:
+        if ad is None or fi < 3 or entry <= 0 or sl <= 0 or price <= 0:
+            out['error'] = 'invalid_inputs'
+            return out
+
+        # Distances in log space
+        if action == "BUY":
+            a = float(np.log(entry / price))
+            b = float(np.log(price / sl))
+        else:
+            a = float(np.log(price / entry))
+            b = float(np.log(sl / price))
+        if a <= 0 or b <= 0:
+            out['error'] = 'invalid_distances'
+            return out
+        out['a'] = a
+        out['b'] = b
+
+        # Volatility (per bar)
+        sigma = float(ad.E_therm[fi]) if 0 <= fi < len(ad.E_therm) else 0.01
+        if not np.isfinite(sigma) or sigma <= 1e-6:
+            sigma = 0.01
+        out['sigma'] = sigma
+
+        # Drift
+        mu = _rescue_compute_drift(ad, fi, action, cfg)
+        out['mu'] = mu
+
+        # P_BM
+        P_BM = _rescue_compute_P_BM(mu, sigma, a, b)
+        out['P_BM'] = P_BM
+
+        # Physics multiplier
+        f_phys = _rescue_compute_physics_multiplier(ad, fi, action)
+        out['f_phys'] = f_phys
+
+        # Time factor
+        max_hold = int(getattr(cfg, 'MAX_HOLD_BARS', 2000))
+        try:
+            max_hold_eff = effective_bars(max_hold)
+        except Exception:
+            max_hold_eff = max_hold
+        t_rem = max(0.0, float(max_hold_eff) - float(bars_held))
+        t_need = a / (abs(mu) + 1e-9)
+        if t_rem <= 0:
+            f_time = 0.0
+        elif t_need <= 0:
+            f_time = 1.0
+        else:
+            f_time = float(min(1.0, t_rem / t_need))
+        out['f_time'] = f_time
+
+        # Final P
+        P = float(np.clip(P_BM * f_phys * f_time, 0.0, 1.0))
+        out['P'] = P
+
+        # Loss fractions
+        L_now_frac = abs(entry - price) / entry
+        L_sl_frac = abs(entry - sl) / entry
+        out['L_now_frac'] = float(L_now_frac)
+        out['L_sl_frac'] = float(max(L_sl_frac, 1e-9))
+
+        # Threshold
+        margin = float(getattr(cfg, 'RESCUE_MARGIN', 0.05))
+        floor = float(getattr(cfg, 'RESCUE_FLOOR', 0.15))
+        th_math = 1.0 - L_now_frac / max(L_sl_frac, 1e-9) - margin
+        th = max(th_math, floor)
+        out['threshold'] = float(np.clip(th, 0.0, 1.0))
+
+        return out
+    except Exception as e:
+        out['error'] = f'exception:{e}'
+        return out
+
+
+def _rescue_check(pos, ad, current_ci, current_fi, bars_held,
+                  be_esc_done, cfg):
+    """
+    Main decision function.
+    Returns (should_exit: bool, reason: str, info: dict).
+    """
+    if not getattr(cfg, 'RESCUE_EXIT_ENABLED', False):
+        return False, 'disabled', {}
+    if not getattr(cfg, 'RESCUE_ONLY_AFTER_BEESC', True):
+        pass  # allow rescue even without BEEsc
+    elif not be_esc_done:
+        return False, 'beesc_not_done', {}
+    if ad is None:
+        return False, 'no_data', {}
+    if bars_held < int(getattr(cfg, 'RESCUE_MIN_BARS_AFTER_BEESC', 2)):
+        return False, 'too_early', {}
+    if current_fi < 3 or current_fi >= len(ad.score):
+        return False, 'bad_index', {}
+
+    try:
+        entry = float(pos.get('entry') if isinstance(pos, dict)
+                      else pos.entry_px)
+        sl = float(pos.get('sl') if isinstance(pos, dict)
+                   else pos.trail_sl)
+        action = str(pos.get('action') if isinstance(pos, dict)
+                     else pos.signal.action)
+        price = float(ad.closes[current_ci])
+        tp = float(pos.get('tp1') if isinstance(pos, dict)
+                   else pos.signal.tp1)
+    except Exception as e:
+        return False, f'extract_error:{e}', {}
+
+    info = _rescue_compute_P(ad, current_fi, action, entry, sl, price,
+                             bars_held, cfg)
+    if info.get('error'):
+        return False, f"calc_error:{info['error']}", info
+
+    P = float(info['P'])
+    th = float(info['threshold'])
+    L_now = info['L_now_frac']
+    L_sl = info['L_sl_frac']
+
+    if P < th:
+        return True, (f"Rescue(P={P:.2f}<th={th:.2f}, "
+                      f"L={L_now*100:.1f}%/{L_sl*100:.1f}%, "
+                      f"a={info['a']:.4f}, b={info['b']:.4f}, "
+                      f"μ={info['mu']:.4f})"), info
+
+    return False, 'ok', info
+
+
+
 def build_signals(assets, mode="backtest"):
     """
     محرك استشعار الإشارات الكمي:
@@ -5998,6 +6357,20 @@ def _should_breakeven_escape(ad, current_ci: int, current_price: float,
         return False, "disabled"
     if entry <= 0 or sl_dist0 <= 0 or current_price <= 0:
         return False, "invalid"
+
+    # ════════════════════════════════════════════════════════════════
+    # [LOSS-ONLY-GUARD] BEEsc works ONLY in loss territory.
+    # In profit zone, protection comes from Partial TP + Trailing + TP.
+    # Without this guard, BEEsc kills genuine profits:
+    #   - Trade at +5R with opposite signal → BEEsc → close at ~entry
+    #   - Fees make it a small loss despite +5R MFE
+    # ════════════════════════════════════════════════════════════════
+    if action == "BUY" and current_price >= entry:
+        _pnl_pct = (current_price - entry) / entry * 100.0
+        return False, f"in_profit({_pnl_pct:+.2f}%)"
+    if action == "SELL" and current_price <= entry:
+        _pnl_pct = (entry - current_price) / entry * 100.0
+        return False, f"in_profit({_pnl_pct:+.2f}%)"
 
     # Trigger 1: price-based
     price_trig = False
@@ -7250,6 +7623,38 @@ def _advance(pos, ad, to_ci, partial_cb=None):
         if is_apex:
             pos.trail_sl = trail_sl; pos.current_ci = cidx
             return p, apex_rsn, cidx
+
+
+        # ══ [RESCUE EXIT — Backtest] ══
+        if getattr(CFG, 'RESCUE_EXIT_ENABLED', False):
+            try:
+                _bars_held = cidx - pos.entry_ci
+                _be_done = bool(getattr(pos, '_be_esc_done', False))
+                _rescue_exit, _rescue_rsn, _rescue_info = _rescue_check(
+                    {'entry': float(pos.entry_px),
+                     'sl': float(trail_sl),
+                     'action': str(sig.action),
+                     'tp1': float(sig.tp1)},
+                    ad, cidx, fi, _bars_held, _be_done, CFG
+                )
+                if getattr(CFG, 'RESCUE_LOG_VERBOSE', False) and _rescue_info:
+                    log.debug(
+                        f"[Rescue-BT] {sig.symbol} {sig.action} "
+                        f"P={_rescue_info.get('P', 0):.3f} "
+                        f"th={_rescue_info.get('threshold', 0):.3f} "
+                        f"L={_rescue_info.get('L_now_frac', 0)*100:.2f}% "
+                        f"bars={_bars_held} be={_be_done}"
+                    )
+                if _rescue_exit:
+                    pos.trail_sl = trail_sl
+                    pos.current_ci = cidx
+                    log.info(
+                        f"[Rescue-BT] {sig.symbol} {sig.action} EXIT "
+                        f"@ {p:.6f} — {_rescue_rsn}"
+                    )
+                    return p, _rescue_rsn, cidx
+            except Exception as _e:
+                log.debug(f"[Rescue-BT] error {sig.symbol}: {_e}")
 
         if 0 < fi < len(ad.V) and cidx > 0:
             V_curr = ad.V[fi]
@@ -19404,6 +19809,45 @@ def run_live(cfg, exchange):
                             except Exception as _e:
                                 log.warning(f"[PartialTP] {sym} failed: {_e}")
 
+                # ══ [RESCUE EXIT — Live] ══
+                if (not ex
+                        and getattr(CFG, 'RESCUE_EXIT_ENABLED', False)
+                        and ad is not None
+                        and fi is not None and fi >= 3):
+                    try:
+                        _cur_fi_resc = fi
+                        _be_done_resc = bool(pos.get('_be_esc_done', False))
+                        _entry_ci_resc = int(pos.get('_entry_ci', 0) or 0)
+                        _bars_held_resc = max(0, _cur_fi_resc
+                                              - max(0, _entry_ci_resc - ad.feat_start))
+                        _resc_exit, _resc_rsn, _resc_info = _rescue_check(
+                            {'entry': float(pos.get('entry') or 0),
+                             'sl': float(pos.get('sl') or 0),
+                             'action': str(pos.get('action') or 'BUY'),
+                             'tp1': float(pos.get('tp1') or 0)},
+                            ad, len(ad.closes) - 2, _cur_fi_resc,
+                            _bars_held_resc, _be_done_resc, CFG
+                        )
+                        if (getattr(CFG, 'RESCUE_LOG_VERBOSE', False)
+                                and _resc_info):
+                            log.debug(
+                                f"[Rescue-LV] {sym} {pos.get('action')} "
+                                f"P={_resc_info.get('P', 0):.3f} "
+                                f"th={_resc_info.get('threshold', 0):.3f} "
+                                f"L={_resc_info.get('L_now_frac', 0)*100:.2f}% "
+                                f"bars={_bars_held_resc} "
+                                f"be={_be_done_resc}"
+                            )
+                        if _resc_exit:
+                            ex = True
+                            rsn = _resc_rsn
+                            log.info(
+                                f"[Rescue-LV] {sym} {pos.get('action')} "
+                                f"triggered: {_resc_rsn}"
+                            )
+                    except Exception as _resc_e:
+                        log.debug(f"[Rescue-LV] {sym} error: {_resc_e}")
+
                 # ── SL / TP ──
                 if not ex:
                     if pos['action'] == "BUY":
@@ -20816,6 +21260,21 @@ def main():
     p.add_argument("--signal-sl-clamp-beesc", action="store_true",
                    help="[Signal-SL] Clamp SL below BEEsc level (default: "
                         "allow crossing — BEEsc disabled when crossed)")
+    p.add_argument("--rescue-exit", type=str, nargs="?", const="conservative",
+                   default=None,
+                   choices=["conservative", "moderate", "aggressive"],
+                   help="[Rescue] Enable state-based rescue exit in loss zone "
+                        "(default: conservative)")
+    p.add_argument("--rescue-margin", type=float, default=None,
+                   help="[Rescue] Safety margin (default: 0.05)")
+    p.add_argument("--rescue-floor", type=float, default=None,
+                   help="[Rescue] Absolute P_floor (default: 0.15)")
+    p.add_argument("--rescue-accel-kappa", type=float, default=None,
+                   help="[Rescue] Accel drift coefficient (default: 0.5)")
+    p.add_argument("--rescue-gauge-kappa", type=float, default=None,
+                   help="[Rescue] Gauge drift coefficient (default: 0.3)")
+    p.add_argument("--rescue-log-verbose", action="store_true",
+                   help="[Rescue] Log every rescue check at DEBUG level")
     p.add_argument("--kmeans-n-init", type=int, default=None,
                    help="[PERF] KMeans n_init (default: 1 for speed, "
                         "use 3 for quality)")
@@ -20885,6 +21344,43 @@ def main():
     if args.po_wait_s is not None:   CFG.PO_MAX_WAIT_S = args.po_wait_s
     if args.heat_max is not None: CFG.PORTFOLIO_HEAT_MAX = args.heat_max
     if args.no_numba: CFG.NUMBA_ENABLED = False
+
+    # ══ [RESCUE EXIT] ══
+    if getattr(args, "rescue_exit", None) is not None:
+        CFG.RESCUE_EXIT_ENABLED = True
+        CFG.RESCUE_EXIT_MODE = str(args.rescue_exit)
+        _mode = CFG.RESCUE_EXIT_MODE
+        if _mode == "conservative":
+            CFG.RESCUE_MARGIN = 0.05
+            CFG.RESCUE_FLOOR = 0.15
+            CFG.RESCUE_MIN_BARS_AFTER_BEESC = 2
+        elif _mode == "moderate":
+            CFG.RESCUE_MARGIN = 0.03
+            CFG.RESCUE_FLOOR = 0.12
+            CFG.RESCUE_MIN_BARS_AFTER_BEESC = 2
+        elif _mode == "aggressive":
+            CFG.RESCUE_MARGIN = 0.02
+            CFG.RESCUE_FLOOR = 0.10
+            CFG.RESCUE_MIN_BARS_AFTER_BEESC = 1
+        log.info(
+            f"[Rescue] ENABLED mode={_mode} "
+            f"margin={CFG.RESCUE_MARGIN} "
+            f"floor={CFG.RESCUE_FLOOR} "
+            f"min_bars={CFG.RESCUE_MIN_BARS_AFTER_BEESC}"
+        )
+    # Per-parameter overrides
+    if getattr(args, "rescue_margin", None) is not None:
+        CFG.RESCUE_MARGIN = float(args.rescue_margin)
+    if getattr(args, "rescue_floor", None) is not None:
+        CFG.RESCUE_FLOOR = float(args.rescue_floor)
+    if getattr(args, "rescue_accel_kappa", None) is not None:
+        CFG.RESCUE_ACCEL_KAPPA = float(args.rescue_accel_kappa)
+    if getattr(args, "rescue_gauge_kappa", None) is not None:
+        CFG.RESCUE_GAUGE_KAPPA = float(args.rescue_gauge_kappa)
+    if getattr(args, "rescue_log_verbose", False):
+        CFG.RESCUE_LOG_VERBOSE = True
+    if not getattr(args, "rescue_exit", None):
+        log.info("[Rescue] DISABLED (use --rescue-exit to enable)")
 
     # ══ [PERF] KMeans parameter overrides ══
     if getattr(args, "kmeans_n_init", None) is not None:
