@@ -698,33 +698,33 @@ class Config:
     # When the market is confirmed reversed against our position,
     # the TP is moved to entry ± small_gain. Bounces exit flat
     # instead of a full SL loss. Zero additional risk.
+    # ══ [BREAKEVEN ESCAPE] reversal-confirmed exit at entry ± small_gain ══
+    # [BEEsc-INTENT-FIX] مطابق لنية المالك:
+    #   • يعمل فقط على الصفقات الخاسرة التي لم تكن رابحة سابقاً (MFE guard)
+    #   • يُطلق فقط عند انعكاس مؤكد (إشارة معاكسة أو هبوط عميق 0.80R)
+    #   • يخرج بهامش صغير موجب يغطي الرسوم (+0.15R)
+    #   • BEEsc-Cancel يستخدم high لا close لكشف الارتداد الحقيقي
     BREAKEVEN_ESCAPE_ENABLED: bool = False
-    BREAKEVEN_ESCAPE_PRICE_MOVE_R: float = 0.30
+    BREAKEVEN_ESCAPE_PRICE_MOVE_R: float = 0.10      # كان 0.30
     BREAKEVEN_ESCAPE_REQUIRE_EMA_FLIP: bool = True
     BREAKEVEN_ESCAPE_EMA_LOOKBACK: int = 50
-    BREAKEVEN_ESCAPE_SIGNAL_ENABLED: bool = False
+    BREAKEVEN_ESCAPE_SIGNAL_ENABLED: bool = True     # كان False
     BREAKEVEN_ESCAPE_SIGNAL_MAX_AGE_BARS: int = 6
     BREAKEVEN_ESCAPE_SIGNAL_SCORE_MULT: float = 1.15
-    BREAKEVEN_ESCAPE_MIN_PROFIT_R: float = 0.0
+    BREAKEVEN_ESCAPE_MIN_PROFIT_R: float = 0.15      # كان 0.0
     BREAKEVEN_ESCAPE_RESPECT_PARTIAL: bool = False
-    # ══ [BEEsc-CANCEL] cancel escape on strong bounce ══
-    # > 0: if the bounce from the extreme (after BEEsc fires)
-    # reaches κ × σ_bar × entry BEFORE price touches entry, cancel
-    # BEEsc and RESTORE the original TP.
-    # 0.0 = never cancel (default, current behavior preserved)
     BREAKEVEN_ESCAPE_CANCEL_KAPPA: float = 0.0
-    # ══ [BEEsc-Cancel-Close] CLOSE-ONLY tracking (no wick, no ticker) ══
-    # When True, extreme tracking + bounce confirmation use the LAST
-    # CLOSED bar's close. Matches S/R philosophy and eliminates the
-    # live-vs-backtest ticker/wick gap.
-    # Default False → preserves current behavior.
     BREAKEVEN_ESCAPE_CANCEL_CLOSE_ONLY: bool = False
-    # ══ [BEEsc-Cancel-SR] Require S/R intact before cancelling ══
-    # When True, BEEsc-Cancel is skipped if price has BROKEN (by close)
-    # the nearest swing support (BUY) or resistance (SELL).
-    # Default False → no S/R filter.
     BREAKEVEN_ESCAPE_CANCEL_SR_CHECK: bool = False
     BREAKEVEN_ESCAPE_CANCEL_SR_LOOKBACK: int = 60
+    # ══ [BEEsc-INTENT-FIX] — NEW FIELDS ══
+    # لا تُطلق BEEsc إذا وصلت الصفقة إلى ربح ≥ هذا الحد (بوحدات R).
+    # هذا يحمي "منطقة الربح" — حماياتها الخاصة (Partial/Trail/TP) تتولاها.
+    BREAKEVEN_ESCAPE_MFE_GUARD_R: float = 0.50
+    # استخدم high للكشف عن الارتداد (أدق من close، يمنع إلغاء cancel الوهمي)
+    BREAKEVEN_ESCAPE_CANCEL_USE_HIGH: bool = True
+    # مهلة مسموحة بين إغلاق صفقة وإعادة فتحها في نفس الرمز داخل BEEsc-Cancel
+    BREAKEVEN_ESCAPE_CANCEL_MIN_BOUNCE_SIGMA: float = 1.0
 
     # ══ [SINGULARITY TIMING LAYER 1 — EMERGING] ══
     # طبقة توقيت تكشف الرنين الكسري قبل الانفجار بدقائق وتُعجّل
@@ -3135,21 +3135,13 @@ def _taker_slippage_bps(adv_usd) -> float:
 
 
 def _exit_is_taker(exit_rsn: str) -> bool:
-    """
-    Classify the exit reason as taker (crosses the book) or maker.
-    Matches Live's classification in run_live():
-        - Emergency SL / Hard TP / LiqProximity → taker
-          (marketable limit or market order)
-        - Apex / Topo-Div / MaxHold / EndOfData → maker
-          (post-only GTX exit)
-    """
     r = str(exit_rsn or "")
-    # [APEX-PARITY] Apex/Topo-Div classified as taker (slippage)
-    # to match live's marketable-fill behavior when the parity
-    # flag PO_EXIT_APEX_URGENT is enabled.
     _apex_urgent = bool(getattr(CFG, 'PO_EXIT_APEX_URGENT', True))
     _apex_match = _apex_urgent and (("Apex" in r) or ("Topo-Div" in r))
+    # [BEEsc-FIX] "BEEsc-breakeven" تخرج عند entry → تعبر السبريد
+    # → taker (بالضبط مثل Hard TP)
     if (("Emergency" in r) or ("Hard TP" in r)
+            or ("BEEsc-breakeven" in r)
             or ("LiqProximity" in r) or _apex_match):
         return True
     return False
@@ -6344,14 +6336,14 @@ def _ema_slope_against(ad, current_ci: int, action: str,
 def _should_breakeven_escape(ad, current_ci: int, current_price: float,
                               action: str, entry: float,
                               sl_dist0: float,
-                              sig_opp=None):
+                              sig_opp=None, pos=None,
+                              mfe_override=None):
     """
-    Unified trigger detector for breakeven-escape.
-    Triggers:
-      1) Price: adverse move >= PRICE_MOVE_R × SL, AND (optionally)
-         EMA200 slope is against the position.
-      2) Signal: fresh opposite signal on the same symbol.
-    Returns (triggered, reason_string).
+    BEEsc trigger — مطابق لنية المالك:
+      • LOSS-ONLY (لا يلمس منطقة الربح)
+      • MFE-GUARD (لا يُطلق على صفقات كانت رابحة سابقاً)
+      • reversal-confirmed (إشارة معاكسة قوية أو هبوط 0.80R)
+      • small positive gain عند الخروج
     """
     if not getattr(CFG, 'BREAKEVEN_ESCAPE_ENABLED', False):
         return False, "disabled"
@@ -6359,11 +6351,7 @@ def _should_breakeven_escape(ad, current_ci: int, current_price: float,
         return False, "invalid"
 
     # ════════════════════════════════════════════════════════════════
-    # [LOSS-ONLY-GUARD] BEEsc works ONLY in loss territory.
-    # In profit zone, protection comes from Partial TP + Trailing + TP.
-    # Without this guard, BEEsc kills genuine profits:
-    #   - Trade at +5R with opposite signal → BEEsc → close at ~entry
-    #   - Fees make it a small loss despite +5R MFE
+    # [LOSS-ONLY-GUARD] — لا يعمل في منطقة الربح
     # ════════════════════════════════════════════════════════════════
     if action == "BUY" and current_price >= entry:
         _pnl_pct = (current_price - entry) / entry * 100.0
@@ -6372,39 +6360,80 @@ def _should_breakeven_escape(ad, current_ci: int, current_price: float,
         _pnl_pct = (entry - current_price) / entry * 100.0
         return False, f"in_profit({_pnl_pct:+.2f}%)"
 
-    # Trigger 1: price-based
+    # ════════════════════════════════════════════════════════════════
+    # [MFE-GUARD] — لا يُطلق إذا كانت الصفقة رابحة سابقاً
+    # يدعم كلاً من OpenPosition (backtest) و pos dict (live)
+    # ════════════════════════════════════════════════════════════════
+    _guard_r = float(getattr(CFG, 'BREAKEVEN_ESCAPE_MFE_GUARD_R', 0.50))
+    if _guard_r > 0:
+        _mfe_r = None
+        try:
+            if mfe_override is not None:
+                _mfe_r = float(mfe_override)
+            elif pos is not None and isinstance(pos, dict):
+                # live: compute from _hi/_lo
+                _hi = float(pos.get('_hi', entry) or entry)
+                _lo = float(pos.get('_lo', entry) or entry)
+                if action == "BUY":
+                    _mfe_r = (_hi - entry) / sl_dist0
+                else:
+                    _mfe_r = (entry - _lo) / sl_dist0
+            elif pos is not None:
+                # backtest: pos.mfe_frac (fraction of entry)
+                _mfe_frac = float(getattr(pos, 'mfe_frac', 0.0))
+                _mfe_r = (_mfe_frac * entry) / sl_dist0 if entry > 0 else 0.0
+        except Exception:
+            _mfe_r = None
+        if _mfe_r is not None and _mfe_r > _guard_r:
+            return False, f"was_profitable(mfe={_mfe_r:.2f}R>{_guard_r:.2f}R)"
+
+    # ════════════════════════════════════════════════════════════════
+    # TRIGGER 1 — PRICE: هبوط عميق (0.80R افتراضياً)
+    # ════════════════════════════════════════════════════════════════
     price_trig = False
     price_reason = ""
     _min_move = float(getattr(
-        CFG, 'BREAKEVEN_ESCAPE_PRICE_MOVE_R', 0.30)) * sl_dist0
+        CFG, 'BREAKEVEN_ESCAPE_PRICE_MOVE_R', 0.80)) * sl_dist0
+
     if action == "BUY":
         _adverse = entry - current_price
     else:
         _adverse = current_price - entry
+
     if _adverse >= _min_move:
         if getattr(CFG, 'BREAKEVEN_ESCAPE_REQUIRE_EMA_FLIP', True):
             _lb = int(getattr(CFG, 'BREAKEVEN_ESCAPE_EMA_LOOKBACK', 50))
             if _ema_slope_against(ad, current_ci, action, _lb):
                 price_trig = True
-                price_reason = f"price+EMA(adv={_adverse / sl_dist0:.2f}R)"
+                price_reason = f"price+EMA(adv={_adverse/sl_dist0:.2f}R)"
         else:
             price_trig = True
-            price_reason = f"price_only(adv={_adverse / sl_dist0:.2f}R)"
+            price_reason = f"price_only(adv={_adverse/sl_dist0:.2f}R)"
 
-    # Trigger 2: signal-based
+    # ════════════════════════════════════════════════════════════════
+    # TRIGGER 2 — SIGNAL: إشارة معاكسة قوية حديثة
+    # ════════════════════════════════════════════════════════════════
     sig_trig = False
     sig_reason = ""
     if (getattr(CFG, 'BREAKEVEN_ESCAPE_SIGNAL_ENABLED', True)
             and sig_opp is not None):
         if sig_opp.action != action:
-            _age = current_ci - int(getattr(
-                sig_opp, 'close_idx', current_ci))
+            _age = current_ci - int(getattr(sig_opp, 'close_idx', current_ci))
             _max_age = int(getattr(
                 CFG, 'BREAKEVEN_ESCAPE_SIGNAL_MAX_AGE_BARS', 6))
             if 0 <= _age <= _max_age:
                 try:
                     _sc_o = float(getattr(sig_opp, 'score', 0.0) or 0.0)
-                    if _sc_o > 0:
+                    _sc_orig = 0.0
+                    if pos is not None:
+                        if isinstance(pos, dict):
+                            _sc_orig = float(pos.get('_orig_score', 0.0) or 0.0)
+                        else:
+                            _sc_orig = float(getattr(
+                                getattr(pos, 'signal', None), 'score', 0.0) or 0.0)
+                    _mult = float(getattr(
+                        CFG, 'BREAKEVEN_ESCAPE_SIGNAL_SCORE_MULT', 1.15))
+                    if _sc_o > 0 and (_sc_orig <= 0 or _sc_o >= _sc_orig * _mult):
                         sig_trig = True
                         sig_reason = f"opp_signal(age={_age},score={_sc_o:.2f})"
                 except Exception:
@@ -7304,7 +7333,7 @@ def compute_trail_params(ad, entry_fi: int) -> Tuple[float, float]:
     except Exception:
         return float(CFG.TRAIL_DISTANCE), float(CFG.TRAIL_ACTIVATE_MFE)
 
-def _advance(pos, ad, to_ci, partial_cb=None):
+def _advance(pos, ad, to_ci, partial_cb=None, opp_by_sym_ci=None):
     """
     Walk bars from current_ci+1 to to_ci.
 
@@ -7357,15 +7386,27 @@ def _advance(pos, ad, to_ci, partial_cb=None):
         p = ad.closes[cidx]
         fi = cidx - ad.feat_start
 
-        # ══ [BREAKEVEN ESCAPE — Price Trigger] ══
-        # [Signal-SL] skip BEEsc if SL already above (Signal-SL took priority)
+        # ══ [BEEsc-FIX] Price Trigger — يجمع sig_opp من نفس الشمعة ══
         if (getattr(CFG, 'BREAKEVEN_ESCAPE_ENABLED', False)
                 and not getattr(pos, '_be_esc_done', False)
                 and not getattr(pos, '_signal_sl_above_beesc', False)
                 and pos.sl_dist_initial > 0):
+            # ابحث عن إشارة معاكسة صدرت في نفس الشمعة (إن وجدت)
+            _sig_opp_here = None
+            if (getattr(CFG, 'BREAKEVEN_ESCAPE_SIGNAL_ENABLED', True)
+                    and opp_by_sym_ci is not None):
+                try:
+                    for _c_opp in opp_by_sym_ci.get((sig.symbol, cidx), []):
+                        if _c_opp.action != sig.action:
+                            _sig_opp_here = _c_opp
+                            break
+                except Exception:
+                    pass
             _be_trig, _be_rsn = _should_breakeven_escape(
                 ad, cidx, float(p), sig.action,
-                pos.entry_px, pos.sl_dist_initial, sig_opp=None
+                pos.entry_px, pos.sl_dist_initial,
+                sig_opp=_sig_opp_here,
+                pos=pos,
             )
             if _be_trig:
                 _tp_new_be = _apply_breakeven_escape(
@@ -7391,6 +7432,8 @@ def _advance(pos, ad, to_ci, partial_cb=None):
         # ══ [BEEsc-CANCEL] track extremes + cancel on strong bounce ══
         # [BEEsc-Cancel-Close] Optional close-only (no wick)
         # [BEEsc-Cancel-SR] Optional S/R intact check
+        # [BEEsc-Cancel-USE-HIGH] كشف الارتداد بـ high/low بدل close
+        #   — يمنع race condition حيث close منخفض يخفي ارتداداً حقيقياً
         if (getattr(pos, '_be_esc_done', False)
                 and not getattr(pos, '_be_cancelled', False)
                 and float(getattr(CFG, 'BREAKEVEN_ESCAPE_CANCEL_KAPPA', 0.0)) > 0
@@ -7400,7 +7443,11 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                     CFG, 'BREAKEVEN_ESCAPE_CANCEL_CLOSE_ONLY', False))
                 _be_sr_check = bool(getattr(
                     CFG, 'BREAKEVEN_ESCAPE_CANCEL_SR_CHECK', False))
+                _use_high_for_bounce = bool(getattr(
+                    CFG, 'BREAKEVEN_ESCAPE_CANCEL_USE_HIGH', True))
                 _be_sr_ok = True
+
+                # ── [SR check] هل الدعم/المقاومة لا يزال سليماً؟ ──
                 if _be_sr_check:
                     _be_lb = int(getattr(
                         CFG, 'BREAKEVEN_ESCAPE_CANCEL_SR_LOOKBACK', 60))
@@ -7424,13 +7471,18 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                                 f"SELL skip: resistance broken "
                                 f"close={_be_close_now:.6f}>"
                                 f"swing={_be_swing:.6f}")
+
+                # ── [Bounce check] ارتداد كافٍ من القاع/القمة؟ ──
                 if _be_sr_ok:
-                    _sigma_c = float(ad.E_therm[fi]) if 0 <= fi < len(ad.E_therm) else 0.01
+                    _sigma_c = (float(ad.E_therm[fi])
+                                if 0 <= fi < len(ad.E_therm) else 0.01)
                     if not np.isfinite(_sigma_c) or _sigma_c <= 1e-9:
                         _sigma_c = 0.01
                     _kappa_c = float(CFG.BREAKEVEN_ESCAPE_CANCEL_KAPPA)
                     _thr_c = _kappa_c * _sigma_c * pos.entry_px
+
                     if sig.action == "BUY":
+                        # ① تحديث القاع الأدنى المُسجَّل
                         _low_src = (float(ad.closes[cidx]) if _be_use_close
                                     else float(ad.lows[cidx]))
                         _low_c = min(
@@ -7438,19 +7490,30 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                             _low_src,
                         )
                         pos._be_low = _low_c
-                        _bounce_c = float(p) - _low_c
+
+                        # ② مصدر الارتداد: high (افتراضي) أو close
+                        if _be_use_close:
+                            _bounce_src = float(ad.closes[cidx])
+                        elif _use_high_for_bounce:
+                            _bounce_src = float(ad.highs[cidx])
+                        else:
+                            _bounce_src = float(p)
+                        _bounce_c = _bounce_src - _low_c
+
                         if _bounce_c >= _thr_c:
                             _restore_c = float(pos._be_orig_tp1)
                             sig.tp1 = _restore_c
                             pos._be_cancelled = True
                             log.info(
                                 f"[BEEsc-Cancel-BT] {sig.symbol} "
-                                f"BUY bounce={_bounce_c:.6f} ≥ "
-                                f"{_thr_c:.6f} → TP restored to "
+                                f"BUY bounce={_bounce_c:.6f} >= "
+                                f"{_thr_c:.6f} -> TP restored to "
                                 f"{_restore_c:.6f} "
-                                f"(mode={'close' if _be_use_close else 'wick'})"
+                                f"(mode={'close' if _be_use_close else 'high' if _use_high_for_bounce else 'wick'}, "
+                                f"low={_low_c:.6f}, src={_bounce_src:.6f})"
                             )
                     else:
+                        # ① تحديث القمة الأعلى المُسجَّلة
                         _high_src = (float(ad.closes[cidx]) if _be_use_close
                                      else float(ad.highs[cidx]))
                         _high_c = max(
@@ -7458,17 +7521,27 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                             _high_src,
                         )
                         pos._be_high = _high_c
-                        _bounce_c = _high_c - float(p)
+
+                        # ② مصدر الارتداد: low (افتراضي) أو close
+                        if _be_use_close:
+                            _bounce_src = float(ad.closes[cidx])
+                        elif _use_high_for_bounce:
+                            _bounce_src = float(ad.lows[cidx])
+                        else:
+                            _bounce_src = float(p)
+                        _bounce_c = _high_c - _bounce_src
+
                         if _bounce_c >= _thr_c:
                             _restore_c = float(pos._be_orig_tp1)
                             sig.tp1 = _restore_c
                             pos._be_cancelled = True
                             log.info(
                                 f"[BEEsc-Cancel-BT] {sig.symbol} "
-                                f"SELL bounce={_bounce_c:.6f} ≥ "
-                                f"{_thr_c:.6f} → TP restored to "
+                                f"SELL bounce={_bounce_c:.6f} >= "
+                                f"{_thr_c:.6f} -> TP restored to "
                                 f"{_restore_c:.6f} "
-                                f"(mode={'close' if _be_use_close else 'wick'})"
+                                f"(mode={'close' if _be_use_close else 'low' if _use_high_for_bounce else 'wick'}, "
+                                f"high={_high_c:.6f}, src={_bounce_src:.6f})"
                             )
             except Exception as _e_c:
                 log.debug(f"[BEEsc-Cancel-BT] {sig.symbol}: {_e_c}")
@@ -7566,7 +7639,11 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                     return px, "Emergency SL", cidx
                 if res == "TP":
                     pos.trail_sl = trail_sl; pos.current_ci = cidx
-                    return px, "Hard TP", cidx
+                    # [BEEsc-LABEL] ميّز الخروج عند entry (BEEsc) عن TP الأصلي
+                    _tp_label = ("BEEsc-breakeven"
+                                 if getattr(pos, '_be_esc_done', False)
+                                 else "Hard TP")
+                    return px, _tp_label, cidx
 
         else:
             # Main-bar fallback — skip entry bar entirely
@@ -7612,7 +7689,11 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                 return px, "Emergency SL", cidx
             if res == "TP":
                 pos.trail_sl = trail_sl; pos.current_ci = cidx
-                return px, "Hard TP", cidx
+                # [BEEsc-LABEL] ميّز الخروج عند entry (BEEsc) عن TP الأصلي
+                _tp_label = ("BEEsc-breakeven"
+                             if getattr(pos, '_be_esc_done', False)
+                             else "Hard TP")
+                return px, _tp_label, cidx
 
         # ── Physics-based exits (close-only, per main bar) ──
         is_apex, apex_rsn = False, ""
@@ -8076,6 +8157,14 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         pos.pos_size -= _close_qty
         log.debug(f"[PartialTP] {sig.symbol} closed {_pct*100:.0f}% "
                   f"@ {px:.6f}  net=${_net:+.4f}  remaining={pos.pos_size:.6f}")
+    # ══ [BEEsc-FIX] خريطة إشارات معاكسة لكل (رمز، ci) ══
+    # تُستخدم لتفعيل signal-trigger داخل _advance
+    _opp_by_sym_ci = defaultdict(list)
+    for _s in signals:
+        try:
+            _opp_by_sym_ci[(_s.symbol, int(_s.close_idx))].append(_s)
+        except Exception:
+            pass
 
     for sig_i, sig in enumerate(signals):
         # حاجز أمان مطلق: يستحيل بدء تداول جديد إذا اقترب الجسيم من عتبة الفناء (5.1$)
@@ -8087,7 +8176,8 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         for sym, pos in open_pos.items():
             ad   = assets[sym]
             toci = _ts_to_ci(ad, sig.timestamp)
-            ep, er, ec = _advance(pos, ad, toci, partial_cb=_partial_tp)
+            ep, er, ec = _advance(pos, ad, toci, partial_cb=_partial_tp,
+                                   opp_by_sym_ci=_opp_by_sym_ci)
             if ep > 0:
                 _close(pos, ad, ep, er, ec)
                 to_close.append(sym)
@@ -8465,7 +8555,8 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         ad = assets[sym]
         # [N6-FIX] simulate SL/TP/MaxHold on remaining bars before
         # closing at the final price. Matches live broker behaviour.
-        _advance(pos, ad, len(ad.closes) - 1, partial_cb=_partial_tp)
+        _advance(pos, ad, len(ad.closes) - 1, partial_cb=_partial_tp,
+                 opp_by_sym_ci=_opp_by_sym_ci)
         ep = ad.closes[-1]
         _close(pos, ad, ep, "EndOfData", len(ad.closes)-1)
 
@@ -18940,6 +19031,71 @@ def run_live(cfg, exchange):
         except Exception as e:
             log.warning(f"  [State] load failed: {e}")
 
+    # ═══════════════════════════════════════════════════════════════
+    # [BEEsc-MIGRATION] ترحيل آمن للصفقات القديمة التي أُغلقت BEEsc
+    # خاطئ. يعيد TP الأصلي فقط إذا:
+    #   1. MFE > guard (كانت رابحة سابقاً)
+    #   2. السعر الحالي لم يصل إلى TP الأصلي بعد (آمن)
+    # ═══════════════════════════════════════════════════════════════
+    _besc_migrated = 0
+    for _sym_mig, _pos_mig in list(open_pos_live.items()):
+        if not _pos_mig.get('_be_esc_done', False):
+            continue
+        _orig_tp = _pos_mig.get('_be_orig_tp1')
+        if _orig_tp is None or float(_orig_tp) <= 0:
+            continue
+        _entry_mig = float(_pos_mig.get('entry', 0) or 0)
+        _sd0_mig = float(_pos_mig.get('sl_dist_initial', 0) or 0)
+        if _entry_mig <= 0 or _sd0_mig <= 0:
+            continue
+        _hi_mig = float(_pos_mig.get('_hi', _entry_mig) or _entry_mig)
+        _lo_mig = float(_pos_mig.get('_lo', _entry_mig) or _entry_mig)
+        if _pos_mig.get('action') == 'BUY':
+            _mfe_r_mig = (_hi_mig - _entry_mig) / _sd0_mig
+        else:
+            _mfe_r_mig = (_entry_mig - _lo_mig) / _sd0_mig
+        _guard_mig = float(getattr(CFG, 'BREAKEVEN_ESCAPE_MFE_GUARD_R', 0.50))
+        if _mfe_r_mig <= _guard_mig:
+            continue  # BEEsc شرعي، احتفظ به
+        # فحص أمان: السعر الحالي لم يصل TP الأصلي
+        try:
+            _tk_mig = exchange.fetch_ticker(_sym_mig)
+            _p_mig = float(_tk_mig.get('last') or 0)
+        except Exception:
+            _p_mig = 0.0
+        if _p_mig <= 0:
+            log.debug(f"[BEEsc-Migration] {_sym_mig} skipped (no price)")
+            continue
+        if (_pos_mig.get('action') == 'BUY' and _p_mig >= float(_orig_tp)):
+            log.info(f"[BEEsc-Migration] {_sym_mig} skipped "
+                     f"(price {_p_mig:.6f} >= orig TP {_orig_tp:.6f})")
+            continue
+        if (_pos_mig.get('action') == 'SELL' and _p_mig <= float(_orig_tp)):
+            log.info(f"[BEEsc-Migration] {_sym_mig} skipped "
+                     f"(price {_p_mig:.6f} <= orig TP {_orig_tp:.6f})")
+            continue
+        _old_tp_mig = _pos_mig.get('tp1')
+        _pos_mig['tp1'] = float(_orig_tp)
+        _pos_mig['_be_esc_done'] = False
+        _pos_mig.pop('_be_orig_tp1', None)
+        _besc_migrated += 1
+        log.info(
+            f"[BEEsc-Migration] {_sym_mig} {_pos_mig.get('action')} "
+            f"TP {_old_tp_mig} -> {_orig_tp} "
+            f"(MFE={_mfe_r_mig:.2f}R>{_guard_mig}R, price={_p_mig:.6f})"
+        )
+        try:
+            if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
+                _sync_protective_orders(exchange, _sym_mig, _pos_mig)
+        except Exception as _e:
+            log.warning(f"[BEEsc-Migration] {_sym_mig} sync: {_e}")
+    if _besc_migrated > 0:
+        log.info(f"[BEEsc-Migration] Migrated {_besc_migrated} positions")
+        try:
+            _lv_save_state(state_file, open_pos_live)
+        except Exception:
+            pass
+
     # ══ [State] Load persistent symbol metadata (leverage/margin/setup) ══
     load_symbol_meta(cfg.mode)
     # ══ [Pending] Load persisted pending orders ══
@@ -19476,6 +19632,7 @@ def run_live(cfg, exchange):
                         ad, _ci_now_be, _be_price,
                         pos['action'], float(pos['entry']),
                         _sl_d0_be, sig_opp=None,
+                        pos=pos,   # ← يُمكّن MFE-guard من _hi/_lo
                     )
                     if _be_trig:
                         _tp_new_be = _apply_breakeven_escape(
@@ -19850,12 +20007,20 @@ def run_live(cfg, exchange):
 
                 # ── SL / TP ──
                 if not ex:
+                    # [BEEsc-LABEL] التمييز بين BEEsc-exit و TP الأصلي
+                    _tp_label_lv = ("BEEsc-breakeven"
+                                    if pos.get('_be_esc_done')
+                                    else "Hard TP")
                     if pos['action'] == "BUY":
-                        if price <= pos['sl']: ex = True; rsn = "Emergency SL"
-                        elif price >= pos.get('tp1', 1e18): ex = True; rsn = "Hard TP"
+                        if price <= pos['sl']:
+                            ex = True; rsn = "Emergency SL"
+                        elif price >= pos.get('tp1', 1e18):
+                            ex = True; rsn = _tp_label_lv
                     else:
-                        if price >= pos['sl']: ex = True; rsn = "Emergency SL"
-                        elif price <= pos.get('tp1', 0.): ex = True; rsn = "Hard TP"
+                        if price >= pos['sl']:
+                            ex = True; rsn = "Emergency SL"
+                        elif price <= pos.get('tp1', 0.):
+                            ex = True; rsn = _tp_label_lv
 
                 # ── [LAYER 5] LiqProximity with exchange-verified Liq ──
                 if not ex and getattr(CFG, 'LIQ_EMERGENCY_ENABLED', True):
@@ -19966,6 +20131,7 @@ def run_live(cfg, exchange):
                     _urgent = (
                         'Emergency' in rsn
                         or 'Hard TP' in rsn
+                        or 'BEEsc-breakeven' in rsn   # ← NEW
                         or 'LiqProximity' in rsn
                         or (_apex_urgent_lv and (
                             ('Apex' in rsn) or ('Topo-Div' in rsn)))
@@ -20219,6 +20385,7 @@ def run_live(cfg, exchange):
                             _ad_be, _ci_be, _p_be,
                             _pos_be['action'], float(_pos_be['entry']),
                             _sl_d0_be, sig_opp=_sig_be,
+                            pos=_pos_be,   # ← MFE-guard
                         )
                         if _be_trig:
                             _tp_new_be = _apply_breakeven_escape(

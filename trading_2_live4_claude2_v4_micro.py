@@ -695,13 +695,13 @@ class Config:
     # the TP is moved to entry ± small_gain. Bounces exit flat
     # instead of a full SL loss. Zero additional risk.
     BREAKEVEN_ESCAPE_ENABLED: bool = True
-    BREAKEVEN_ESCAPE_PRICE_MOVE_R: float = 0.30
+    BREAKEVEN_ESCAPE_PRICE_MOVE_R: float = 0.80
     BREAKEVEN_ESCAPE_REQUIRE_EMA_FLIP: bool = True
     BREAKEVEN_ESCAPE_EMA_LOOKBACK: int = 50
-    BREAKEVEN_ESCAPE_SIGNAL_ENABLED: bool = False
+    BREAKEVEN_ESCAPE_SIGNAL_ENABLED: bool = True
     BREAKEVEN_ESCAPE_SIGNAL_MAX_AGE_BARS: int = 6
     BREAKEVEN_ESCAPE_SIGNAL_SCORE_MULT: float = 1.15
-    BREAKEVEN_ESCAPE_MIN_PROFIT_R: float = 0.0
+    BREAKEVEN_ESCAPE_MIN_PROFIT_R: float = 0.15
     BREAKEVEN_ESCAPE_RESPECT_PARTIAL: bool = False
     # ══ [BEEsc-CANCEL] cancel escape on strong bounce ══
     # > 0: if the bounce from the extreme (after BEEsc fires)
@@ -721,6 +721,9 @@ class Config:
     # Default False → no S/R filter.
     BREAKEVEN_ESCAPE_CANCEL_SR_CHECK: bool = False
     BREAKEVEN_ESCAPE_CANCEL_SR_LOOKBACK: int = 60
+    BREAKEVEN_ESCAPE_MFE_GUARD_R: float = 0.50
+    BREAKEVEN_ESCAPE_CANCEL_USE_HIGH: bool = True
+    BREAKEVEN_ESCAPE_CANCEL_MIN_BOUNCE_SIGMA: float = 1.0
 
     # ══ [SINGULARITY TIMING LAYER 1 — EMERGING] ══
     # طبقة توقيت تكشف الرنين الكسري قبل الانفجار بدقائق وتُعجّل
@@ -809,6 +812,7 @@ class Config:
     OPP_TP_MIN_DELTA_R: float = 0.3          # تحسّن أدنى لنقل TP
     OPP_TP_MAX_AGE_BARS: int = 4             # عمر الإشارة المعاكسة
     OPP_TP_RESPECT_PARTIAL: bool = True      # لا تنقل TP تحت trigger partial
+    OPP_TP_REQUIRE_PROFIT: bool = True
     # ══ [WATCH ENTRY OFFSET — dynamic, fills on touch] ══
     # الأمر يُوضع في اتجاه يواجه السعر الهابط/الصاعد، ليملأ عند أول تلامس.
     # BUY : order = tunnel + offset  (above)
@@ -3081,23 +3085,17 @@ def _taker_slippage_bps(adv_usd) -> float:
 def _exit_is_taker(exit_rsn: str) -> bool:
     """
     Classify the exit reason as taker (crosses the book) or maker.
-    Matches Live's classification in run_live():
-        - Emergency SL / Hard TP / LiqProximity → taker
-          (marketable limit or market order)
-        - Apex / Topo-Div / MaxHold / EndOfData → maker
-          (post-only GTX exit)
+    Matches Live's classification in run_live().
+    [BEEsc-FIX] "BEEsc-breakeven" تخرج عند entry → تعبر السبريد → taker
     """
     r = str(exit_rsn or "")
-    # [APEX-PARITY] Apex/Topo-Div classified as taker (slippage)
-    # to match live's marketable-fill behavior when the parity
-    # flag PO_EXIT_APEX_URGENT is enabled.
     _apex_urgent = bool(getattr(CFG, 'PO_EXIT_APEX_URGENT', True))
     _apex_match = _apex_urgent and (("Apex" in r) or ("Topo-Div" in r))
     if (("Emergency" in r) or ("Hard TP" in r)
+            or ("BEEsc-breakeven" in r)
             or ("LiqProximity" in r) or _apex_match):
         return True
     return False
-
 
 # ════════════════════════════════════════════════════════════════
 # § 10  نموذج الانزلاق (كايل)
@@ -5953,27 +5951,21 @@ def _ema_slope_against(ad, current_ci: int, action: str,
 def _should_breakeven_escape(ad, current_ci: int, current_price: float,
                               action: str, entry: float,
                               sl_dist0: float,
-                              sig_opp=None):
+                              sig_opp=None, pos=None,
+                              mfe_override=None):
     """
-    Unified trigger detector for breakeven-escape.
-    Triggers:
-      1) Price: adverse move >= PRICE_MOVE_R × SL, AND (optionally)
-         EMA200 slope is against the position.
-      2) Signal: fresh opposite signal on the same symbol.
-    Returns (triggered, reason_string).
+    BEEsc trigger — مطابق لنية المالك:
+      • LOSS-ONLY (لا يلمس منطقة الربح)
+      • MFE-GUARD (لا يُطلق على صفقات كانت رابحة سابقاً)
+      • reversal-confirmed (إشارة معاكسة قوية أو هبوط 0.80R)
+      • small positive gain عند الخروج
     """
     if not getattr(CFG, 'BREAKEVEN_ESCAPE_ENABLED', False):
         return False, "disabled"
     if entry <= 0 or sl_dist0 <= 0 or current_price <= 0:
         return False, "invalid"
 
-    # ════════════════════════════════════════════════════════════════
-    # [LOSS-ONLY-GUARD] BEEsc works ONLY in loss territory.
-    # In profit zone, protection comes from Partial TP + Trailing + TP.
-    # Without this guard, BEEsc kills genuine profits:
-    #   - Trade at +5R with opposite signal → BEEsc → close at ~entry
-    #   - Fees make it a small loss despite +5R MFE
-    # ════════════════════════════════════════════════════════════════
+    # [LOSS-ONLY-GUARD] لا يعمل في منطقة الربح
     if action == "BUY" and current_price >= entry:
         _pnl_pct = (current_price - entry) / entry * 100.0
         return False, f"in_profit({_pnl_pct:+.2f}%)"
@@ -5981,39 +5973,71 @@ def _should_breakeven_escape(ad, current_ci: int, current_price: float,
         _pnl_pct = (entry - current_price) / entry * 100.0
         return False, f"in_profit({_pnl_pct:+.2f}%)"
 
-    # Trigger 1: price-based
+    # [MFE-GUARD] لا يُطلق إذا كانت الصفقة رابحة سابقاً
+    _guard_r = float(getattr(CFG, 'BREAKEVEN_ESCAPE_MFE_GUARD_R', 0.50))
+    if _guard_r > 0:
+        _mfe_r = None
+        try:
+            if mfe_override is not None:
+                _mfe_r = float(mfe_override)
+            elif pos is not None and isinstance(pos, dict):
+                _hi = float(pos.get('_hi', entry) or entry)
+                _lo = float(pos.get('_lo', entry) or entry)
+                if action == "BUY":
+                    _mfe_r = (_hi - entry) / sl_dist0
+                else:
+                    _mfe_r = (entry - _lo) / sl_dist0
+            elif pos is not None:
+                _mfe_frac = float(getattr(pos, 'mfe_frac', 0.0))
+                _mfe_r = (_mfe_frac * entry) / sl_dist0 if entry > 0 else 0.0
+        except Exception:
+            _mfe_r = None
+        if _mfe_r is not None and _mfe_r > _guard_r:
+            return False, f"was_profitable(mfe={_mfe_r:.2f}R>{_guard_r:.2f}R)"
+
+    # TRIGGER 1 — PRICE (هبوط عميق 0.80R)
     price_trig = False
     price_reason = ""
     _min_move = float(getattr(
-        CFG, 'BREAKEVEN_ESCAPE_PRICE_MOVE_R', 0.30)) * sl_dist0
+        CFG, 'BREAKEVEN_ESCAPE_PRICE_MOVE_R', 0.80)) * sl_dist0
+
     if action == "BUY":
         _adverse = entry - current_price
     else:
         _adverse = current_price - entry
+
     if _adverse >= _min_move:
         if getattr(CFG, 'BREAKEVEN_ESCAPE_REQUIRE_EMA_FLIP', True):
             _lb = int(getattr(CFG, 'BREAKEVEN_ESCAPE_EMA_LOOKBACK', 50))
             if _ema_slope_against(ad, current_ci, action, _lb):
                 price_trig = True
-                price_reason = f"price+EMA(adv={_adverse / sl_dist0:.2f}R)"
+                price_reason = f"price+EMA(adv={_adverse/sl_dist0:.2f}R)"
         else:
             price_trig = True
-            price_reason = f"price_only(adv={_adverse / sl_dist0:.2f}R)"
+            price_reason = f"price_only(adv={_adverse/sl_dist0:.2f}R)"
 
-    # Trigger 2: signal-based
+    # TRIGGER 2 — SIGNAL (إشارة معاكسة قوية حديثة)
     sig_trig = False
     sig_reason = ""
     if (getattr(CFG, 'BREAKEVEN_ESCAPE_SIGNAL_ENABLED', True)
             and sig_opp is not None):
         if sig_opp.action != action:
-            _age = current_ci - int(getattr(
-                sig_opp, 'close_idx', current_ci))
+            _age = current_ci - int(getattr(sig_opp, 'close_idx', current_ci))
             _max_age = int(getattr(
                 CFG, 'BREAKEVEN_ESCAPE_SIGNAL_MAX_AGE_BARS', 6))
             if 0 <= _age <= _max_age:
                 try:
                     _sc_o = float(getattr(sig_opp, 'score', 0.0) or 0.0)
-                    if _sc_o > 0:
+                    _sc_orig = 0.0
+                    if pos is not None:
+                        if isinstance(pos, dict):
+                            _sc_orig = float(pos.get('_orig_score', 0.0) or 0.0)
+                        else:
+                            _sc_orig = float(getattr(
+                                getattr(pos, 'signal', None), 'score', 0.0) or 0.0)
+                    _mult = float(getattr(
+                        CFG, 'BREAKEVEN_ESCAPE_SIGNAL_SCORE_MULT', 1.15))
+                    if _sc_o > 0 and (_sc_orig <= 0 or _sc_o >= _sc_orig * _mult):
                         sig_trig = True
                         sig_reason = f"opp_signal(age={_age},score={_sc_o:.2f})"
                 except Exception:
@@ -6023,7 +6047,6 @@ def _should_breakeven_escape(ad, current_ci: int, current_price: float,
         _reasons = [r for r in (price_reason, sig_reason) if r]
         return True, "|".join(_reasons)
     return False, "not_triggered"
-
 
 def _apply_breakeven_escape(action: str, entry: float, sl_dist0: float,
                               tp_old: float, partial_taken: bool):
@@ -6743,7 +6766,7 @@ def compute_trail_params(ad, entry_fi: int) -> Tuple[float, float]:
     except Exception:
         return float(CFG.TRAIL_DISTANCE), float(CFG.TRAIL_ACTIVATE_MFE)
 
-def _advance(pos, ad, to_ci, partial_cb=None):
+def _advance(pos, ad, to_ci, partial_cb=None, opp_by_sym_ci=None):
     """
     Walk bars from current_ci+1 to to_ci.
 
@@ -6796,13 +6819,25 @@ def _advance(pos, ad, to_ci, partial_cb=None):
         p = ad.closes[cidx]
         fi = cidx - ad.feat_start
 
-        # ══ [BREAKEVEN ESCAPE — Price Trigger] ══
+        # ══ [BEEsc-FIX] Price Trigger — يجمع sig_opp من نفس الشمعة ══
         if (getattr(CFG, 'BREAKEVEN_ESCAPE_ENABLED', False)
                 and not getattr(pos, '_be_esc_done', False)
                 and pos.sl_dist_initial > 0):
+            _sig_opp_here = None
+            if (getattr(CFG, 'BREAKEVEN_ESCAPE_SIGNAL_ENABLED', True)
+                    and opp_by_sym_ci is not None):
+                try:
+                    for _c_opp in opp_by_sym_ci.get((sig.symbol, cidx), []):
+                        if _c_opp.action != sig.action:
+                            _sig_opp_here = _c_opp
+                            break
+                except Exception:
+                    pass
             _be_trig, _be_rsn = _should_breakeven_escape(
                 ad, cidx, float(p), sig.action,
-                pos.entry_px, pos.sl_dist_initial, sig_opp=None
+                pos.entry_px, pos.sl_dist_initial,
+                sig_opp=_sig_opp_here,
+                pos=pos,
             )
             if _be_trig:
                 _tp_new_be = _apply_breakeven_escape(
@@ -6867,6 +6902,9 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                         _sigma_c = 0.01
                     _kappa_c = float(CFG.BREAKEVEN_ESCAPE_CANCEL_KAPPA)
                     _thr_c = _kappa_c * _sigma_c * pos.entry_px
+                    # [BEEsc-Cancel-USE-HIGH] مصدر الارتداد
+                    _use_high_for_bounce = bool(getattr(
+                        CFG, 'BREAKEVEN_ESCAPE_CANCEL_USE_HIGH', True))
                     if sig.action == "BUY":
                         _low_src = (float(ad.closes[cidx]) if _be_use_close
                                     else float(ad.lows[cidx]))
@@ -6875,7 +6913,13 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                             _low_src,
                         )
                         pos._be_low = _low_c
-                        _bounce_c = float(p) - _low_c
+                        if _be_use_close:
+                            _bounce_src = float(ad.closes[cidx])
+                        elif _use_high_for_bounce:
+                            _bounce_src = float(ad.highs[cidx])
+                        else:
+                            _bounce_src = float(p)
+                        _bounce_c = _bounce_src - _low_c
                         if _bounce_c >= _thr_c:
                             _restore_c = float(pos._be_orig_tp1)
                             sig.tp1 = _restore_c
@@ -6895,7 +6939,14 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                             _high_src,
                         )
                         pos._be_high = _high_c
-                        _bounce_c = _high_c - float(p)
+                        # [BEEsc-Cancel-USE-HIGH] مصدر الارتداد للـ SELL
+                        if _be_use_close:
+                            _bounce_src = float(ad.closes[cidx])
+                        elif _use_high_for_bounce:
+                            _bounce_src = float(ad.lows[cidx])
+                        else:
+                            _bounce_src = float(p)
+                        _bounce_c = _high_c - _bounce_src
                         if _bounce_c >= _thr_c:
                             _restore_c = float(pos._be_orig_tp1)
                             sig.tp1 = _restore_c
@@ -7003,7 +7054,11 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                     return px, "Emergency SL", cidx
                 if res == "TP":
                     pos.trail_sl = trail_sl; pos.current_ci = cidx
-                    return px, "Hard TP", cidx
+                    # [BEEsc-LABEL] ميّز الخروج عند entry (BEEsc) عن TP الأصلي
+                    _tp_label = ("BEEsc-breakeven"
+                                 if getattr(pos, '_be_esc_done', False)
+                                 else "Hard TP")
+                    return px, _tp_label, cidx
 
         else:
             # Main-bar fallback — skip entry bar entirely
@@ -7049,7 +7104,10 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                 return px, "Emergency SL", cidx
             if res == "TP":
                 pos.trail_sl = trail_sl; pos.current_ci = cidx
-                return px, "Hard TP", cidx
+                _tp_label = ("BEEsc-breakeven"
+                             if getattr(pos, '_be_esc_done', False)
+                             else "Hard TP")
+                return px, _tp_label, cidx
 
         # ── Physics-based exits (close-only, per main bar) ──
         is_apex, apex_rsn = False, ""
@@ -7116,14 +7174,14 @@ def _advance(pos, ad, to_ci, partial_cb=None):
 def _opp_tp_decide(action_pos: str, entry: float, sl_dist0: float,
                    tp_old: float, partial_taken: bool,
                    entry_ci: int,
-                   sig_opp, current_ci: int):
+                   sig_opp, current_ci: int,
+                   current_price=None):
     """
     Pure decision function. Returns (new_tp: float | None, reason: str).
-    None → no change.
+    [OPP-TP-PROFIT-GUARD] الافتراضي: يعمل فقط والسعر في منطقة الربح.
     """
     if not getattr(CFG, 'OPP_TP_ENABLED', False):
         return None, "disabled"
-
     if action_pos == sig_opp.action:
         return None, "same_direction"
 
@@ -7131,13 +7189,25 @@ def _opp_tp_decide(action_pos: str, entry: float, sl_dist0: float,
     age = current_ci - int(getattr(sig_opp, 'close_idx', current_ci))
     if age < 0 or age > int(CFG.OPP_TP_MAX_AGE_BARS):
         return None, f"stale_opp(age={age})"
-
     if entry <= 0 or sl_dist0 <= 0:
         return None, "invalid_geom"
 
     p_opp = float(getattr(sig_opp, 'price', 0.0) or 0.0)
     if p_opp <= 0:
         return None, "invalid_opp_price"
+
+    # [OPP-TP-PROFIT-GUARD] فقط في منطقة الربح (افتراضي)
+    if getattr(CFG, 'OPP_TP_REQUIRE_PROFIT', True):
+        if current_price is None or current_price <= 0:
+            return None, "no_current_price_for_profit_guard"
+        if action_pos == "BUY":
+            _pnl_pct = (current_price - entry) / entry * 100.0
+            if current_price <= entry:
+                return None, f"not_in_profit(pnl={_pnl_pct:+.2f}%)"
+        else:
+            _pnl_pct = (entry - current_price) / entry * 100.0
+            if current_price >= entry:
+                return None, f"not_in_profit(pnl={_pnl_pct:+.2f}%)"
 
     min_gain = float(CFG.OPP_TP_MIN_PROFIT_R) * sl_dist0
     min_delta = float(CFG.OPP_TP_MIN_DELTA_R) * sl_dist0
@@ -7154,7 +7224,7 @@ def _opp_tp_decide(action_pos: str, entry: float, sl_dist0: float,
             _p_trig = entry + float(CFG.PARTIAL_TP_R) * sl_dist0
             if tp_new <= _p_trig:
                 return None, f"would_skip_partial(trig={_p_trig:.6f})"
-    else:  # SELL
+    else:
         tp_new = max(tp_old, p_opp)
         if tp_new > entry - min_gain:
             return None, f"below_min_gain({tp_new:.6f}>{entry-min_gain:.6f})"
@@ -7169,11 +7239,11 @@ def _opp_tp_decide(action_pos: str, entry: float, sl_dist0: float,
 
     return float(tp_new), "ok"
 
-
 def _maybe_adapt_tp_backtest(pos, sig_opp, ad, current_ci: int) -> bool:
     """
     Backtest wrapper for OpenPosition dataclass.
     Modifies pos.signal.tp1 in place.
+    [OPP-TP-PROFIT-GUARD] current_price = close of the opposite signal's bar.
     """
     try:
         if getattr(pos, 'signal', None) is sig_opp:
@@ -7186,6 +7256,13 @@ def _maybe_adapt_tp_backtest(pos, sig_opp, ad, current_ci: int) -> bool:
         if sc_e > 0 and sc_o < float(CFG.OPP_TP_SCORE_MULT) * sc_e:
             return False
 
+        _cur_px = None
+        try:
+            if 0 <= int(current_ci) < len(ad.closes):
+                _cur_px = float(ad.closes[int(current_ci)])
+        except Exception:
+            _cur_px = None
+
         tp_new, reason = _opp_tp_decide(
             action_pos=str(pos.signal.action),
             entry=float(pos.entry_px),
@@ -7195,15 +7272,28 @@ def _maybe_adapt_tp_backtest(pos, sig_opp, ad, current_ci: int) -> bool:
             entry_ci=int(pos.entry_ci),
             sig_opp=sig_opp,
             current_ci=int(current_ci),
+            current_price=_cur_px,
         )
         if tp_new is None:
+            if reason not in ("disabled", "same_direction", "not_in_profit"):
+                log.debug(f"[OppTP-BT] {pos.symbol} skip: {reason}")
             return False
 
         tp_old = float(pos.signal.tp1)
         pos.signal.tp1 = float(tp_new)
-        log.info(f"[OppTP] {pos.symbol} {pos.signal.action} "
-                 f"TP {tp_old:.6f} → {tp_new:.6f} "
-                 f"(opp score={float(sig_opp.score):.2f} vs {sc_e:.2f})")
+
+        _profit_pct = ((tp_new - float(pos.entry_px)) / float(pos.entry_px) * 100.0
+                       if pos.signal.action == "BUY"
+                       else (float(pos.entry_px) - tp_new) / float(pos.entry_px) * 100.0)
+
+        _log_extra = f", cur_px={_cur_px:.6f}" if _cur_px is not None else ""
+        log.info(
+            f"[OppTP] {pos.symbol} {pos.signal.action} "
+            f"TP {tp_old:.6f} -> {tp_new:.6f} "
+            f"(profit={_profit_pct:+.2f}%, "
+            f"opp score={float(sig_opp.score):.2f} vs {sc_e:.2f}"
+            f"{_log_extra})"
+        )
         return True
     except Exception as e:
         log.debug(f"[OppTP] backtest adapter failed: {e}")
@@ -7455,6 +7545,14 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         except Exception as _me:
             log.debug(f"[MFAL] backtest record failed: {_me}")
 
+    # ══ [BEEsc-FIX] خريطة إشارات معاكسة لكل (رمز، ci) ══
+    _opp_by_sym_ci = defaultdict(list)
+    for _s in signals:
+        try:
+            _opp_by_sym_ci[(_s.symbol, int(_s.close_idx))].append(_s)
+        except Exception:
+            pass
+
     # ══ [FIX 4] Partial TP callback ══
     def _partial_tp(pos, px, ci):
         """Record a partial take-profit and reduce the position size."""
@@ -7492,7 +7590,8 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         for sym, pos in open_pos.items():
             ad   = assets[sym]
             toci = _ts_to_ci(ad, sig.timestamp)
-            ep, er, ec = _advance(pos, ad, toci, partial_cb=_partial_tp)
+            ep, er, ec = _advance(pos, ad, toci, partial_cb=_partial_tp,
+                                   opp_by_sym_ci=_opp_by_sym_ci)
             if ep > 0:
                 _close(pos, ad, ep, er, ec)
                 to_close.append(sym)
@@ -7861,7 +7960,8 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         ad = assets[sym]
         # [N6-FIX] simulate SL/TP/MaxHold on remaining bars before
         # closing at the final price. Matches live broker behaviour.
-        _advance(pos, ad, len(ad.closes) - 1, partial_cb=_partial_tp)
+        _advance(pos, ad, len(ad.closes) - 1, partial_cb=_partial_tp,
+                 opp_by_sym_ci=_opp_by_sym_ci)
         ep = ad.closes[-1]
         _close(pos, ad, ep, "EndOfData", len(ad.closes)-1)
 
@@ -10798,6 +10898,8 @@ def _sync_protective_orders(exchange, sym: str, pos: Dict) -> bool:
 def _maybe_adapt_tp_live(pos: Dict, sig_opp, ad, exchange) -> bool:
     """
     Live wrapper for dict-based positions. Syncs protective orders.
+    [OPP-TP-PROFIT-GUARD] current_price = close of last CLOSED bar
+    (matches backtest; avoids ticker-vs-bar divergence).
     """
     try:
         _act = str(pos.get('action', '?'))
@@ -10814,14 +10916,21 @@ def _maybe_adapt_tp_live(pos: Dict, sig_opp, ad, exchange) -> bool:
         _cur_ci = max(0, len(ad.closes) - 2) if ad is not None else int(
             getattr(sig_opp, 'close_idx', 0)
         )
-
         _entry_ci = int(pos.get('_entry_ci', 0) or 0)
         if _cur_ci <= _entry_ci:
             return False
 
-        # ══ [_orig_score] رقم صافٍ، آمن عبر JSON ══
         sc_e = float(pos.get('_orig_score', 0.0) or 0.0)
         sc_o = float(getattr(sig_opp, 'score', 0.0) or 0.0)
+        if sc_e > 0 and sc_o < float(CFG.OPP_TP_SCORE_MULT) * sc_e:
+            return False
+
+        _cur_px = None
+        try:
+            if ad is not None and 0 <= _cur_ci < len(ad.closes):
+                _cur_px = float(ad.closes[_cur_ci])
+        except Exception:
+            _cur_px = None
 
         _tp_old = float(pos.get('tp1', 0.0))
         if _tp_old <= 0:
@@ -10836,15 +10945,27 @@ def _maybe_adapt_tp_live(pos: Dict, sig_opp, ad, exchange) -> bool:
             entry_ci=_entry_ci,
             sig_opp=sig_opp,
             current_ci=_cur_ci,
+            current_price=_cur_px,
         )
         if tp_new is None:
-            log.debug(f"[OppTP] {pos.get('_sym','?')} skip: {reason}")
+            if reason not in ("disabled", "same_direction", "not_in_profit"):
+                log.debug(f"[OppTP] {pos.get('_sym','?')} skip: {reason}")
             return False
 
         pos['tp1'] = float(tp_new)
-        log.info(f"[OppTP] {pos.get('_sym','?')} {_act} "
-                 f"TP {_tp_old:.6f} → {tp_new:.6f} "
-                 f"(opp score={sc_o:.2f} vs {sc_e:.2f})")
+
+        _profit_pct = ((tp_new - _entry) / _entry * 100.0
+                       if _act == "BUY"
+                       else (_entry - tp_new) / _entry * 100.0)
+
+        _log_extra = f", cur_px={_cur_px:.6f}" if _cur_px else ""
+        log.info(
+            f"[OppTP-LV] {pos.get('_sym','?')} {_act} "
+            f"TP {_tp_old:.6f} -> {tp_new:.6f} "
+            f"(profit={_profit_pct:+.2f}%, "
+            f"opp score={sc_o:.2f} vs {sc_e:.2f}"
+            f"{_log_extra})"
+        )
 
         if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
             try:
@@ -18273,6 +18394,70 @@ def run_live(cfg, exchange):
         except Exception as e:
             log.warning(f"  [State] load failed: {e}")
 
+    # ═══════════════════════════════════════════════════════════════
+    # [BEEsc-MIGRATION] ترحيل آمن للصفقات القديمة التي أُغلقت BEEsc خاطئ.
+    # يعيد TP الأصلي فقط إذا:
+    #   1. MFE > guard (كانت رابحة سابقاً)
+    #   2. السعر الحالي لم يصل إلى TP الأصلي بعد (آمن)
+    # ═══════════════════════════════════════════════════════════════
+    _besc_migrated = 0
+    for _sym_mig, _pos_mig in list(open_pos_live.items()):
+        if not _pos_mig.get('_be_esc_done', False):
+            continue
+        _orig_tp = _pos_mig.get('_be_orig_tp1')
+        if _orig_tp is None or float(_orig_tp) <= 0:
+            continue
+        _entry_mig = float(_pos_mig.get('entry', 0) or 0)
+        _sd0_mig = float(_pos_mig.get('sl_dist_initial', 0) or 0)
+        if _entry_mig <= 0 or _sd0_mig <= 0:
+            continue
+        _hi_mig = float(_pos_mig.get('_hi', _entry_mig) or _entry_mig)
+        _lo_mig = float(_pos_mig.get('_lo', _entry_mig) or _entry_mig)
+        if _pos_mig.get('action') == 'BUY':
+            _mfe_r_mig = (_hi_mig - _entry_mig) / _sd0_mig
+        else:
+            _mfe_r_mig = (_entry_mig - _lo_mig) / _sd0_mig
+        _guard_mig = float(getattr(CFG, 'BREAKEVEN_ESCAPE_MFE_GUARD_R', 0.50))
+        if _mfe_r_mig <= _guard_mig:
+            continue
+        try:
+            _tk_mig = exchange.fetch_ticker(_sym_mig)
+            _p_mig = float(_tk_mig.get('last') or 0)
+        except Exception:
+            _p_mig = 0.0
+        if _p_mig <= 0:
+            log.debug(f"[BEEsc-Migration] {_sym_mig} skipped (no price)")
+            continue
+        if (_pos_mig.get('action') == 'BUY' and _p_mig >= float(_orig_tp)):
+            log.info(f"[BEEsc-Migration] {_sym_mig} skipped "
+                     f"(price {_p_mig:.6f} >= orig TP {_orig_tp:.6f})")
+            continue
+        if (_pos_mig.get('action') == 'SELL' and _p_mig <= float(_orig_tp)):
+            log.info(f"[BEEsc-Migration] {_sym_mig} skipped "
+                     f"(price {_p_mig:.6f} <= orig TP {_orig_tp:.6f})")
+            continue
+        _old_tp_mig = _pos_mig.get('tp1')
+        _pos_mig['tp1'] = float(_orig_tp)
+        _pos_mig['_be_esc_done'] = False
+        _pos_mig.pop('_be_orig_tp1', None)
+        _besc_migrated += 1
+        log.info(
+            f"[BEEsc-Migration] {_sym_mig} {_pos_mig.get('action')} "
+            f"TP {_old_tp_mig} -> {_orig_tp} "
+            f"(MFE={_mfe_r_mig:.2f}R>{_guard_mig}R, price={_p_mig:.6f})"
+        )
+        try:
+            if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
+                _sync_protective_orders(exchange, _sym_mig, _pos_mig)
+        except Exception as _e:
+            log.warning(f"[BEEsc-Migration] {_sym_mig} sync: {_e}")
+    if _besc_migrated > 0:
+        log.info(f"[BEEsc-Migration] Migrated {_besc_migrated} positions")
+        try:
+            _lv_save_state(state_file, open_pos_live)
+        except Exception:
+            pass
+
     # ══ [State] Load persistent symbol metadata (leverage/margin/setup) ══
     load_symbol_meta(cfg.mode)
     # ══ [Pending] Load persisted pending orders ══
@@ -19144,12 +19329,20 @@ def run_live(cfg, exchange):
 
                 # ── SL / TP ──
                 if not ex:
+                    # [BEEsc-LABEL] التمييز بين BEEsc-exit و TP الأصلي
+                    _tp_label_lv = ("BEEsc-breakeven"
+                                    if pos.get('_be_esc_done')
+                                    else "Hard TP")
                     if pos['action'] == "BUY":
-                        if price <= pos['sl']: ex = True; rsn = "Emergency SL"
-                        elif price >= pos.get('tp1', 1e18): ex = True; rsn = "Hard TP"
+                        if price <= pos['sl']:
+                            ex = True; rsn = "Emergency SL"
+                        elif price >= pos.get('tp1', 1e18):
+                            ex = True; rsn = _tp_label_lv
                     else:
-                        if price >= pos['sl']: ex = True; rsn = "Emergency SL"
-                        elif price <= pos.get('tp1', 0.): ex = True; rsn = "Hard TP"
+                        if price >= pos['sl']:
+                            ex = True; rsn = "Emergency SL"
+                        elif price <= pos.get('tp1', 0.):
+                            ex = True; rsn = _tp_label_lv
 
                 # ── [LAYER 5] LiqProximity with exchange-verified Liq ──
                 if not ex and getattr(CFG, 'LIQ_EMERGENCY_ENABLED', True):
@@ -19260,6 +19453,7 @@ def run_live(cfg, exchange):
                     _urgent = (
                         'Emergency' in rsn
                         or 'Hard TP' in rsn
+                        or 'BEEsc-breakeven' in rsn
                         or 'LiqProximity' in rsn
                         or (_apex_urgent_lv and (
                             ('Apex' in rsn) or ('Topo-Div' in rsn)))
@@ -19513,6 +19707,7 @@ def run_live(cfg, exchange):
                             _ad_be, _ci_be, _p_be,
                             _pos_be['action'], float(_pos_be['entry']),
                             _sl_d0_be, sig_opp=_sig_be,
+                            pos=_pos_be,
                         )
                         if _be_trig:
                             _tp_new_be = _apply_breakeven_escape(
@@ -20491,6 +20686,10 @@ def main():
                    help="Enable adaptive TP: when an opposite signal "
                         "appears on the same symbol, move the open "
                         "position's TP to the opposite's tunnel entry")
+    p.add_argument("--opp-tp-allow-loss", action="store_true",
+                   help="[OppTP] Allow the adaptive TP to fire even when "
+                        "the position is in loss zone. Default: only in "
+                        "profit zone (safer -- protection of profit region)")
     p.add_argument("--opp-tp-score-mult", type=float, default=None,
                    help="Min score ratio (opp/entry) to trigger TP move "
                         "(default 1.20)")
@@ -20957,6 +21156,24 @@ def main():
     if getattr(args, "be_escape_min_profit_r", None) is not None:
         CFG.BREAKEVEN_ESCAPE_MIN_PROFIT_R = float(
             args.be_escape_min_profit_r)
+
+    # ══ [BEEsc-WARN] تحذيرات ضد إعدادات خطرة ══
+    if getattr(args, "be_escape_move_r", None) is not None:
+        _v = float(args.be_escape_move_r)
+        if _v < 0.60:
+            log.warning(
+                f"[BEEsc] --be-escape-move-r={_v} < 0.60 "
+                f"قد يُطلق BEEsc على تذبذب عادي. "
+                f"الموصى به: 0.80"
+            )
+    if getattr(args, "be_escape_min_profit_r", None) is not None:
+        _v = float(args.be_escape_min_profit_r)
+        if _v < 0.10:
+            log.warning(
+                f"[BEEsc] --be-escape-min-profit-r={_v} < 0.10 "
+                f"يجعل BEEsc-exit سالباً (رسوم > ربح). "
+                f"الموصى به: 0.15+"
+            )
     if getattr(args, "be_escape_ema_lookback", None) is not None:
         CFG.BREAKEVEN_ESCAPE_EMA_LOOKBACK = int(
             args.be_escape_ema_lookback)
@@ -21018,11 +21235,25 @@ def main():
             CFG.OPP_TP_MIN_DELTA_R = float(args.opp_tp_min_delta_r)
         if args.opp_tp_max_age_bars is not None:
             CFG.OPP_TP_MAX_AGE_BARS = int(args.opp_tp_max_age_bars)
+        if getattr(args, "opp_tp_allow_loss", False):
+            CFG.OPP_TP_REQUIRE_PROFIT = False
+            log.warning(
+                "[OppTP] --opp-tp-allow-loss: OPP_TP may fire in LOSS zone "
+                "-- moving TP to opposite signal's entry even when the "
+                "position is losing. NOT recommended."
+            )
+        else:
+            CFG.OPP_TP_REQUIRE_PROFIT = True
         log.info("[OppTP] Opposite-Signal Adaptive TP ENABLED")
         log.info(f"[OppTP]  score_mult={CFG.OPP_TP_SCORE_MULT}, "
                  f"min_profit_R={CFG.OPP_TP_MIN_PROFIT_R}, "
                  f"min_delta_R={CFG.OPP_TP_MIN_DELTA_R}, "
-                 f"max_age={CFG.OPP_TP_MAX_AGE_BARS}")
+                 f"max_age={CFG.OPP_TP_MAX_AGE_BARS}, "
+                 f"profit_guard={CFG.OPP_TP_REQUIRE_PROFIT}")
+        if CFG.OPP_TP_REQUIRE_PROFIT:
+            log.info("[OppTP] Behavior: fires ONLY in profit zone; TP moves to "
+                     "the opposite signal's entry, guaranteeing at least "
+                     "OPP_TP_MIN_PROFIT_R.")
     else:
         log.info("[OppTP] Opposite-Signal Adaptive TP DISABLED")
     # ══ [TRADE FILTER] ══
