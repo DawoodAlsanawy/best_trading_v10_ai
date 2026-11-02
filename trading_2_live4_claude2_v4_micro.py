@@ -251,8 +251,8 @@ class Config:
 
     TOPO_DIV_THRESHOLD: float = 0.05
 
-    K_MIN: int = 25
-    K_MAX: int = 50
+    K_MIN: int = 30
+    K_MAX: int = 60
     KQUANT_ALPHA: float = 100.0
 
     COSMOLOGICAL_CONSTANT: float = 0
@@ -1396,7 +1396,7 @@ def _default_assets():
         "BCH/USDT",    # بيتكوين كاش - رافعة 50x
         "NEAR/USDT",   # نير بروتوكول - رافعة 50x
         "APT/USDT",    # أبتوس - رافعة 50x
-        "HBAR/USDT",   # هيدرا - رافعة 50x
+#        "HBAR/USDT",   # هيدرا - رافعة 50x
 #        "VET/USDT",    # في تشين - رافعة 50x
         "STX/USDT",    # ستاكس - رافعة 50x
         "AAVE/USDT",   # آفي - رافعة 50x
@@ -1667,7 +1667,7 @@ _SUBBARS_TF_MAP = {
     "30m": "5m",   # 6 sub-bars
     "1h":  "5m",   # 12 sub-bars
     "2h":  "15m",  # 8 sub-bars
-    "4h":  "5m",  # 16 sub-bars
+    "4h":  "15m",  # 16 sub-bars
     "6h":  "30m",  # 12 sub-bars
     "8h":  "30m",  # 16 sub-bars
     "12h": "1h",   # 12 sub-bars

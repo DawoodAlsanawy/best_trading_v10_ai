@@ -254,8 +254,8 @@ class Config:
 
     TOPO_DIV_THRESHOLD: float = 0.05
 
-    K_MIN: int = 25
-    K_MAX: int = 50
+    K_MIN: int = 30
+    K_MAX: int = 60
     KQUANT_ALPHA: float = 100.0
 
     COSMOLOGICAL_CONSTANT: float = 0
@@ -425,13 +425,13 @@ class Config:
     # ══ [TF-UNIFIED SCALING] ══
     # كل المسافات بوحدة σ_price = E_therm[fi] × price.
     # كل النوافذ بالساعات الحقيقية (تُحوَّل إلى شموع عند الإقلاع).
-    FRICTION_DIP_KAPPA: float = 2.0       # friction_drag = κ × σ_price
+    FRICTION_DIP_KAPPA: float = 0.0       # friction_drag = κ × σ_price
 #    SL_REF_KAPPA: float = 2.0             # SL/σ = κ × uncertainty / (1 + fric×5)
 #    SL_MIN_SIGMA: float = 1.0             # أدنى SL بوحدة σ
 #    SL_MAX_SIGMA: float = 5.0             # أقصى SL بوحدة σ
-    SL_REF_KAPPA: float = 1.2     # كان 2.0
-    SL_MIN_SIGMA: float = 3.0     # كان 1.0
-    SL_MAX_SIGMA: float = 8.0     # كان 5.0
+    SL_REF_KAPPA: float = 2.0 # 1.2     # كان 2.0
+    SL_MIN_SIGMA: float = 1.0 # 3.0     # كان 1.0
+    SL_MAX_SIGMA: float = 5.0 # 8.0     # كان 5.0
     N_HOURS: float = 24.0                 # نافذة الميزات (ساعات)
     W_HOURS: float = 20.0                 # نافذة الإنتروبيا
     L_HOURS: float = 10.0                 # نافذة الهندسة
