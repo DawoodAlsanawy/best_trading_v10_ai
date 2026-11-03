@@ -1,3 +1,4 @@
+# ═══ [REV-SUBBAR-ENTRY-APPLIED] ═══
 # [RESCUE-EXIT-APPLIED]
 # [LIVE-PERF-FIX-APPLIED]
 # [ANALYTICS-V1-APPLIED]
@@ -393,7 +394,7 @@ class Config:
     TF_SECONDS: int = 3600        # seconds per bar
     TF_HOURS: float = 1.0         # hours per bar
     # ══ [NOTIONAL CAP — anti-compounding] ══
-    MAX_ABS_NOTIONAL: float = 100_000.0     # tuned for alt liquidity
+    MAX_ABS_NOTIONAL: float = 30_000.0     # tuned for alt liquidity
     # ══ [DYNAMIC TRAILING — volatility-scaled] ══
     TRAIL_DYNAMIC: bool = True
     TRAIL_KAPPA: float = 0.30                # tuned to 1h timeframe
@@ -429,7 +430,7 @@ class Config:
 #    SL_REF_KAPPA: float = 2.0             # SL/σ = κ × uncertainty / (1 + fric×5)
 #    SL_MIN_SIGMA: float = 1.0             # أدنى SL بوحدة σ
 #    SL_MAX_SIGMA: float = 5.0             # أقصى SL بوحدة σ
-    SL_REF_KAPPA: float = 2.0 # 1.2     # كان 2.0
+    SL_REF_KAPPA: float = 1.5 # 1.2     # كان 2.0
     SL_MIN_SIGMA: float = 1.0 # 3.0     # كان 1.0
     SL_MAX_SIGMA: float = 5.0 # 8.0     # كان 5.0
     N_HOURS: float = 24.0                 # نافذة الميزات (ساعات)
@@ -540,6 +541,12 @@ class Config:
     PROTECTIVE_ORDERS_ENABLED: bool = True
     PROTECTIVE_WORKING_TYPE: str = "MARK_PRICE"
     PROTECTIVE_SYNC_MIN_STEP_FRAC: float = 0.001   # 0.1% SL movement → resync
+    # ══ [SL LIMIT] تحويل SL من STOP_MARKET إلى STOP_LIMIT ══
+    # True  → SL = STOP_LIMIT @ sl±buffer (bounded slippage, maker fee)
+    # False → SL = STOP_MARKET (current behavior — taker, unbounded slippage)
+    PROTECTIVE_SL_USE_LIMIT: bool = True
+    PROTECTIVE_SL_LIMIT_BUFFER_FRAC: float = 0.002   # 0.2% buffer
+    # ══ [SL LIMIT end] ══
     PROTECTIVE_MAX_RETRIES: int = 2
     # ══ [LAYER 4 — Live price feed for SL/TP checks] ══
     # ad.closes[-1] only refreshes on new bar; on 1h it's frozen for up to
@@ -610,7 +617,7 @@ class Config:
         (4.0, 3.70),
         (5.0, 4.70),
     )
-    TRAIL_MIN_R_FRACTION: float = 0.8
+    TRAIL_MIN_R_FRACTION: float = 1
     TRAIL_PHYSICS_ENABLED: bool = True
     TRAIL_ACCEL_SCALE: float = 0.005
     TRAIL_FRICTION_SCALE: float = 0.15
@@ -684,7 +691,7 @@ class Config:
     # rest ride with trailing.
     PARTIAL_TP_ENABLED: bool = True
     PARTIAL_TP_R: float = 1.5           # [ABL4a] 3.0 -> 1.5
-    PARTIAL_TP_PCT: float = 0.50         # close 50% at that level
+    PARTIAL_TP_PCT: float = 0.60         # close 50% at that level
     TP_MULT: float = 5.0    # كان 2.0 → الآن 1.5 (R:R = 1.5)
     APEX_ENABLED: bool = True     # عطّله مؤقتاً حتى نضبط عتباته
 
@@ -952,8 +959,18 @@ class Config:
     REVERSAL_ESCAPE_CHECK_INTERVAL_S: float = 5.0   # [REV-FIX v1] escape logic removed (unused)
     # ══ [REV-FIX v1] reversal-confirm live/backtest parity knobs ══
     REV_WATCHER_CAP: int = 50                 # memory cap ONLY (watchers never use position slots)
-    REV_FILL_MAX_WAIT_S: float = 90.0         # total time budget of the non-blocking FILLING state
-    REV_REPRICE_S: float = 5.0                # cancel/replace cadence (post-only at best bid/ask)
+    REV_FILL_MAX_WAIT_S: float = 300.0 # was 90.0         # total time budget of the non-blocking FILLING state
+    REV_REPRICE_S: float = 300.0  # was 5.0              # cancel/replace cadence (post-only at best bid/ask)
+    # ══ [SUB-BAR ENTRY] الدخول عند إغلاق شمعة التأكيد ══
+    # True  → Limit maker عند سعر إغلاق شمعة التأكيد (مطابق للـ backtest)
+    # False → Marketable limit عند best bid/ask (السلوك الأصلي)
+    # ملاحظة: الدخول يكون فقط إذا لم يتحرك السعر أكثر من
+    # REV_SUBBAR_ENTRY_MAX_DRIFT_BPS منذ إغلاق شمعة التأكيد.
+    REV_SUBBAR_ENTRY_ENABLED: bool = True
+    REV_SUBBAR_ENTRY_PEN_BPS: float = 2.0          # 0.02% انزلاق نحو السوق
+    REV_SUBBAR_ENTRY_MAX_DRIFT_BPS: float = 15.0   # 0.15% drift قبل التحول لـ marketable
+    REV_SUBBAR_ENTRY_MARKETABLE: bool = False      # True → Limit + تقاطع السبريد (taker)
+    # ══ [SUB-BAR ENTRY end] ══
     REV_MAX_CHASE_KAPPA: float = 0.15         # max chase above/below confirm close, in sigma_bar*px
     REV_MAX_CONFIRM_AGE_SUBBARS: int = 2      # confirm bar older than this -> drop (stale)
     REV_ENTRY_LATENCY_SUBBARS: int = 0        # extra sub-bars of latency (backtest + live window)
@@ -1687,7 +1704,7 @@ _SUBBARS_TF_MAP = {
     "30m": "5m",   # 6 sub-bars
     "1h":  "5m",   # 12 sub-bars
     "2h":  "15m",  # 8 sub-bars
-    "4h":  "15m",  # 16 sub-bars
+    "4h":  "5m",  # 16 sub-bars
     "6h":  "30m",  # 12 sub-bars
     "8h":  "30m",  # 16 sub-bars
     "12h": "1h",   # 12 sub-bars
@@ -11352,7 +11369,54 @@ def _place_protective_orders(exchange, sym: str, pos: Dict) -> bool:
         # ══════════════════════════════════════════════════════════════
         # SL — place only if missing
         # ══════════════════════════════════════════════════════════════
-        if not placed['sl']:
+        _use_sl_limit = bool(getattr(CFG, 'PROTECTIVE_SL_USE_LIMIT', True))
+        _sl_buf = float(getattr(CFG, 'PROTECTIVE_SL_LIMIT_BUFFER_FRAC', 0.002))
+
+        if not placed['sl'] and _use_sl_limit:
+            # ══ [SL LIMIT] STOP_LIMIT with bounded slippage ══
+            if close_side == 'sell':
+                _lim_px = sl * (1.0 - _sl_buf)
+            else:
+                _lim_px = sl * (1.0 + _sl_buf)
+            try:
+                _lim_px = float(exchange.price_to_precision(sym, _lim_px))
+            except Exception:
+                pass
+            for attempt in range(max_retries):
+                try:
+                    exchange.create_order(
+                        sym, 'STOP', close_side, qty, _lim_px,
+                        params={'stopPrice': sl,
+                                'reduceOnly': True,
+                                'workingType': wt,
+                                'timeInForce': 'GTC'})
+                    placed['sl'] = True
+                    log.info(f"[Prot] {sym} SL STOP_LIMIT "
+                             f"trigger={sl:.6f} limit={_lim_px:.6f} "
+                             f"(buf={_sl_buf*100:.2f}%)")
+                    break
+                except Exception as e:
+                    log.debug(f"[Prot] {sym} STOP_LIMIT "
+                              f"attempt {attempt+1} failed: {e}")
+                    # Fallback to STOP_MARKET if STOP_LIMIT rejected
+                    if attempt == max_retries - 1:
+                        log.warning(f"[Prot] {sym} STOP_LIMIT failed, "
+                                    f"falling back to STOP_MARKET")
+                        try:
+                            exchange.create_order(
+                                sym, 'STOP_MARKET', close_side, qty, None,
+                                params={'stopPrice': sl,
+                                        'reduceOnly': True,
+                                        'workingType': wt})
+                            placed['sl'] = True
+                            log.info(f"[Prot] {sym} SL STOP_MARKET "
+                                     f"(fallback) @ {sl:.6f}")
+                            break
+                        except Exception as e2:
+                            log.debug(f"[Prot] {sym} STOP_MARKET "
+                                      f"attempt {attempt+1} failed: {e2}")
+        elif not placed['sl']:
+            # ── Legacy STOP_MARKET path (PROTECTIVE_SL_USE_LIMIT=False) ──
             for attempt in range(max_retries):
                 try:
                     exchange.create_order(
@@ -17077,6 +17141,9 @@ def _rev_scan(exchange, sym: str, w: Dict, sub_tf: str, sub_sec: int,
                 w["confirm_close_ts"] = ts + sub_sec
                 w["prev_close"] = c
                 w["last_scan_ts"] = ts
+                # ══ [SUB-BAR ENTRY] حفظ سعر إغلاق شمعة التأكيد ══
+                w["confirm_close_px"] = float(c)
+                w["confirm_bar_close_ts"] = float(ts + sub_sec)
                 log.info(f"[LiveRev] {sym} BOUNCE confirmed k={k} close={c:.6f}")
                 break
         w["prev_close"] = c
@@ -17126,7 +17193,18 @@ def _rev_handle_ready(exchange, sym: str, w: Dict, open_pos_live: Dict,
     w["fill_started"] = now
     w["fill_deadline"] = now + float(_revc("REV_FILL_MAX_WAIT_S", 90.0))
     w["last_reprice"] = 0.0
-    log.info(f"[LiveRev] {sym} FILLING qty={qty:.6f} ref={w['ref_px']:.6f}")
+    # ══ [SUB-BAR ENTRY] اختيار نمط التنفيذ ══
+    _subbar_mode = bool(getattr(CFG, 'REV_SUBBAR_ENTRY_ENABLED', True))
+    _confirm_px = w.get("confirm_close_px")
+    if _subbar_mode and _confirm_px:
+        w["entry_mode"] = "subbar_close"
+        w["target_entry_px"] = float(_confirm_px)
+        log.info(f"[LiveRev] {sym} FILLING qty={qty:.6f} "
+                 f"entry_mode=subbar_close target={_confirm_px:.6f}")
+    else:
+        w["entry_mode"] = "marketable"
+        log.info(f"[LiveRev] {sym} FILLING qty={qty:.6f} "
+                 f"entry_mode=marketable ref={w['ref_px']:.6f}")
 
 
 # ───────────────────────── fill engine (non-blocking) ─────────────────────────
@@ -17235,32 +17313,98 @@ def _rev_advance_filling(exchange, sym: str, w: Dict, open_pos_live: Dict,
     w["cid_sent"] = True
     
     # ════════════════════════════════════════════════════════════════
-    # [SMART EXECUTION v2] Marketable Limit with Dynamic Slippage Cap
+    # [SUB-BAR ENTRY] مسار الدخول عند إغلاق شمعة التأكيد
     # ════════════════════════════════════════════════════════════════
-    # حساب المسافة الأصلية للوقف للحفاظ على التناسب
-    orig_sl_dist = float(w.get("orig_sl_dist", ref_px * 0.015))
+    _entry_mode = w.get("entry_mode", "marketable")
+    if _entry_mode == "subbar_close" and w.get("target_entry_px"):
+        _subbar_px = float(w["target_entry_px"])
+        _pen_bps = float(getattr(CFG, 'REV_SUBBAR_ENTRY_PEN_BPS', 2.0))
+        _pen_frac = _pen_bps * 1e-4
+        _marketable_override = bool(getattr(CFG, 'REV_SUBBAR_ENTRY_MARKETABLE', False))
+        _max_drift = float(getattr(CFG, 'REV_SUBBAR_ENTRY_MAX_DRIFT_BPS', 15.0))
+        
+        # drift = |best_px - subbar_close| / subbar_close
+        _drift_bps = abs(px - _subbar_px) / max(_subbar_px, 1e-12) * 1e4
+        
+        if _drift_bps > _max_drift:
+            log.info(f"[LiveRev-SubBar] {sym} drifted "
+                     f"{_drift_bps:.1f}bps > {_max_drift:.1f}bps "
+                     f"-> falling back to marketable")
+            w["entry_mode"] = "marketable"
+        else:
+            # سعر الأمر: subbar_close ± pen
+            if action == "BUY":
+                entry_px = _subbar_px * (1.0 + _pen_frac)
+            else:
+                entry_px = _subbar_px * (1.0 - _pen_frac)
+            entry_px = _rev_snap_price(exchange, sym, entry_px, side)
+            
+            if _marketable_override:
+                # Limit crosses the spread (taker)
+                _ord_params = {"clientOrderId": cid}
+                _ord_desc = "Marketable-SubBar"
+            else:
+                # Post-Only GTX (maker)
+                _ord_params = {"clientOrderId": cid, "timeInForce": "GTX"}
+                _ord_desc = "PostOnly-SubBar"
+            
+            w["order_px"] = entry_px
+            w["last_reprice"] = now
+            save_reversal_watchers()
+            
+            try:
+                o = _rev_api(exchange.create_order, sym, "limit",
+                             side, q, entry_px, params=_ord_params)
+                w["order_id"] = str(o.get("id") or "")
+                w["cid_sent"] = False
+                log.info(f"[LiveRev-SubBar] {sym} {_ord_desc} {side} {q} "
+                         f"@ {entry_px:.6f} "
+                         f"(subbar_close={_subbar_px:.6f}, "
+                         f"drift={_drift_bps:.1f}bps, "
+                         f"best_px={px:.6f})")
+                return
+            except Exception as e:
+                msg = str(e)
+                if ("-5022" in msg or "Post Only" in msg
+                        or "post only" in msg
+                        or "immediately match" in msg):
+                    log.info(f"[LiveRev-SubBar] {sym} GTX rejected "
+                             f"(price moved) -> retry marketable: {msg[:100]}")
+                    w["entry_mode"] = "marketable"
+                    _rev_clear_order(w)
+                    save_reversal_watchers()
+                    return
+                elif any(c in msg for c in ("-2019", "-4164", "-1111", "-4003",
+                                            "-2027", "-4028")):
+                    _rev_clear_order(w)
+                    log.warning(f"[LiveRev-SubBar] {sym} order refused: {msg[:160]}")
+                    _rev_finish(exchange, sym, w, open_pos_live, assets,
+                                "order_refused")
+                    save_reversal_watchers()
+                    return
+                else:
+                    log.warning(f"[LiveRev-SubBar] {sym} ambiguous: {msg[:160]}")
+                    save_reversal_watchers()
+                    return
     
-    # أقصى انزلاق مسموح هو 15% من مسافة الـ Stop Loss 
-    # (بحيث لا يتشوه الـ Risk:Reward الخاص بك)
+    # ════════════════════════════════════════════════════════════════
+    # [SMART EXECUTION v2] Marketable Limit (الأصلي — fallback)
+    # ════════════════════════════════════════════════════════════════
+    orig_sl_dist = float(w.get("orig_sl_dist", ref_px * 0.015))
     max_slip_allowed = orig_sl_dist * 0.15 
     
     if action == "BUY":
-        # في الشراء: نرسل أمر ليمت أعلى من أفضل سعر بيع (Best Ask) بقليل
         marketable_px = px + max_slip_allowed
     else:
-        # في البيع: نرسل أمر ليمت أقل من أفضل سعر شراء (Best Bid) بقليل
         marketable_px = px - max_slip_allowed
         
-    # تقريب السعر ليتوافق مع شروط البورصة
     marketable_px = _rev_snap_price(exchange, sym, marketable_px, side)
     
     w["order_px"] = marketable_px
     w["last_reprice"] = now
-    save_reversal_watchers()            # persist BEFORE the order exists
+    save_reversal_watchers()
     
     try:
-        # إرسال الأمر بدون GTX (ليتمكن من اقتحام السبريد كأمر Market)
-        # ولكن بحد أقصى للسعر يمنع الانزلاق الكارثي
         o = _rev_api(exchange.create_order, sym, "limit", side, q, marketable_px,
                      params={"clientOrderId": cid})
         w["order_id"] = str(o.get("id") or "")
@@ -17280,7 +17424,6 @@ def _rev_advance_filling(exchange, sym: str, w: Dict, open_pos_live: Dict,
             _rev_finish(exchange, sym, w, open_pos_live, assets,
                         "order_refused")
         else:
-            # ambiguous (timeout etc.): keep cid, resolve by lookup next cycle
             log.warning(f"[LiveRev] {sym} create_order ambiguous: {msg[:160]}")
     save_reversal_watchers()
 
@@ -21224,6 +21367,20 @@ def main():
     p.add_argument("--reversal-fill", type=str, default=None,
                    choices=["target","close","best"],
                    help="Fill price source (default target)")
+    # ══ [SUB-BAR ENTRY] ══
+    p.add_argument("--rev-subbar-entry", action="store_true", default=None,
+                   help="[SubBar Entry] الدخول عند إغلاق شمعة التأكيد "
+                        "(Limit maker بدل marketable). مطابق للـ backtest.")
+    p.add_argument("--no-rev-subbar-entry", action="store_true",
+                   help="[SubBar Entry] تعطيل الدخول عند إغلاق شمعة التأكيد")
+    p.add_argument("--rev-subbar-entry-pen-bps", type=float, default=None,
+                   help="[SubBar Entry] انزلاق نحو السوق (default 2.0 bps)")
+    p.add_argument("--rev-subbar-entry-max-drift-bps", type=float, default=None,
+                   help="[SubBar Entry] أقصى drift قبل التحول لـ marketable "
+                        "(default 15.0 bps)")
+    p.add_argument("--rev-subbar-entry-marketable", action="store_true",
+                   help="[SubBar Entry] استخدم Limit عند subbar_close مع "
+                        "تقاطع السبريد (taker) بدل Post-Only GTX (maker)")
     # ══ [REV-FIX v3] Maker Ladder (Phase 1) ══
     p.add_argument("--rev-ladder", action="store_true",
                    help="Post-bounce 3-level maker ladder (40/35/25 at mu, mu-0.3s, mu-0.6s) instead of the single marketable limit")
@@ -21774,6 +21931,26 @@ def main():
         CFG.REVERSAL_CONFIRM_KAPPA = float(args.reversal_kappa)
     if getattr(args, "reversal_fill", None) is not None:
         CFG.REVERSAL_FILL_AT = str(args.reversal_fill)
+    # ══ [SUB-BAR ENTRY] wiring ══
+    if getattr(args, "no_rev_subbar_entry", False):
+        CFG.REV_SUBBAR_ENTRY_ENABLED = False
+        log.info("[SubBar-Entry] DISABLED (using marketable)")
+    elif getattr(args, "rev_subbar_entry", None):
+        CFG.REV_SUBBAR_ENTRY_ENABLED = True
+        log.info("[SubBar-Entry] ENABLED (limit at confirm bar close)")
+    if getattr(args, "rev_subbar_entry_pen_bps", None) is not None:
+        CFG.REV_SUBBAR_ENTRY_PEN_BPS = float(args.rev_subbar_entry_pen_bps)
+    if getattr(args, "rev_subbar_entry_max_drift_bps", None) is not None:
+        CFG.REV_SUBBAR_ENTRY_MAX_DRIFT_BPS = float(
+            args.rev_subbar_entry_max_drift_bps
+        )
+    if getattr(args, "rev_subbar_entry_marketable", False):
+        CFG.REV_SUBBAR_ENTRY_MARKETABLE = True
+    if CFG.REV_SUBBAR_ENTRY_ENABLED:
+        _mkt = 'marketable (taker)' if CFG.REV_SUBBAR_ENTRY_MARKETABLE else 'Post-Only (maker)'
+        log.info(f"[SubBar-Entry] pen={CFG.REV_SUBBAR_ENTRY_PEN_BPS:.1f}bps "
+                 f"max_drift={CFG.REV_SUBBAR_ENTRY_MAX_DRIFT_BPS:.1f}bps "
+                 f"mode={_mkt}")
     # ══ [REV-FIX v3] Maker Ladder wiring ══
     if getattr(args, "rev_ladder", False):
         CFG.REV_LADDER_ENABLED = True
