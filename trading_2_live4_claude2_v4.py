@@ -255,8 +255,12 @@ class Config:
 
     TOPO_DIV_THRESHOLD: float = 0.05
 
-    K_MIN: int = 30
-    K_MAX: int = 60
+    K_MIN: int = 30 # 4h
+    K_MAX: int = 60 # 4h
+
+    # K_MIN: int = 50    # 1h
+    # K_MAX: int = 100    # 1h
+
     KQUANT_ALPHA: float = 100.0
 
     COSMOLOGICAL_CONSTANT: float = 0
@@ -394,7 +398,7 @@ class Config:
     TF_SECONDS: int = 3600        # seconds per bar
     TF_HOURS: float = 1.0         # hours per bar
     # ══ [NOTIONAL CAP — anti-compounding] ══
-    MAX_ABS_NOTIONAL: float = 30_000.0     # tuned for alt liquidity
+    MAX_ABS_NOTIONAL: float = 100_000.0     # tuned for alt liquidity
     # ══ [DYNAMIC TRAILING — volatility-scaled] ══
     TRAIL_DYNAMIC: bool = True
     TRAIL_KAPPA: float = 0.30                # tuned to 1h timeframe
@@ -437,7 +441,7 @@ class Config:
     W_HOURS: float = 20.0                 # نافذة الإنتروبيا
     L_HOURS: float = 10.0                 # نافذة الهندسة
     ADV_HOURS: float = 24.0               # نافذة ADV
-    ADV_BARS: int = 24                    # يُضبط ديناميكياً في main()
+    ADV_BARS: int = 24                   # يُضبط ديناميكياً في main()
     # ══ [UNIFIED ENTRY LOGIC] ══
     # منطق موحّد بمرحلتين:
     #   Stage 1: أمر Limit عند tunnel_entry_p، انتظر UNIFIED_WAIT_BARS_1H.
@@ -671,7 +675,7 @@ class Config:
     # often BELOW the SL distance. So SL moved above entry on tiny moves
     # and killed 52% of trades with a "profitable SL" that capped gains.
     # New design: trailing only activates after N × sl_dist_initial of MFE.
-    TRAIL_ACTIVATE_AT_R: float = 0.8    # activate at +1R of profit
+    TRAIL_ACTIVATE_AT_R: float = 1.5    # activate at +1R of profit
 
     # ══ [FIX 2 — REGIME FILTER] ══
     # Skip signals when EMA200 slope (over lookback) is too steep
@@ -21882,7 +21886,7 @@ def main():
         # [SUB-BAR-GATE] Auto-enable sub-bar-only trailing in live/testnet
         # so live matches backtest (SL updates once per sub-bar close).
         if CFG.mode in ('live', 'testnet') and not CFG.TRAIL_USE_SUBBARS_ONLY:
-            CFG.TRAIL_USE_SUBBARS_ONLY = True
+            #CFG.TRAIL_USE_SUBBARS_ONLY = True
             log.info(
                 "[Trail] --no-dynamic-trail in live → "
                 "TRAIL_USE_SUBBARS_ONLY=True (SL updates only on "
@@ -22378,6 +22382,6 @@ if __name__=="__main__":
     main()
 
 # to run the project use the command 
-# python3 trading_2_live4_claude2_v4.py --mode testnet   --api-key ${BINANCE_TESTNET_KEY} --api-secret ${BINANCE_TESTNET_SECRET}   --nassets 100 --timeframe 4h --no-fixed-price   --enable-sell --sell-gauge-pct 100   --tp-mult 7 --sl-widen-mult 1 --partial-tp-r 3   --maxcon 10 --workers 4 --history-days 730 --po-wait-s 300  --capital 100   --be-escape --be-escape-move-r 0.30 --be-escape-min-profit-r 0.1 --no-be-escape-ema  --rule-filter --rule-min-score 3
+# python3 trading_2_live4_claude2_v4.py --mode backtest --api-key ${BINANCE_TESTNET_KEY} --api-secret ${BINANCE_TESTNET_SECRET} --nassets 100 --timeframe 4h --enable-sell --sell-gauge-pct 100 --tp-mult 7 --sl-widen-mult 1.3 --partial-tp-r 3 --maxcon 15 --workers 4 --history-days 730 --po-wait-s 300 --be-escape --be-escape-move-r 0.30 --be-escape-min-profit-r 0.1  --no-dynamic-trail --heat-max 0.15 --capital 100 --history-days 730 --no-breakeven --opp-tp --no-be-escape-ema
 
 # [LIVE-PARITY-FIXES] applied
