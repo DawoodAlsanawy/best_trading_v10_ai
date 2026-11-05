@@ -1,4 +1,5 @@
 # ═══ [REV-SUBBAR-ENTRY-APPLIED] ═══
+# ═══ [DOTENV-APPLIED] ═══
 # [RESCUE-EXIT-APPLIED]
 # [LIVE-PERF-FIX-APPLIED]
 # [ANALYTICS-V1-APPLIED]
@@ -50,6 +51,71 @@ import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 
 warnings.filterwarnings("ignore")
+
+# ══ [DOTENV] Load .env into os.environ at module start ═══════════════
+# Runs BEFORE _setup_logging() so that env vars from .env
+# (QTT_LOG_FILE, etc.) influence logging. Searches CWD first,
+# then the script directory.
+_DOTENV_LOADED = 0
+
+
+def _load_dotenv(path: str = ".env") -> int:
+    """Load KEY=VALUE pairs from .env into os.environ.
+
+    - Does NOT override existing os.environ entries (dotenv rule).
+    - Supports: comments (#), quotes, `export KEY=value`.
+    - Returns: number of NEW env vars added.
+    """
+    global _DOTENV_LOADED
+    candidates = [path]
+    try:
+        _script_dir = os.path.dirname(os.path.abspath(__file__))
+        candidates.append(os.path.join(_script_dir, path))
+    except Exception:
+        pass
+    actual = None
+    for _p in candidates:
+        if os.path.exists(_p):
+            actual = _p
+            break
+    if actual is None:
+        _DOTENV_LOADED = 0
+        return 0
+    loaded = 0
+    try:
+        with open(actual, "r", encoding="utf-8") as _f:
+            for _raw in _f:
+                _line = _raw.strip()
+                if not _line or _line.startswith("#"):
+                    continue
+                if "=" not in _line:
+                    continue
+                _k, _, _v = _line.partition("=")
+                _k = _k.strip()
+                if _k.startswith("export "):
+                    _k = _k[len("export "):].strip()
+                _v = _v.strip()
+                if (len(_v) >= 2 and _v[0] == _v[-1]
+                        and _v[0] in ("\"", "'")):
+                    _v = _v[1:-1]
+                if not _k:
+                    continue
+                if _k not in os.environ:
+                    os.environ[_k] = _v
+                    loaded += 1
+    except Exception as _e:
+        try:
+            logging.getLogger("QTT6").warning(
+                f"[DotEnv] load failed: {_e}"
+            )
+        except Exception:
+            pass
+    _DOTENV_LOADED = loaded
+    return loaded
+
+
+_load_dotenv()
+# ══ [DOTENV end] ══════════════════════════════════════════════════════
 
 # ══ [WATCH-REMOVED-MASTER] ═══════════════════════════════════════════
 # Watch-then-trigger mode has been permanently disabled.
@@ -21269,7 +21335,7 @@ def _check_time_sync(exchange, warn_threshold_s: float = 30.0) -> bool:
 
 def main():
     p = argparse.ArgumentParser(description="Quantum Thermo Trader v6.0 – Singularity Engine")
-    p.add_argument("--mode",        default="backtest", choices=["backtest","testnet","live"])
+    p.add_argument("--mode",        default=os.environ.get("MODE", "backtest"), choices=["backtest","testnet","live"])
     p.add_argument("--api-key",     default=os.environ.get("BINANCE_API_KEY",""))
     p.add_argument("--api-secret",  default=os.environ.get("BINANCE_API_SECRET",""))
     p.add_argument("--capital",     type=float, default=None)
@@ -21649,6 +21715,19 @@ def main():
     CFG.mode = args.mode
     CFG.api_key = args.api_key
     CFG.api_secret = args.api_secret
+    # ══ [DOTENV] startup info (no secrets logged) ══
+    try:
+        if _DOTENV_LOADED > 0:
+            log.info(f"[Env] Loaded {_DOTENV_LOADED} variable(s) from .env")
+        else:
+            log.info("[Env] No .env file found (using CLI args or shell env)")
+        log.info(
+            f"[Env] mode={CFG.mode}  "
+            f"api_key={'SET' if CFG.api_key else 'EMPTY'}  "
+            f"api_secret={'SET' if CFG.api_secret else 'EMPTY'}"
+        )
+    except Exception:
+        pass
     if args.capital   is not None: CFG.INITIAL_CAPITAL = args.capital
     if args.live_capital is not None: CFG.LIVE_TRADING_CAPITAL = float(args.live_capital)
     if args.base_risk is not None: CFG.BASE_RISK = args.base_risk; CFG.MIN_RISK_PER_TRADE = args.base_risk
