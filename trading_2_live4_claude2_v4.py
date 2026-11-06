@@ -1,3 +1,4 @@
+# ═══ [RASE-REMAINING-IMPROVEMENTS-APPLIED] ═══
 # ═══ [REV-SUBBAR-ENTRY-APPLIED] ═══
 # ═══ [DOTENV-APPLIED] ═══
 # [RESCUE-EXIT-APPLIED]
@@ -261,6 +262,7 @@ class Config:
     history_days: int = 730
 
     N: int = 24; W: int = 20; L: int = 10; K: int = 8
+    # N: int = 12; W: int = 32; L: int = 12; K: int = 8 تجربة
     EMA_SPAN: int = 200; ATR_PERIOD: int = 14
 
     W_CURV: float=1.0; W_VOL: float=1.0; W_ENTROPY: float=2.0
@@ -645,6 +647,25 @@ class Config:
     ENTRY_REGIME_RANGING_MULT: float = 0.60
     ENTRY_REGIME_TRENDING_MULT: float = 1.00
     ENTRY_REGIME_EXPLOSIVE_MULT: float = 1.30
+    ENTRY_REGIME_NORMAL_MULT: float = 1.50
+    # ══ [RASE Phase 1] Regime-Adaptive Sub-Bar Entry ══
+    # Disabled by default → bit-identical to legacy behavior.
+    RASE_ENABLED: bool = False
+    RASE_DIP_FLOOR_FRAC: float = 0.4
+    RASE_DIP_CAP_FRAC:   float = 1.0
+    RASE_REGIME_GAUGE_P75_WINDOW: int = 200
+    # ══ [TP DYNAMIC] اختيار R:R لكل إشارة بحسب الفيزياء ══
+    # False → استخدم TP_MULT الثابت (السلوك القديم)
+    TP_DYNAMIC_MULT: bool = False
+    TP_MIN_MULT: float = 1.5
+    TP_MAX_MULT: float = 5.0
+    TP_PHYSICS_SIGMA_CAP: float = 2.0
+    TP_ENERGY_MIN_RATIO: float = 0.65
+    TP_REJECT_BELOW_MIN: bool = False
+    TP_HORIZON_BARS_1H: int = 10
+    # ══ [NOTIONAL-FRAC-CAP] سقف notional لكل صفقة (0 = off) ══
+    # يمنع استخدام رأس المال بالكامل في صفقة واحدة.
+    MAX_NOTIONAL_PER_TRADE_FRAC: float = 0.0
     # Layer 3: structure anchor (nearest swing)
     ENTRY_STRUCTURE_ANCHOR: bool = True
     ENTRY_STRUCTURE_MIN_ADV_USD: float = 1e8   # only liquid assets
@@ -3985,12 +4006,16 @@ def _recompute_entry_geometry_at_market(sig, ad, entry_ci, entry_fi, cfg):
         if sl_dist_new <= 0 or not np.isfinite(sl_dist_new):
             return None
 
+        # ══ [TP-FIX] بدلاً من 2.0 الصلب: استخدم TP_DYNAMIC أو TP_MULT ══
+        _tp_mult_s2, _ = _select_target_multiple(
+            ad, entry_fi, entry_ci, sig.action, sl_dist_new, cfg
+        )
         if sig.action == "BUY":
             sl_new = S_new - sl_dist_new
-            tp_new = S_new + (sl_dist_new * 2.0)
+            tp_new = S_new + (sl_dist_new * _tp_mult_s2)
         else:
             sl_new = S_new + sl_dist_new
-            tp_new = S_new - (sl_dist_new * 2.0)
+            tp_new = S_new - (sl_dist_new * _tp_mult_s2)
 
         return {
             'entry_px': p_current,
@@ -4736,6 +4761,8 @@ def _regime_entry_mult(regime: str) -> float:
         return float(getattr(CFG, 'ENTRY_REGIME_EXPLOSIVE_MULT', 1.30))
     if regime == "ranging":
         return float(getattr(CFG, 'ENTRY_REGIME_RANGING_MULT', 0.60))
+    if regime == "normal":
+        return float(getattr(CFG, 'ENTRY_REGIME_NORMAL_MULT', 1.50))
     return float(getattr(CFG, 'ENTRY_REGIME_TRENDING_MULT', 1.00))
 
 
@@ -4830,6 +4857,138 @@ def _compute_entry_dip(ad, fi: int, ci: int, action: str,
         return float(dip)
     except Exception:
         return 0.0
+
+
+# ════════════════════════════════════════════════════════════════
+# [RASE Phase 1] Regime-adaptive dip (clamped to physics envelope)
+# ════════════════════════════════════════════════════════════════
+def _compute_rase_dip(ad, fi, ci, action, close_price, sigma_price):
+    """
+    RASE Layer 2 — dip that adapts to the current market regime.
+
+    Uses friction dip if FRICTION_DIP_KAPPA > 0, else falls back
+    to ATR-based dip (legacy path) as the physics envelope.
+    Returns 0.0 on failure → caller falls back to legacy dip.
+    """
+    try:
+        if not getattr(CFG, 'RASE_ENABLED', False):
+            return 0.0
+        if sigma_price <= 0 or close_price <= 0:
+            return 0.0
+        # Choose base dip: friction (if enabled) or ATR
+        _fd_kappa = float(getattr(CFG, 'FRICTION_DIP_KAPPA', 0.0))
+        if _fd_kappa > 0:
+            base_dip = _fd_kappa * sigma_price
+        else:
+            base_dip = _compute_entry_dip(ad, fi, ci, action, close_price)
+        if base_dip <= 0:
+            return 0.0
+        regime = _classify_regime_local(
+            ad, fi, int(getattr(CFG, 'ENTRY_REGIME_LOOKBACK', 100))
+        )
+        mult = _regime_entry_mult(regime)
+        raw_dip = base_dip * mult
+        floor_frac = float(getattr(CFG, 'RASE_DIP_FLOOR_FRAC', 0.4))
+        cap_frac   = float(getattr(CFG, 'RASE_DIP_CAP_FRAC', 1.0))
+        lo = base_dip * floor_frac
+        hi = base_dip * cap_frac
+        if hi < lo:
+            lo, hi = hi, lo
+        return float(np.clip(raw_dip, lo, hi))
+    except Exception:
+        return 0.0
+
+
+# ════════════════════════════════════════════════════════════════
+# [TP DYNAMIC] اختيار R:R الأمثل لكل إشارة بحسب الفيزياء
+# ════════════════════════════════════════════════════════════════
+def _select_target_multiple(ad, fi, ci, action, sl_dist, cfg):
+    """
+    اختر R:R المثالي لكل إشارة بناءً على فيزياء السوق.
+    Returns (tp_mult, meta).
+    """
+    _meta = {'max_physics': 0.0, 'energy_cap': 0.0,
+             'force_ratio': 0.0, 'sigma_over_horizon': 0.0,
+             'sr_cap': None, 'rejected': False, 'reason': 'OK'}
+    try:
+        if not getattr(cfg, 'TP_DYNAMIC_MULT', False):
+            _meta['reason'] = 'dynamic_off'
+            return float(getattr(cfg, 'TP_MULT', 2.0)), _meta
+        if ad is None or ci < 0 or ci >= len(ad.closes):
+            _meta['reason'] = 'invalid_index'
+            return float(getattr(cfg, 'TP_MIN_MULT', 1.5)), _meta
+        if sl_dist <= 0:
+            _meta['reason'] = 'invalid_sl'
+            return float(getattr(cfg, 'TP_MIN_MULT', 1.5)), _meta
+        price = float(ad.closes[ci])
+        if price <= 0:
+            _meta['reason'] = 'invalid_price'
+            return float(getattr(cfg, 'TP_MIN_MULT', 1.5)), _meta
+        _horizon_1h = int(getattr(cfg, 'TP_HORIZON_BARS_1H', 10))
+        try:
+            _horizon_bars = max(4, int(round(
+                _horizon_1h * float(getattr(cfg, 'TF_SCALE', 1.0))
+            )))
+        except Exception:
+            _horizon_bars = max(4, _horizon_1h)
+        sigma_frac = 0.01
+        if 0 <= fi < len(ad.E_therm):
+            _s = float(ad.E_therm[fi])
+            if np.isfinite(_s) and _s > 1e-6:
+                sigma_frac = _s
+        sigma_over_horizon = sigma_frac * float(np.sqrt(_horizon_bars))
+        _meta['sigma_over_horizon'] = float(sigma_over_horizon)
+        _sigma_cap = float(getattr(cfg, 'TP_PHYSICS_SIGMA_CAP', 2.0))
+        sl_frac = sl_dist / max(price, 1e-9)
+        max_physics = (_sigma_cap * sigma_over_horizon) / max(sl_frac, 1e-9)
+        _meta['max_physics'] = float(max_physics)
+        accel = 0.0
+        if 0 <= fi < len(ad.geodesic_accel):
+            accel = abs(float(ad.geodesic_accel[fi]))
+        friction = 0.1
+        if 0 <= fi < len(ad.friction):
+            friction = float(ad.friction[fi]) + 1e-6
+        force_ratio = accel / max(friction, 1e-9)
+        _meta['force_ratio'] = float(force_ratio)
+        energy_cap = float(np.tanh(force_ratio / 3.0))
+        _meta['energy_cap'] = float(energy_cap)
+        tp_min = float(getattr(cfg, 'TP_MIN_MULT', 1.5))
+        tp_max = float(getattr(cfg, 'TP_MAX_MULT', 5.0))
+        suggested = tp_min + (tp_max - tp_min) * energy_cap
+        sr_cap = None
+        try:
+            _sr_lookback = int(getattr(cfg, 'SR_LOOKBACK', 60))
+            if ci >= _sr_lookback + 2:
+                _supports, _resistances = _find_swing_levels(
+                    ad, ci, _sr_lookback
+                )
+                if action == "BUY":
+                    _cands = [r for r, _idx in _resistances if r > price]
+                    if _cands:
+                        _nearest = min(_cands)
+                        _gap = _nearest - price
+                        sr_cap = (_gap * 0.90) / max(sl_dist, 1e-9)
+                else:
+                    _cands = [s for s, _idx in _supports if s < price]
+                    if _cands:
+                        _nearest = max(_cands)
+                        _gap = price - _nearest
+                        sr_cap = (_gap * 0.90) / max(sl_dist, 1e-9)
+                _meta['sr_cap'] = (float(sr_cap) if sr_cap is not None else None)
+        except Exception:
+            pass
+        final = min(suggested, max_physics)
+        if sr_cap is not None and sr_cap > 0:
+            final = min(final, sr_cap)
+        final = float(np.clip(final, tp_min, tp_max))
+        if (getattr(cfg, 'TP_REJECT_BELOW_MIN', False)
+                and final < tp_min * 0.95):
+            _meta['rejected'] = True
+            _meta['reason'] = f'below_min(final={final:.2f}<{tp_min:.2f})'
+        return final, _meta
+    except Exception as e:
+        _meta['reason'] = f'error:{e}'
+        return float(getattr(cfg, 'TP_MIN_MULT', 1.5)), _meta
 
 # ════════════════════════════════════════════════════════════════
 # § TRADE FILTER — Pre-entry multi-signal rejection
@@ -6115,9 +6274,16 @@ def build_signals(assets, mode="backtest"):
             _sigma_price_bs = _sigma_frac_bs * p
             _fd_kappa = float(getattr(CFG, 'FRICTION_DIP_KAPPA', 4.0))
             _friction_dip = _fd_kappa * _sigma_price_bs
-            _atr_dip = _compute_entry_dip(ad, fi, ci, action, p)
-            # Floor: never use a dip smaller than 0.5×ATR
-            _entry_dip = max(_friction_dip, 0.5 * _atr_dip)
+            # ══ [RASE Phase 1] regime-adaptive dip ══
+            _entry_dip = 0.0
+            if getattr(CFG, 'RASE_ENABLED', False):
+                _entry_dip = _compute_rase_dip(
+                    ad, fi, ci, action, p, _sigma_price_bs
+                )
+            if _entry_dip <= 0.0:
+                # Legacy path (unchanged)
+                _atr_dip = _compute_entry_dip(ad, fi, ci, action, p)
+                _entry_dip = max(_friction_dip, 0.5 * _atr_dip)
             if _entry_dip <= 0.0:
                 _entry_dip = p * 0.001
 
@@ -6127,8 +6293,20 @@ def build_signals(assets, mode="backtest"):
             # حساب الوقف والهدف بناءً على سعر النفق (Limit Entry)
             sl_dist = compute_geodesic_stop(tunnel_entry_p, ad, fi, CFG)
             sl = tunnel_entry_p - sl_dist if action == "BUY" else tunnel_entry_p + sl_dist
-            _tp_mult = float(getattr(CFG, 'TP_MULT', 1.5))
-            tp1 = tunnel_entry_p + (sl_dist * _tp_mult) if action == "BUY" else tunnel_entry_p - (sl_dist * _tp_mult)
+            # ══ [TP DYNAMIC] اختيار R:R ديناميكياً ══
+            _tp_mult, _tp_meta = _select_target_multiple(
+                ad, fi, ci, action, sl_dist, CFG
+            )
+            if _tp_meta.get('rejected', False):
+                log.debug(
+                    f"[Target] {sym} {action} rejected: "
+                    f"{_tp_meta.get('reason')} "
+                    f"(physics={_tp_meta.get('max_physics', 0):.2f}, "
+                    f"energy={_tp_meta.get('energy_cap', 0):.2f})"
+                )
+                continue
+            tp1 = (tunnel_entry_p + (sl_dist * _tp_mult) if action == "BUY"
+                   else tunnel_entry_p - (sl_dist * _tp_mult))
             
 
             # حظر الصفقات الهشة التي تكون تكلفتها أكبر من ربحها
@@ -7088,6 +7266,29 @@ def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps,
             ref_px = float(getattr(sig, 'entry_ref_price', 0.0) or 0.0)
             base_dip = float(getattr(sig, 'entry_base_dip', 0.0) or 0.0)
 
+            # ══ [RASE Phase 1] sub-bar rejection path ══
+            if (getattr(CFG, 'RASE_ENABLED', False)
+                    and not getattr(CFG, 'REVERSAL_CONFIRM_ENABLED', False)
+                    and ad.sub_highs is not None
+                    and ad.sub_lows is not None
+                    and ad.sub_closes is not None
+                    and ad.sub_per_main >= 2):
+                _rase_win = int(max(4, np.ceil(
+                    float(getattr(CFG, 'UNIFIED_WAIT_BARS_1H', 8))
+                    * float(CFG.TF_SCALE)
+                )))
+                _rase_deadline = min(first_bar + _rase_win, stage2_last)
+                _rase_res = _check_reversal_fill_subbars(
+                    ad, sig, target0, CFG,
+                    first_bar, _rase_deadline,
+                )
+                if _rase_res is None:
+                    result[sig_i] = None
+                    continue
+                _rase_ci, _rase_px = _rase_res
+                result[sig_i] = ('S1', int(_rase_ci), float(_rase_px))
+                continue
+
             # ═══ [REVERSAL-CONFIRM] Touch-and-Bounce on SUB-BARS ═══
             if getattr(CFG, 'REVERSAL_CONFIRM_ENABLED', False):
                 _max_h = float(getattr(CFG, 'REVERSAL_MAX_HOURS', 24.0))
@@ -7993,7 +8194,15 @@ def compute_signal_strength(sig, cfg) -> float:
         lo = float(cfg.MIN_SCORE)
         hi = lo * 2.5
 
-    return float(np.clip((score - lo) / max(hi - lo, 1e-9), 0.0, 1.0))
+    # ══ [STRENGTH-FIX] lo=MIN_SCORE=-3 → hi=-7.5 (سالبة)
+    # (score - lo)/(hi - lo) يصبح رقم سالب في المقام، والـ max(...,1e-9)
+    # يرفعه إلى 1e-9 فيصبح الناتج ضخماً → clipped to 1.0 دائماً.
+    # الحل: استخدم القيمة المطلقة للفرق.
+    _span = abs(hi - lo)
+    if _span < 1e-9:
+        return 0.5
+    _raw = (score - min(lo, hi)) / _span
+    return float(np.clip(_raw, 0.0, 1.0))
 
 
 def compute_portfolio_risk_frac(sig, capital, open_pos_dict, cfg) -> float:
@@ -8118,6 +8327,18 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         )
     n_total_sigs = len(signals)
     n_would_fill = sum(1 for v in fill_map.values() if v is not None)
+    # ══ [RASE Phase 1] announce mode ══
+    if getattr(CFG, 'RASE_ENABLED', False):
+        _rase_subbar_ok = any(
+            getattr(a, 'sub_per_main', 0) >= 2
+            for a in assets.values()
+        )
+        log.info(
+            f"  [RASE Phase 1] ENABLED  "
+            f"subbar_avail={_rase_subbar_ok}  "
+            f"dip_range=[{CFG.RASE_DIP_FLOOR_FRAC:.2f},"
+            f"{CFG.RASE_DIP_CAP_FRAC:.2f}]x_base"
+        )
     log.info(f"  [Backtest Realism] Entry fills: "
              f"{n_would_fill:,}/{n_total_sigs:,} "
              f"({100*n_would_fill/max(n_total_sigs,1):.1f}%) "
@@ -8616,6 +8837,13 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
 
         # ══ [NOTIONAL CAP] ══
         qty = cap_notional(qty, eff_px)
+
+        # ══ [NOTIONAL-FRAC-CAP] سقف صريح لكل صفقة ══
+        _frac_cap = float(getattr(CFG, 'MAX_NOTIONAL_PER_TRADE_FRAC', 0.0))
+        if _frac_cap > 0 and capital > 0:
+            _cap_usd = capital * _frac_cap
+            if qty * eff_px > _cap_usd:
+                qty = _cap_usd / eff_px
 
         not_ = qty * eff_px
 
@@ -11708,8 +11936,21 @@ def _classify_regime_local(ad, fi: int, lookback: int) -> str:
             return "explosive"
         elif ratio < 0.7:
             return "ranging"
-        else:
+        # ══ [RASE Phase 1] trending vs normal via gauge p75 ══
+        if not getattr(CFG, 'RASE_ENABLED', False):
             return "trending"
+        try:
+            _win = int(getattr(CFG, 'RASE_REGIME_GAUGE_P75_WINDOW', 200))
+            _lo = max(0, fi - _win)
+            _gf = ad.gauge_force[_lo:fi + 1]
+            if len(_gf) >= 20:
+                _p75 = float(np.percentile(_gf, 75))
+                _g_now = float(ad.gauge_force[fi])
+                if np.isfinite(_g_now) and _g_now > _p75:
+                    return "trending"
+            return "normal"
+        except Exception:
+            return "normal"
     except Exception:
         return "normal"
 
@@ -20881,6 +21122,13 @@ def run_live(cfg, exchange):
                     # ══ [NOTIONAL CAP] ══
                     qty = cap_notional(qty, lmt)
 
+                    # ══ [NOTIONAL-FRAC-CAP] سقف صريح لكل صفقة ══
+                    _frac_cap = float(getattr(CFG, 'MAX_NOTIONAL_PER_TRADE_FRAC', 0.0))
+                    if _frac_cap > 0 and cap_live > 0:
+                        _cap_usd = cap_live * _frac_cap
+                        if qty * lmt > _cap_usd:
+                            qty = _cap_usd / lmt
+
                     if qty * lmt < cfg.MIN_NOTIONAL:
                         continue
 
@@ -21478,6 +21726,32 @@ def main():
     p.add_argument("--confirm-kappa", type=float, default=None,
                    help="[NEW] Confirmation threshold (× σ_bar). "
                         "Default 0.20. Try 0.1 / 0.2 / 0.3 / 0.5.")
+    # ══ [RASE Phase 1] ══
+    p.add_argument("--rase", action="store_true",
+                   help="[RASE] Enable regime-adaptive dip + sub-bar rejection")
+    p.add_argument("--rase-dip-floor", type=float, default=None,
+                   help="[RASE] dip floor as × base (default 0.4)")
+    p.add_argument("--rase-dip-cap", type=float, default=None,
+                   help="[RASE] dip cap as × base (default 1.0)")
+    p.add_argument("--rase-p75-window", type=int, default=None,
+                   help="[RASE] gauge p75 window (default 200)")
+    # ══ [TP DYNAMIC] ══
+    p.add_argument("--tp-dynamic", action="store_true",
+                   help="[TP-Dynamic] اختر R:R ديناميكياً لكل إشارة")
+    p.add_argument("--tp-dyn-min", type=float, default=None,
+                   help="[TP-Dynamic] أدنى R:R (default 1.5)")
+    p.add_argument("--tp-dyn-max", type=float, default=None,
+                   help="[TP-Dynamic] أقصى R:R (default 5.0)")
+    p.add_argument("--tp-dyn-sigma-cap", type=float, default=None,
+                   help="[TP-Dynamic] أقصى TP = N×σ (default 2.0)")
+    p.add_argument("--tp-dyn-horizon", type=int, default=None,
+                   help="[TP-Dynamic] أفق الصفقة (بوحدات 1h, default 10)")
+    p.add_argument("--tp-reject-below-min", action="store_true",
+                   help="[TP-Dynamic] ارفض الإشارات < TP_MIN_MULT")
+    # ══ [NOTIONAL CAP] ══
+    p.add_argument("--max-notional-frac", type=float, default=None,
+                   help="[Notional] سقف notional لكل صفقة كنسبة من رأس المال "
+                        "(0 = off, 1.0 = 100%%)")
     p.add_argument("--po-max-attempts", type=int, default=None,
                    help="Max cancel/replace cycles (default 3)")
     p.add_argument("--po-max-drift-bps", type=float, default=None,
@@ -22089,6 +22363,51 @@ def main():
     if getattr(args, "confirm_kappa", None) is not None:
         CFG.CONFIRM_KAPPA = float(args.confirm_kappa)
         log.info(f"[Confirm] CONFIRM_KAPPA = {CFG.CONFIRM_KAPPA}")
+    # ══ [RASE Phase 1] CLI wiring ══
+    if getattr(args, "rase", False):
+        CFG.RASE_ENABLED = True
+        log.info("[RASE] Phase 1 ENABLED — regime-adaptive dip + sub-bar rejection")
+    if getattr(args, "rase_dip_floor", None) is not None:
+        CFG.RASE_DIP_FLOOR_FRAC = float(args.rase_dip_floor)
+    if getattr(args, "rase_dip_cap", None) is not None:
+        CFG.RASE_DIP_CAP_FRAC = float(args.rase_dip_cap)
+    if getattr(args, "rase_p75_window", None) is not None:
+        CFG.RASE_REGIME_GAUGE_P75_WINDOW = int(args.rase_p75_window)
+    if CFG.RASE_ENABLED:
+        if CFG.RASE_DIP_CAP_FRAC < CFG.RASE_DIP_FLOOR_FRAC:
+            CFG.RASE_DIP_FLOOR_FRAC, CFG.RASE_DIP_CAP_FRAC = (
+                CFG.RASE_DIP_CAP_FRAC, CFG.RASE_DIP_FLOOR_FRAC
+            )
+        log.info(f"[RASE] floor={CFG.RASE_DIP_FLOOR_FRAC:.2f} "
+                 f"cap={CFG.RASE_DIP_CAP_FRAC:.2f} "
+                 f"p75_window={CFG.RASE_REGIME_GAUGE_P75_WINDOW}")
+    # ══ [TP DYNAMIC] CLI wiring ══
+    if getattr(args, "tp_dynamic", False):
+        CFG.TP_DYNAMIC_MULT = True
+        log.info("[TP-Dynamic] ENABLED")
+    if getattr(args, "tp_dyn_min", None) is not None:
+        CFG.TP_MIN_MULT = float(args.tp_dyn_min)
+    if getattr(args, "tp_dyn_max", None) is not None:
+        CFG.TP_MAX_MULT = float(args.tp_dyn_max)
+    if getattr(args, "tp_dyn_sigma_cap", None) is not None:
+        CFG.TP_PHYSICS_SIGMA_CAP = float(args.tp_dyn_sigma_cap)
+    if getattr(args, "tp_dyn_horizon", None) is not None:
+        CFG.TP_HORIZON_BARS_1H = int(args.tp_dyn_horizon)
+    if getattr(args, "tp_reject_below_min", False):
+        CFG.TP_REJECT_BELOW_MIN = True
+    if CFG.TP_DYNAMIC_MULT:
+        if CFG.TP_MIN_MULT > CFG.TP_MAX_MULT:
+            CFG.TP_MIN_MULT, CFG.TP_MAX_MULT = CFG.TP_MAX_MULT, CFG.TP_MIN_MULT
+        log.info(f"[TP-Dynamic] min={CFG.TP_MIN_MULT:.2f} "
+                 f"max={CFG.TP_MAX_MULT:.2f} "
+                 f"sigma_cap={CFG.TP_PHYSICS_SIGMA_CAP:.2f} "
+                 f"reject={CFG.TP_REJECT_BELOW_MIN}")
+    # ══ [NOTIONAL-FRAC-CAP] ══
+    if getattr(args, "max_notional_frac", None) is not None:
+        CFG.MAX_NOTIONAL_PER_TRADE_FRAC = float(args.max_notional_frac)
+        if CFG.MAX_NOTIONAL_PER_TRADE_FRAC < 0:
+            CFG.MAX_NOTIONAL_PER_TRADE_FRAC = 0.0
+        log.info(f"[Notional] per-trade cap = {CFG.MAX_NOTIONAL_PER_TRADE_FRAC*100:.0f}% of capital")
 
     if args.po_max_attempts is not None:
         CFG.PO_MAX_ATTEMPTS = int(args.po_max_attempts)
