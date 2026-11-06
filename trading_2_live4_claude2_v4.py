@@ -1036,7 +1036,7 @@ class Config:
     REVERSAL_MAX_HOURS:      float = 24.0     # signal validity window
     REVERSAL_CONFIRM_MODE:   str   = "close_back"
     REVERSAL_CONFIRM_KAPPA:  float = 0.20     # for sigma_bounce mode
-    REVERSAL_FILL_AT:        str   = "target"  # [REV-FIX v1] realizable: confirm-bar close (was "target")
+    REVERSAL_FILL_AT:        str   = "close"  # [REV-FIX v1] realizable: confirm-bar close (was "target")
 
     # ══ [ESCAPE] Physics-based switch from GTX to Market ══
     # The decision uses two quantities derived from stored signal-time
