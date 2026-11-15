@@ -1,8 +1,15 @@
+# ═══ [REV-SUBBAR-ENTRY-APPLIED] ═══
+# ═══ [DOTENV-APPLIED] ═══
+# [RESCUE-EXIT-APPLIED]
+# [LIVE-PERF-FIX-APPLIED]
+# [ANALYTICS-V1-APPLIED]
+# [TRAIL-SUBBARS-ONLY-APPLIED]
+# [SIGNAL-BASED-SL-APPLIED]
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║   FINAL v6.2 — Edge-Tuned  (BUY z∈[-2.5,-1.5] | SELL z∈[+2.5,+3.2])         ║
+║      محرك التداول الثرموديناميكي الكمي – الإصدار 6.1 (محرك التفرد المطور)    ║
 ║    Quantum Thermodynamic Trading Engine – v6.1  (Singularity Engine)         ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║  تم حل مشاكل الإنزلاق السعري بروتوكولياً عبر تكميم الأوامر (Quantum Chunks)  ║
@@ -45,6 +52,71 @@ import matplotlib.pyplot as plt
 
 warnings.filterwarnings("ignore")
 
+# ══ [DOTENV] Load .env into os.environ at module start ═══════════════
+# Runs BEFORE _setup_logging() so that env vars from .env
+# (QTT_LOG_FILE, etc.) influence logging. Searches CWD first,
+# then the script directory.
+_DOTENV_LOADED = 0
+
+
+def _load_dotenv(path: str = ".env") -> int:
+    """Load KEY=VALUE pairs from .env into os.environ.
+
+    - Does NOT override existing os.environ entries (dotenv rule).
+    - Supports: comments (#), quotes, `export KEY=value`.
+    - Returns: number of NEW env vars added.
+    """
+    global _DOTENV_LOADED
+    candidates = [path]
+    try:
+        _script_dir = os.path.dirname(os.path.abspath(__file__))
+        candidates.append(os.path.join(_script_dir, path))
+    except Exception:
+        pass
+    actual = None
+    for _p in candidates:
+        if os.path.exists(_p):
+            actual = _p
+            break
+    if actual is None:
+        _DOTENV_LOADED = 0
+        return 0
+    loaded = 0
+    try:
+        with open(actual, "r", encoding="utf-8") as _f:
+            for _raw in _f:
+                _line = _raw.strip()
+                if not _line or _line.startswith("#"):
+                    continue
+                if "=" not in _line:
+                    continue
+                _k, _, _v = _line.partition("=")
+                _k = _k.strip()
+                if _k.startswith("export "):
+                    _k = _k[len("export "):].strip()
+                _v = _v.strip()
+                if (len(_v) >= 2 and _v[0] == _v[-1]
+                        and _v[0] in ("\"", "'")):
+                    _v = _v[1:-1]
+                if not _k:
+                    continue
+                if _k not in os.environ:
+                    os.environ[_k] = _v
+                    loaded += 1
+    except Exception as _e:
+        try:
+            logging.getLogger("QTT6").warning(
+                f"[DotEnv] load failed: {_e}"
+            )
+        except Exception:
+            pass
+    _DOTENV_LOADED = loaded
+    return loaded
+
+
+_load_dotenv()
+# ══ [DOTENV end] ══════════════════════════════════════════════════════
+
 # ══ [WATCH-REMOVED-MASTER] ═══════════════════════════════════════════
 # Watch-then-trigger mode has been permanently disabled.
 # All watch code paths (state files, signal registration, monitoring)
@@ -76,11 +148,94 @@ _CACHE_HEALTH: Dict = {
     'bars_refetched': 0,
     'files_saved': 0,
 }
+
+# ═══════════════════════════════════════════════════════════════
+# [DEAD-GAPS] Persistent record of gaps the exchange cannot fill.
+# Once a (symbol, timeframe, start_ts, end_ts) is confirmed dead,
+# we stop retrying it forever.
+# ═══════════════════════════════════════════════════════════════
+_DEAD_GAPS_FILE = "cache_dead_gaps.json"
+_DEAD_GAPS: Dict[str, list] = {}
+
+
+def _dead_gaps_load() -> None:
+    global _DEAD_GAPS
+    if not os.path.exists(_DEAD_GAPS_FILE):
+        return
+    try:
+        with open(_DEAD_GAPS_FILE) as f:
+            _DEAD_GAPS = json.load(f)
+    except Exception:
+        _DEAD_GAPS = {}
+
+
+def _dead_gaps_save() -> None:
+    try:
+        tmp = _DEAD_GAPS_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(_DEAD_GAPS, f)
+        os.replace(tmp, _DEAD_GAPS_FILE)
+    except Exception:
+        pass
+
+
+def _is_dead_gap(symbol: str, timeframe: str,
+                  start_ts: int, end_ts: int) -> bool:
+    """True if the entire [start_ts, end_ts] lies inside a known dead gap."""
+    for (ds, de) in _DEAD_GAPS.get(f"{symbol}|{timeframe}", []):
+        if ds <= start_ts and end_ts <= de:
+            return True
+    return False
+
+
+def _mark_dead_gap(symbol: str, timeframe: str,
+                    start_ts: int, end_ts: int) -> None:
+    key = f"{symbol}|{timeframe}"
+    lst = _DEAD_GAPS.setdefault(key, [])
+    for (ds, de) in lst:
+        if ds == start_ts and de == end_ts:
+            return  # already recorded
+    lst.append([int(start_ts), int(end_ts)])
+    _dead_gaps_save()
+
+
+# Load on import
+try:
+    _dead_gaps_load()
+except Exception:
+    pass
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s [%(levelname)s] %(message)s",
-                    datefmt="%H:%M:%S")
+def _setup_logging():
+    """[REV-FIX v2] stdout + size-rotated file, full dates (multi-week runs).
+    env: QTT_LOG_FILE (default qtt6.log, "off" disables), QTT_LOG_MAX_MB, QTT_LOG_BACKUPS."""
+    import logging.handlers
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    if any(getattr(h, "_qtt", False) for h in root.handlers):
+        return
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s",
+                            "%Y-%m-%d %H:%M:%S")
+    sh = logging.StreamHandler()
+    sh.setFormatter(fmt)
+    sh._qtt = True
+    root.addHandler(sh)
+    path = os.environ.get("QTT_LOG_FILE", "qtt6.log").strip()
+    if path and path.lower() not in ("none", "off", "0"):
+        try:
+            fh = logging.handlers.RotatingFileHandler(
+                path,
+                maxBytes=int(float(os.environ.get("QTT_LOG_MAX_MB", "20")) * 1024 * 1024),
+                backupCount=int(os.environ.get("QTT_LOG_BACKUPS", "10")),
+                encoding="utf-8")
+            fh.setFormatter(fmt)
+            fh._qtt = True
+            root.addHandler(fh)
+        except Exception as _e:
+            root.warning(f"[Log] file handler disabled: {_e}")
+
+
+_setup_logging()
 log = logging.getLogger("QTT6")
 
 
@@ -109,7 +264,7 @@ class Config:
     EMA_SPAN: int = 200; ATR_PERIOD: int = 14
 
     W_CURV: float=1.0; W_VOL: float=1.0; W_ENTROPY: float=2.0
-    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=0
+    W_HMM: float=2.0; W_FREE_E: float=1.0; MIN_SCORE: int=-3
 
     CURV_THRESHOLD: float=0.01; DH_ENTROPY_THRESHOLD: float=0.005
     DH_HMM_UPPER: float=0.01;  DH_HMM_LOWER: float=-0.01
@@ -162,14 +317,28 @@ class Config:
     MAX_CONCURRENT_ASSETS: int   = 3   # [ABL6] 5 -> 3
     CORRELATION_THRESHOLD: float = 0.70
 
-    MAX_HOLD_BARS: int = 1000      # legacy
-    MAX_HOLD_BUY: int = 1000        # [730d VERIFIED]
-    MAX_HOLD_SELL: int = 1000       # [730d VERIFIED]
+    MAX_HOLD_BARS: int = 2000
+
+    # ══ [BEAR-SHIELD] Bear market survival ══
+    BEAR_SHIELD_ENABLED: bool = True
+    BEAR_MIN_Z: float = 2.5
+    BEAR_MIN_SCORE: int = 0
+    BEAR_GAUGE_BOOST: float = 1.3
+    BEAR_RISK_MULT: float = 0.30
+    BEAR_MAX_CONCURRENT: int = 3
+    BEAR_EMA_SLOPE_LOOKBACK: int = 30
+    BEAR_RETURN_LOOKBACK_DAYS: int = 30
+    BEAR_RETURN_THRESHOLD: float = -0.15
+    # ══ [BEAR-SHIELD end] ══
 
     TOPO_DIV_THRESHOLD: float = 0.05
 
-    K_MIN: int = 25
-    K_MAX: int = 50
+    K_MIN: int = 30 # 4h
+    K_MAX: int = 60 # 4h
+
+    # K_MIN: int = 50    # 1h
+    # K_MAX: int = 100    # 1h
+
     KQUANT_ALPHA: float = 100.0
 
     COSMOLOGICAL_CONSTANT: float = 0
@@ -257,9 +426,15 @@ class Config:
     # False → SL يبقى ثابتاً عند مستواه عند الدخول (لا Trailing).
     #         مطبّق في الباكتيست واللايف بشكل متطابق.
     # CLI: --no-trailing لتعطيله، --trailing لإجباره.
-    TRAIL_ENABLED: bool = False   # [730d] disabled
+    TRAIL_ENABLED: bool = True
+    # ══ [SUB-BAR-TRAIL-PARITY] Peak/SL update only on sub-bar close ══
+    # When True, peak_price and trail_sl are updated ONLY when a new
+    # sub-bar (e.g., 15m) closes. No ticker, no 1m forming bar.
+    # Matches backtest's ad.sub_highs/ad.sub_lows exactly.
+    # Default False → preserves current ticker-based behavior.
+    TRAIL_USE_SUBBARS_ONLY: bool = False
     TRAIL_ACTIVATE_MFE: float = 0.004    # activate after 0.4% MFE
-    TRAIL_DISTANCE: float = 0.003        # trail 0.3% below peak
+    TRAIL_DISTANCE: float = 0.002        # trail 0.3% below peak
     TRAIL_MIN_STEP: float = 0.0005       # only move SL if improvement ≥ 0.05%
 
     # ══ [PORTFOLIO RISK BUDGET] ══
@@ -276,6 +451,22 @@ class Config:
     SETUP_VERIFY_LEVERAGE: bool = True
     FILL_VERIFY_TIMEOUT_S: float = 5.0
 
+
+    # ══ [ANALYTICS v1] Comprehensive Output System ══
+    # All disabled by default. Enable with --analytics.
+    ANALYTICS_ENABLED: bool = False
+    ANALYTICS_OUTPUT_DIR: str = "analytics"
+    ANALYTICS_LOG_SIGNALS: bool = True
+    ANALYTICS_LOG_PORTFOLIO_TS: bool = True
+    ANALYTICS_LOG_MARKET_CONTEXT: bool = True
+    ANALYTICS_LOG_POSITION_EVENTS: bool = True
+    ANALYTICS_EXPANDED_PNG: bool = True
+    ANALYTICS_HTML_REPORT: bool = True
+    ANALYTICS_HTML_TITLE: str = "QTT Analytics Report"
+    ANALYTICS_BUFFER_FLUSH_SIZE: int = 500
+    ANALYTICS_CONTEXT_INTERVAL_S: int = 3600   # market_context sample every N seconds
+    ANALYTICS_PORTFOLIO_INTERVAL_BARS: int = 1  # snapshot every N bars
+
     # ══ [ML FILTER — optional signal rejection] ══
     ML_FILTER_ENABLED: bool = False       # default OFF
     ML_FILTER_MODEL_PATH: str = "ml_filter.pkl"
@@ -285,7 +476,7 @@ class Config:
     TF_SECONDS: int = 3600        # seconds per bar
     TF_HOURS: float = 1.0         # hours per bar
     # ══ [NOTIONAL CAP — anti-compounding] ══
-    MAX_ABS_NOTIONAL: float = 20_000.0     # tuned for alt liquidity
+    MAX_ABS_NOTIONAL: float = 50_000.0     # tuned for alt liquidity
     # ══ [DYNAMIC TRAILING — volatility-scaled] ══
     TRAIL_DYNAMIC: bool = True
     TRAIL_KAPPA: float = 0.30                # tuned to 1h timeframe
@@ -317,18 +508,18 @@ class Config:
     # ══ [TF-UNIFIED SCALING] ══
     # كل المسافات بوحدة σ_price = E_therm[fi] × price.
     # كل النوافذ بالساعات الحقيقية (تُحوَّل إلى شموع عند الإقلاع).
-    FRICTION_DIP_KAPPA: float = 4.0       # friction_drag = κ × σ_price
+    FRICTION_DIP_KAPPA: float = 0.0       # friction_drag = κ × σ_price
 #    SL_REF_KAPPA: float = 2.0             # SL/σ = κ × uncertainty / (1 + fric×5)
 #    SL_MIN_SIGMA: float = 1.0             # أدنى SL بوحدة σ
 #    SL_MAX_SIGMA: float = 5.0             # أقصى SL بوحدة σ
-    SL_REF_KAPPA: float = 0.8     # كان 2.0
-    SL_MIN_SIGMA: float = 3.0     # كان 1.0
-    SL_MAX_SIGMA: float = 8.0     # كان 5.0
+    SL_REF_KAPPA: float = 1.5 # 1.2     # كان 2.0
+    SL_MIN_SIGMA: float = 1.0 # 3.0     # كان 1.0
+    SL_MAX_SIGMA: float = 5.0 # 8.0     # كان 5.0
     N_HOURS: float = 24.0                 # نافذة الميزات (ساعات)
     W_HOURS: float = 20.0                 # نافذة الإنتروبيا
     L_HOURS: float = 10.0                 # نافذة الهندسة
     ADV_HOURS: float = 24.0               # نافذة ADV
-    ADV_BARS: int = 24                    # يُضبط ديناميكياً في main()
+    ADV_BARS: int = 24                   # يُضبط ديناميكياً في main()
     # ══ [UNIFIED ENTRY LOGIC] ══
     # منطق موحّد بمرحلتين:
     #   Stage 1: أمر Limit عند tunnel_entry_p، انتظر UNIFIED_WAIT_BARS_1H.
@@ -354,16 +545,21 @@ class Config:
 
     # ══ [SMART OHLCV FETCH] ══
     SMART_OHLCV_ENABLED: bool = True
-    # ══ [SUPPORT/RESISTANCE FILTER] ══
-    SR_FILTER_ENABLED: bool = False      # disabled by default until tuned
-    SR_LOOKBACK: int = 100
-    SR_MIN_TOUCHES: int = 2              # relaxed from 3
-    SR_TOUCH_TOLERANCE: float = 0.0035   # relaxed from 0.0025 (0.35%)
+    # ══ [SR-PROTECTED-SL] REVERSED LOGIC ══
+    # BUY : a strong SUPPORT must sit between entry and SL
+    #       (SL is protected from above)
+    # SELL: a strong RESISTANCE must sit between entry and SL
+    #       (SL is protected from below)
+    SR_FILTER_ENABLED: bool = False       # off by default
+    SR_LOOKBACK: int = 60                 # 10 days @ 4h
+    SR_MIN_TOUCHES: int = 3               # strong, not casual
+    SR_TOUCH_TOLERANCE: float = 0.003     # 0.3% cluster tolerance
     SR_MIN_GAP_BARS: int = 10
-    SR_STRENGTH_THRESHOLD: float = 1.0   # relaxed from 2.0
-    SR_DECAY_TAU: float = 80.0           # slower decay
-    SR_SL_PROXIMITY: float = 0.006       # relaxed from 0.004 (0.6%)
+    SR_STRENGTH_THRESHOLD: float = 2.0    # stronger threshold
+    SR_DECAY_TAU: float = 80.0
+    SR_SL_PROXIMITY: float = 0.008        # 0.8% max gap SL↔level
     SR_VOLUME_WEIGHT: float = 1.5
+    SR_MIN_GAP_FRAC: float = 0.001        # 0.1% min gap SL↔level
     # ══ [KILL SWITCH — HMAC-authenticated] ══
     KILL_SWITCH_ENABLED: bool = True
     KILL_SWITCH_SECRET: str = ""          # from env or CLI
@@ -402,6 +598,7 @@ class Config:
     #   2.0 → recommended starting point
     #   2.5 → aggressive widening (fewer SL hits, larger drawdowns)
     SL_WIDEN_MULT: float = 1.5
+    MAX_SL_FRAC = 0.015
 
     # ══ [ADAPTIVE FIX #3] Tick-based penetration ══
     # WIF has 0.254 ticks/bps → 1 bps < 1 tick → orders can't fill properly.
@@ -414,7 +611,7 @@ class Config:
     # These values are IGNORED at runtime — _resolve_data_params() in main()
     # overrides them based on (mode, timeframe, --history-days).
     # Kept only as fallbacks if main() is bypassed (tests, imports).
-    LIVE_HISTORY_DAYS: int = 90
+    LIVE_HISTORY_DAYS: int = 730
     LIVE_TAIL_BARS: int = 800
     LIVE_MIN_BARS_FOR_PROCESS: int = 300
     # ══ [LIQ AWARENESS] Liquidation safety envelope ══
@@ -426,6 +623,12 @@ class Config:
     PROTECTIVE_ORDERS_ENABLED: bool = True
     PROTECTIVE_WORKING_TYPE: str = "MARK_PRICE"
     PROTECTIVE_SYNC_MIN_STEP_FRAC: float = 0.001   # 0.1% SL movement → resync
+    # ══ [SL LIMIT] تحويل SL من STOP_MARKET إلى STOP_LIMIT ══
+    # True  → SL = STOP_LIMIT @ sl±buffer (bounded slippage, maker fee)
+    # False → SL = STOP_MARKET (current behavior — taker, unbounded slippage)
+    PROTECTIVE_SL_USE_LIMIT: bool = True
+    PROTECTIVE_SL_LIMIT_BUFFER_FRAC: float = 0.002   # 0.2% buffer
+    # ══ [SL LIMIT end] ══
     PROTECTIVE_MAX_RETRIES: int = 2
     # ══ [LAYER 4 — Live price feed for SL/TP checks] ══
     # ad.closes[-1] only refreshes on new bar; on 1h it's frozen for up to
@@ -496,7 +699,7 @@ class Config:
         (4.0, 3.70),
         (5.0, 4.70),
     )
-    TRAIL_MIN_R_FRACTION: float = 0.3
+    TRAIL_MIN_R_FRACTION: float = 1
     TRAIL_PHYSICS_ENABLED: bool = True
     TRAIL_ACCEL_SCALE: float = 0.005
     TRAIL_FRICTION_SCALE: float = 0.15
@@ -528,6 +731,15 @@ class Config:
     PO_EXIT_MAX_WAIT_S: int = 12            # was 45 (still used for soft exits)
     PO_EXIT_URGENT_WAIT_S: int = 4          # for SL/TP/LiqProximity
     PO_EXIT_URGENT_CROSS_SPREAD: bool = True
+    # ══ [APEX-PARITY] Backtest↔Live parity for Apex/Topo-Div exits ══
+    # Backtest returns immediately at bar close, but live placed
+    # them as post-only GTX (often unfilled). These flags fix it:
+    #   - PO_EXIT_APEX_URGENT → treat Apex/Topo-Div as taker exits
+    #     (apply slippage in backtest, use marketable in live)
+    #   - PO_EXIT_APEX_MARKET_FALLBACK → market order if marketable
+    #     somehow fails to fill within the wait window
+    PO_EXIT_APEX_URGENT: bool = True
+    PO_EXIT_APEX_MARKET_FALLBACK: bool = True
     # ══ [BACKTEST↔LIVE PARITY] ══
     # When True, backtest behaves like live:
     #   - Uses the same entry timeout as live (PO_MAX_WAIT_S seconds)
@@ -541,7 +753,7 @@ class Config:
     # often BELOW the SL distance. So SL moved above entry on tiny moves
     # and killed 52% of trades with a "profitable SL" that capped gains.
     # New design: trailing only activates after N × sl_dist_initial of MFE.
-    TRAIL_ACTIVATE_AT_R: float = 2.5    # activate at +1R of profit
+    TRAIL_ACTIVATE_AT_R: float = 1.5    # activate at +1R of profit
 
     # ══ [FIX 2 — REGIME FILTER] ══
     # Skip signals when EMA200 slope (over lookback) is too steep
@@ -552,24 +764,56 @@ class Config:
 
     # ══ [FIX 3 — TIME-BASED KILL] ══
     # If after N bars the trade hasn't reached TIME_KILL_MIN_R, close it.
-    TIME_KILL_ENABLED: bool = False
-    TIME_KILL_BARS: int = 10            # bars to wait (TF-scaled)
-    TIME_KILL_MIN_R: float = 0.5        # must reach +0.5R by then
+    TIME_KILL_ENABLED: bool = False # الاصل False
+    TIME_KILL_BARS: int = 10 # كان 10            # bars to wait (TF-scaled)
+    TIME_KILL_MIN_R: float = 0.5  # كان 0.5        # must reach +0.5R by then
 
     # ══ [FIX 4 — PARTIAL TAKE-PROFIT] ══
     # Close PARTIAL_TP_PCT of the position at +PARTIAL_TP_R, let the
     # rest ride with trailing.
-    PARTIAL_TP_ENABLED: bool = False   # [730d] disabled
+    PARTIAL_TP_ENABLED: bool = True
     PARTIAL_TP_R: float = 1.5           # [ABL4a] 3.0 -> 1.5
-    PARTIAL_TP_PCT: float = 0.50         # close 50% at that level
-    TP_MULT: float = 0.8    # [730d VERIFIED] (was 5.0)
-    APEX_ENABLED: bool = False    # [730d] disabled
+    PARTIAL_TP_PCT: float = 0.60         # close 50% at that level
+    TP_MULT: float = 5.0    # كان 2.0 → الآن 1.5 (R:R = 1.5)
+    APEX_ENABLED: bool = True     # عطّله مؤقتاً حتى نضبط عتباته
 
     # ══ [BREAKEVEN SL — protect trades that reach +N R] ══
     # عند تفعيل --no-trailing، يعمل هذا الميكانيزم المستقل.
     # يحمي 30% من الصفقات التي تلمس +1R قبل الانعكاس.
-    BREAKEVEN_ENABLED: bool = False   # [730d] disabled
+    BREAKEVEN_ENABLED: bool = True
     BREAKEVEN_AT_R: float = 1.0
+
+    # ══ [BREAKEVEN ESCAPE] reversal-confirmed exit at entry ══
+    # When the market is confirmed reversed against our position,
+    # the TP is moved to entry ± small_gain. Bounces exit flat
+    # instead of a full SL loss. Zero additional risk.
+    # ══ [BREAKEVEN ESCAPE] reversal-confirmed exit at entry ± small_gain ══
+    # [BEEsc-INTENT-FIX] مطابق لنية المالك:
+    #   • يعمل فقط على الصفقات الخاسرة التي لم تكن رابحة سابقاً (MFE guard)
+    #   • يُطلق فقط عند انعكاس مؤكد (إشارة معاكسة أو هبوط عميق 0.80R)
+    #   • يخرج بهامش صغير موجب يغطي الرسوم (+0.15R)
+    #   • BEEsc-Cancel يستخدم high لا close لكشف الارتداد الحقيقي
+    BREAKEVEN_ESCAPE_ENABLED: bool = False
+    BREAKEVEN_ESCAPE_PRICE_MOVE_R: float = 0.10      # كان 0.30
+    BREAKEVEN_ESCAPE_REQUIRE_EMA_FLIP: bool = True
+    BREAKEVEN_ESCAPE_EMA_LOOKBACK: int = 50
+    BREAKEVEN_ESCAPE_SIGNAL_ENABLED: bool = True     # كان False
+    BREAKEVEN_ESCAPE_SIGNAL_MAX_AGE_BARS: int = 6
+    BREAKEVEN_ESCAPE_SIGNAL_SCORE_MULT: float = 1.15
+    BREAKEVEN_ESCAPE_MIN_PROFIT_R: float = 0.15      # كان 0.0
+    BREAKEVEN_ESCAPE_RESPECT_PARTIAL: bool = False
+    BREAKEVEN_ESCAPE_CANCEL_KAPPA: float = 0.0
+    BREAKEVEN_ESCAPE_CANCEL_CLOSE_ONLY: bool = False
+    BREAKEVEN_ESCAPE_CANCEL_SR_CHECK: bool = False
+    BREAKEVEN_ESCAPE_CANCEL_SR_LOOKBACK: int = 60
+    # ══ [BEEsc-INTENT-FIX] — NEW FIELDS ══
+    # لا تُطلق BEEsc إذا وصلت الصفقة إلى ربح ≥ هذا الحد (بوحدات R).
+    # هذا يحمي "منطقة الربح" — حماياتها الخاصة (Partial/Trail/TP) تتولاها.
+    BREAKEVEN_ESCAPE_MFE_GUARD_R: float = 0.50
+    # استخدم high للكشف عن الارتداد (أدق من close، يمنع إلغاء cancel الوهمي)
+    BREAKEVEN_ESCAPE_CANCEL_USE_HIGH: bool = True
+    # مهلة مسموحة بين إغلاق صفقة وإعادة فتحها في نفس الرمز داخل BEEsc-Cancel
+    BREAKEVEN_ESCAPE_CANCEL_MIN_BOUNCE_SIGMA: float = 1.0
 
     # ══ [SINGULARITY TIMING LAYER 1 — EMERGING] ══
     # طبقة توقيت تكشف الرنين الكسري قبل الانفجار بدقائق وتُعجّل
@@ -658,11 +902,65 @@ class Config:
     OPP_TP_MIN_DELTA_R: float = 0.3          # تحسّن أدنى لنقل TP
     OPP_TP_MAX_AGE_BARS: int = 4             # عمر الإشارة المعاكسة
     OPP_TP_RESPECT_PARTIAL: bool = True      # لا تنقل TP تحت trigger partial
+
+    # ══ [SIGNAL-BASED SL] ══
+    # When enabled, if a NEW same-direction signal appears on a symbol
+    # with an open position, raise SL to the new signal's SL level
+    # (ratchet-only, never widens).
+    #
+    # Ratchet rule (BUY):  new_sl = max(current_sl, sig.sl)
+    # Ratchet rule (SELL): new_sl = min(current_sl, sig.sl)
+    #
+    # Filters (all must pass):
+    #   - S_new.action == pos.action
+    #   - S_new.score >= pos.score × SIGNAL_SL_MIN_SCORE_RATIO
+    #   - |new_sl - current_sl| / current_sl >= SIGNAL_SL_MIN_IMPROVEMENT
+    #   - new_sl is SIGNAL_SL_SAFETY_MARGIN away from current price
+    #   - If SIGNAL_SL_PROTECT_PROFIT_ONLY: new_sl above entry (BUY) / below (SELL)
+    #
+    # BEEsc interaction:
+    #   - SIGNAL_SL_ALLOW_ABOVE_BEESC=True: SL may cross BEEsc level.
+    #     When it does, BEEsc is disabled for this trade (SL takes priority).
+    #   - False: SL clamped to BEEsc level.
+    #
+    # Design note: SL updates are EVENT-DRIVEN (only on new signals),
+    # NOT continuous trailing. This avoids the "cut every winner" failure
+    # mode of Smart Center, while still protecting unrealized gains.
+    #
+    # Enable via --signal-based-sl CLI flag.
+    SIGNAL_BASED_SL_ENABLED: bool = False
+    SIGNAL_SL_MIN_SCORE_RATIO: float = 1.5
+    SIGNAL_SL_MIN_IMPROVEMENT: float = 0.005
+    SIGNAL_SL_SAFETY_MARGIN: float = 0.001
+    SIGNAL_SL_PROTECT_PROFIT_ONLY: bool = False
+    SIGNAL_SL_ALLOW_ABOVE_BEESC: bool = True
+
+    # ══ [RESCUE EXIT — Loss Zone Guardian] ══
+    # Fills the "dead zone" between BEEsc trigger and SL.
+    # Math: P_rescue = P_BM × f_phys × f_time
+    #       Exit if P_rescue < max(1 - L/L_SL - margin, floor)
+    #
+    # Opt-in only: enable via --rescue-exit
+    # Behavior with flag OFF: zero overhead, zero behavior change
+    RESCUE_EXIT_ENABLED: bool = False
+    RESCUE_EXIT_MODE: str = "conservative"   # conservative | moderate | aggressive
+    RESCUE_ONLY_AFTER_BEESC: bool = True     # start rescue only after BEEsc fired
+    RESCUE_MIN_BARS_AFTER_BEESC: int = 2     # min bars in dead zone before rescue
+    RESCUE_MARGIN: float = 0.05              # safety buffer for exit rule
+    RESCUE_FLOOR: float = 0.15               # absolute P_floor (min hope to stay)
+    RESCUE_ACCEL_KAPPA: float = 0.5          # accel contribution to drift
+    RESCUE_GAUGE_KAPPA: float = 0.3          # gauge contribution to drift
+    RESCUE_PHYS_GAMMA: float = 0.5           # physics multiplier strength
+    RESCUE_PHYS_MIN: float = 0.4             # clip f_phys low
+    RESCUE_PHYS_MAX: float = 1.6             # clip f_phys high
+    RESCUE_DRIFT_HIST_BARS: int = 20         # drift estimation window
+    RESCUE_LOG_VERBOSE: bool = False         # log every rescue check
+
     # ══ [WATCH ENTRY OFFSET — dynamic, fills on touch] ══
     # الأمر يُوضع في اتجاه يواجه السعر الهابط/الصاعد، ليملأ عند أول تلامس.
     # BUY : order = tunnel + offset  (above)
     # SELL: order = tunnel − offset  (below)
-    WATCH_OFFSET_VOL_KAPPA: float = 0.02   # جزء من σ_bar
+    WATCH_OFFSET_VOL_KAPPA: float = 0.00001   # جزء من σ_bar
     WATCH_OFFSET_ADV_TIERS: Tuple = (
         (1e10, 1.0),   # ADV ≥ 10B → ×1.0
         (1e9,  1.3),   # ADV ≥ 1B  → ×1.3
@@ -672,25 +970,36 @@ class Config:
     )
     WATCH_OFFSET_MAX_BPS: float = 30.0
     WATCH_OFFSET_MIN_BPS: float = 1.0
+
+    # ══ [CONFIRMATION ENTRY — 1-bar momentum filter] ══
+    # After the signal fires at close of bar N, wait for bar N+1.
+    # Enter ONLY if the market moved in our direction by at least
+    # CONFIRM_KAPPA × σ_bar × close[N]. Filters out the ~48% of
+    # trades whose MFE never exceeded 0.5% (premature signals).
+    CONFIRM_ENTRY_ENABLED: bool = False
+    CONFIRM_KAPPA: float = 0.20
+
     # ══ [GAUGE FILTER — الأداء المُتحقَّق منه] ══
     # بناءً على تحليل 6973 صفقة على 365 يوم:
     #   BUY + gauge>p60: avg_pnl $99.89 (+178%), Sharpe 2.571
     #   SELL ضعيف دائماً: أفضل حالة top10% = avg $59/صفقة
     # النتيجة: SELL يحتاج عتبة عالية جداً أو إلغاء كامل
-    GAUGE_FILTER_ENABLED: bool = False
+    GAUGE_FILTER_ENABLED: bool = True
     GAUGE_PERCENTILE_BUY: float = 0.60
     GAUGE_PERCENTILE_SELL: float = 0.95   # [ABL8b] 0.85 -> 0.95
     GAUGE_MIN_SAMPLES: int = 500       # أدنى عينة لحساب percentile
     # [ABL10] confirmed BUY-only across 2024/2025/2026:
     # Min Sharpe 1.606 (vs 0.937 baseline), GeoFinal $1,873
     GAUGE_DISABLE_SELL: bool = True    # Default: BUY-only
+    SELL_ONLY: bool = False
+    BUY_ONLY:  bool = False
 
     # ══ [SELL-RND] معاملات بحث SELL المستقل ══
     # عند SELL_ENABLED=False، هذا كله غير مفعّل.
     # BUY غير متأثر إطلاقاً.
-    SELL_ENABLED: bool = True               # [FINAL] edge-tuned
-    SELL_MIN_SCORE: int = 0                 # [FINAL] off
-    SELL_MIN_ZDEV: float = 0.0              # [FINAL] z-gate handles
+    SELL_ENABLED: bool = False              # master switch
+    SELL_MIN_SCORE: int = 3                 # independent from BUY
+    SELL_MIN_ZDEV: float = 1.5              # independent from BUY
     SELL_GAUGE_PCT: float = 0.95            # current default
     SELL_REQUIRE_EMA_DOWN: bool = False     # trend-aligned SELL
     SELL_MAJOR_ONLY: bool = False           # only BTC/ETH/SOL/BNB
@@ -701,13 +1010,96 @@ class Config:
     # ══ [PERF-FIX] KMeans tuning (5x speedup on the biggest hot spot) ══
     # n_init 15→3   : inertia diff <2% in practice, 5x faster
     # max_iter 500→100 : convergence typically at ~30-50 iterations
-    KMEANS_N_INIT: int = 3
-    KMEANS_MAX_ITER: int = 100
+    KMEANS_N_INIT: int = 1
+    KMEANS_MAX_ITER: int = 50
 
     # ══ [PERF-FIX] Parallel retrain via ThreadPoolExecutor ══
     # sklearn KMeans releases the GIL → concurrent calls scale on multi-core.
     LIVE_PARALLEL_RETRAIN: bool = True
     LIVE_PARALLEL_WORKERS: int = 4
+
+    # ══ [REVERSAL-CONFIRM] Touch-and-Bounce on SUB-BARS ══
+    # Main TF gives (action, target, close_idx).
+    # Sub-bar TF confirms entry via TOUCH → BOUNCE.
+    REVERSAL_CONFIRM_ENABLED: bool = False
+    REVERSAL_TOUCH_SUBBARS:  int   = 20       # 5h @ 15m sub-bar
+    REVERSAL_BOUNCE_SUBBARS: int   = 4        # 1h @ 15m sub-bar
+    REVERSAL_MAX_HOURS:      float = 24.0     # signal validity window
+    REVERSAL_CONFIRM_MODE:   str   = "close_back"
+    REVERSAL_CONFIRM_KAPPA:  float = 0.20     # for sigma_bounce mode
+    REVERSAL_FILL_AT:        str   = "target"  # [REV-FIX v1] realizable: confirm-bar close (was "target")
+
+    # ══ [ESCAPE] Physics-based switch from GTX to Market ══
+    # The decision uses two quantities derived from stored signal-time
+    # physics + the live ticker:
+    #   d_sigma = |p_now − target| / (σ_bar · target)
+    #   rho     = |accel| · (1 + gauge) / (friction · d_sigma + ε)
+    REVERSAL_ESCAPE_ENABLED: bool = True
+    REVERSAL_ESCAPE_D_SIGMA_MIN: float = 1.0
+    REVERSAL_ESCAPE_D_SIGMA_MAX: float = 2.0
+    REVERSAL_ESCAPE_RHO_THRESHOLD: float = 1.5
+    REVERSAL_ESCAPE_CHECK_INTERVAL_S: float = 5.0   # [REV-FIX v1] escape logic removed (unused)
+    # ══ [REV-FIX v1] reversal-confirm live/backtest parity knobs ══
+    REV_WATCHER_CAP: int = 50                 # memory cap ONLY (watchers never use position slots)
+    REV_FILL_MAX_WAIT_S: float = 300.0 # was 90.0         # total time budget of the non-blocking FILLING state
+    REV_REPRICE_S: float = 300.0  # was 5.0              # cancel/replace cadence (post-only at best bid/ask)
+    # ══ [SUB-BAR ENTRY] الدخول عند إغلاق شمعة التأكيد ══
+    # True  → Limit maker عند سعر إغلاق شمعة التأكيد (مطابق للـ backtest)
+    # False → Marketable limit عند best bid/ask (السلوك الأصلي)
+    # ملاحظة: الدخول يكون فقط إذا لم يتحرك السعر أكثر من
+    # REV_SUBBAR_ENTRY_MAX_DRIFT_BPS منذ إغلاق شمعة التأكيد.
+    REV_SUBBAR_ENTRY_ENABLED: bool = True
+    REV_SUBBAR_ENTRY_PEN_BPS: float = 2.0          # 0.02% انزلاق نحو السوق
+    REV_SUBBAR_ENTRY_MAX_DRIFT_BPS: float = 15.0   # 0.15% drift قبل التحول لـ marketable
+    REV_SUBBAR_ENTRY_MARKETABLE: bool = False      # True → Limit + تقاطع السبريد (taker)
+    # ══ [SUB-BAR ENTRY end] ══
+    REV_MAX_CHASE_KAPPA: float = 0.15         # max chase above/below confirm close, in sigma_bar*px
+    REV_MAX_CONFIRM_AGE_SUBBARS: int = 2      # confirm bar older than this -> drop (stale)
+    REV_ENTRY_LATENCY_SUBBARS: int = 0        # extra sub-bars of latency (backtest + live window)
+    REV_MAX_REJECTS: int = 30                 # GTX (-5022) rejects before giving up
+    REV_PARITY_NO_SOFTCAP: bool = True        # live uses flat MAX_CONCURRENT_ASSETS like the backtest
+    REV_FLATTEN_ON_UNPROTECTED: bool = True   # no SL/TP after N tries -> reduce-only market flatten
+    REV_PROTECT_RETRIES: int = 3
+    REV_MAX_FETCH_PER_CYCLE: int = 10         # sub-bar REST fetches per loop iteration
+    REV_LEDGER_TTL_S: float = 172800.0        # once-per-signal ledger retention
+    REV_MIN_FILL_RATIO: float = 0.0           # >0: flatten fills below this ratio of target qty
+    REV_RESIZE_AT_FILL: bool = True           # rescale qty by capital(now)/capital(at signal)
+    # ══ [REV-FIX v2] long-run hardening knobs ══
+    LOOP_WARN_ERRORS: int = 5                 # consecutive loop errors -> alert
+    LOOP_MAX_CONSEC_ERRORS: int = 30          # consecutive loop errors -> give up
+    LOOP_EXIT_ON_ERRORS: bool = True          # exit(3) so a supervisor restarts the bot
+    LOOP_ERR_RESET_AFTER_S: float = 900.0     # quiet period that resets the error streak
+    HEARTBEAT_EVERY_S: float = 10.0           # heartbeat_<mode>.json refresh
+    TIMESYNC_EVERY_S: float = 3600.0
+    TIMESYNC_WARN_DRIFT_S: float = 5.0
+    MARKETS_REFRESH_S: float = 21600.0        # load_markets(reload) + clear tick/MMR/tier caches
+    DEGENERATE_BAN_TTL_S: float = 86400.0     # degenerate-symbol ban duration
+    JSON_FORCE_WRITE_S: float = 300.0         # unchanged JSON state is still rewritten this often
+    LIVE_FETCH_MAX_BARS: int = 1000           # catch-up fetch size after missed bars
+    LIVE_GAP_HEAL_ENABLED: bool = True
+    LIVE_GAP_LOOKBACK_BARS: int = 600
+    LIVE_GAP_HEAL_PER_CYCLE: int = 5
+    LIVE_KEEPALIVE_S: float = 5.0             # watcher monitoring cadence during retrain
+    REV_UNIV_BACKGROUND: bool = True          # universe refresh in a background thread
+    UNIVERSE_REFRESH_S: float = 100000000 # 604800.0  # 7 أيام
+    UNIVERSE_RETRY_S: float = 600.0
+    # ══ [REV-FIX v3] Maker Ladder (Phase 1) - opt-in ══
+    REV_LADDER_ENABLED: bool = False
+    REV_LADDER_OFFSETS_SIGMA: tuple = (0.0, 0.3, 0.6)   # levels below target, in sigma_bar*target
+    REV_LADDER_WEIGHTS: tuple = (0.40, 0.35, 0.25)      # share of qty per level (normalised)
+    REV_LADDER_QP_PCT: float = 0.05                     # queue-priority order at target (out of L0); 0 = off
+    REV_LADDER_MAX_WAIT_S: float = 21600.0              # hard stop after the bounce confirms (6h)
+    REV_LADDER_POLL_S: float = 10.0                     # queue-priority order polling cadence
+    REV_LADDER_MIN_FILL_RATIO: float = 0.0              # >0: flatten ladders that end below this ratio
+    # ══ [REV-FIX v4] Resting-Option Execution (ROE) ══
+    REV_ROE_ENABLED: bool = False
+    REV_ROE_FRAC: float = 1.0                 # share of the size resting at target before the touch (1.0 = full replica)
+    REV_ROE_OFFSET_TICKS: int = 0             # >0: rest N ticks ABOVE target (BUY) for a higher fill probability
+    REV_ROE_FALLBACK: str = "skip"            # bounce confirmed but nothing filled: skip | marketable
+    REV_ROE_MAX_SYMBOLS: int = 0              # symbols that may rest/hold provisional exposure (0 = MAX_CONCURRENT_ASSETS)
+    REV_ABORT_KAPPA: float = 1.0              # abort level: close beyond target -/+ kappa*sigma_bar*target (live + estimator)
+    REV_OPT_STATS: bool = True                # backtest: account the option cost per touched signal
+    REV_OPT_REPORT: bool = True               # backtest: print the estimator at exit
 
 CFG = Config()
 
@@ -882,8 +1274,17 @@ def _trade_log_from_backtest(pos, ad, exit_px, exit_rsn, exit_ci,
             'exit_ci': int(exit_ci),
             'hold_bars': int(exit_ci - pos.entry_ci),
             'sl_dist_initial': float(getattr(pos, 'sl_dist_initial', 0.0)),
+            'be_esc_done': bool(getattr(pos, '_be_esc_done', False)),
+            'rescue_p': float(getattr(pos, '_rescue_p', -1.0)),
         }
         rec.update(_extract_entry_features_for_log(sig, ad))
+        try:
+            rec = _analytics_extend_trade_record(
+                rec, pos, ad, exit_px, exit_rsn, exit_ci,
+                capital_before, capital_after, net or 0.0, lr, 'backtest'
+            )
+        except Exception:
+            pass
         _trade_log_write(rec)
     except Exception as e:
         log.debug(f"[TradeLog] backtest log failed: {e}")
@@ -940,6 +1341,13 @@ def _trade_log_from_live(pos: Dict, exit_px: float, exit_rsn: str,
                     ) else 0.0
             except Exception:
                 pass
+        try:
+            rec = _analytics_extend_trade_record(
+                rec, None, ad, exit_px, exit_rsn, 0,
+                0.0, 0.0, net_pnl or 0.0, 0.0, CFG.mode
+            )
+        except Exception:
+            pass
         _trade_log_write(rec)
     except Exception as e:
         log.debug(f"[TradeLog] live log failed: {e}")
@@ -979,7 +1387,7 @@ def _resolve_data_params(cfg, mode: str, tf_hours: float,
 
     # ── Physical constants ──
     strict_min_bars = 2 * K_max * min_pts + N         # 2424
-    MAX_HISTORY_DAYS = 730
+    MAX_HISTORY_DAYS = 10000
     MIN_HISTORY_DAYS = 3
     absolute_floor = max(N + W + 100, 500)
 
@@ -1128,9 +1536,9 @@ def _default_assets():
         "ETH/USDT",    # إيثيريوم - رافعة 100x
         "BNB/USDT",    # بيнанс كوين - رافعة 75x
         "SOL/USDT",    # سولانا - رافعة 50x
-#        "XRP/USDT",    # ريبل - رافعة 50x
-#        "DOGE/USDT",   # دوجكوين - رافعة 50x
-        "ADA/USDT",    # كاردانو - رافعة 50x
+        "XRP/USDT",    # ريبل - رافعة 50x  # stop
+#        "DOGE/USDT",   # دوجكوين - رافعة 50x  #  stop
+        "ADA/USDT",    # كاردانو - رافعة 50x.  # stop
         "AVAX/USDT",   # أفالانش - رافعة 50x
         "LINK/USDT",   # تشين لينك - رافعة 50x
         "DOT/USDT",    # بولكادوت - رافعة 50x
@@ -1139,17 +1547,17 @@ def _default_assets():
         "ATOM/USDT",   # كوزموس - رافعة 50x
         "ETC/USDT",    # إيثيريوم كلاسيك - رافعة 50x
         "TRX/USDT",    # ترون - رافعة 50x
-        "TON/USDT",    # تون كوين - رافعة 50x
+#        "TON/USDT",    # تون كوين - رافعة 50x  # stop
         "BCH/USDT",    # بيتكوين كاش - رافعة 50x
         "NEAR/USDT",   # نير بروتوكول - رافعة 50x
         "APT/USDT",    # أبتوس - رافعة 50x
-        "HBAR/USDT",   # هيدرا - رافعة 50x
-#        "VET/USDT",    # في تشين - رافعة 50x
+#        "HBAR/USDT",   # هيدرا - رافعة 50x   # stop
+#        "VET/USDT",    # في تشين - رافعة 50x   # stop
         "STX/USDT",    # ستاكس - رافعة 50x
-        "AAVE/USDT",   # آفي - رافعة 50x
+#        "AAVE/USDT",   # آفي - رافعة 50x   # stop
         "ARB/USDT",    # أربيتروم - رافعة 50x
         "OP/USDT",     # أوبتيميزم - رافعة 50x
-#        "INJ/USDT",    # إنجكتيف - رافعة 50x
+        "INJ/USDT",    # إنجكتيف - رافعة 50x  # stop
         "SUI/USDT",    # سوي - رافعة 50x
         "TIA/USDT",    # سيليستيا - رافعة 50x
         "SEI/USDT",    # ساي - رافعة 50x
@@ -1159,53 +1567,53 @@ def _default_assets():
         "RENDER/USDT", # ريندر - رافعة 50x
         "LDO/USDT",    # ليدو داو - رافعة 50x
         "KAS/USDT",    # كاسبا - رافعة 50x
-        "WIF/USDT",    # دوج ويف هات - رافعة 50x
-        "THETA/USDT",  # ثيتا - رافعة 50x
+#        "WIF/USDT",    # دوج ويف هات - رافعة 50x
+#        "THETA/USDT",  # ثيتا - رافعة 50x
         "SAND/USDT",   # ذا ساندبوكس - رافعة 50x
         "MANA/USDT",   # ديسنترالاند - رافعة 50x
         "AXS/USDT",    # أكسي إنفينيتي - رافعة 50x
         "XLM/USDT",    # ستيلر - رافعة 50x
         "CHZ/USDT",    # تشيليز - رافعة 50x
         "POL/USDT",    # بوليجون - رافعة 50x
-        "FIL/USDT",    # فيل كوين - رافعة 50x
+#        "FIL/USDT",    # فيل كوين - رافعة 50x.  # stop
         "QNT/USDT",    # كوانت - رافعة 50x
         "DASH/USDT",   # داش - رافعة 50x
-#        "EOS/USDT",    # إيوس - رافعة 50x
-#        "FTM/USDT",    # فانتوم - رافعة 50x
+#        "EOS/USDT",    # إيوس - رافعة 50x   # stop
+#        "FTM/USDT",    # فانتوم - رافعة 50x.  # stop
         "FLOW/USDT",   # فلو - رافعة 50x
         "CAKE/USDT",   # بانكيك سواب - رافعة 50x
         "ROSE/USDT",   # أوايسيس نتوورك - رافعة 50x
-#        "ZIL/USDT",    # زيلكا - رافعة 50x
-#        "ONE/USDT",    # هارموني - رافعة 50x
+        "ZIL/USDT",    # زيلكا - رافعة 50x   # stop
+#        "ONE/USDT",    # هارموني - رافعة 50x.  # stop
         "IOTA/USDT",   # أيوتا - رافعة 50x
-        "NEO/USDT",    # نيو - رافعة 50x
+#        "NEO/USDT",    # نيو - رافعة 50x
         "KAVA/USDT",   # كافا - رافعة 50x
         "CRV/USDT",    # كورف - رافعة 50x
-        "SNX/USDT",    # سينثيتيكس - رافعة 50x
+        "SNX/USDT",    # سينثيتيكس - رافعة 50x.  # stop
         "COMP/USDT",   # كومباووند - رافعة 50x
-#        "MKR/USDT",    # ميكر - رافعة 50x
+#        "MKR/USDT",    # ميكر - رافعة 50x.  # stop
         "SUSHI/USDT",  # سوشي سواب - رافعة 50x
         "YFI/USDT",    # يرن فايننس - رافعة 50x
         "ZRX/USDT",    # زيرو إكس - رافعة 50x
         "BAT/USDT",    # باسيك أتنشن توكن - رافعة 50x
-#        "ENJ/USDT",    # إنجين - رافعة 50x
-        "ANKR/USDT",   # أنكر - رافعة 50x
-#        "OCEAN/USDT",  # أوشن بروتوكول - رافعة 50x
+        "ENJ/USDT",    # إنجين - رافعة 50x   # stop
+        "ANKR/USDT",   # أنكر - رافعة 50x.
+#        "OCEAN/USDT",  # أوشن بروتوكول - رافعة 50x   # stop
         "BAND/USDT",   # باند بروتوكول - رافعة 50x
         "NMR/USDT",    # نوميرا - رافعة 50x
-        "STORJ/USDT",  # ستورج - رافعة 50x
+#        "STORJ/USDT",  # ستورج - رافعة 50x  # stop
         "KSM/USDT",    # كوساما - رافعة 50x
-#        "WAVES/USDT",  # ويفز - رافعة 50x
+#        "WAVES/USDT",  # ويفز - رافعة 50x   # stop
         "ZEN/USDT",    # هوريزن - رافعة 50x
-#        "ICP/USDT",    # إنترنت كمبيوتر - رافعة 50x
+        "ICP/USDT",    # إنترنت كمبيوتر - رافعة 50x  # stop 
         "CELO/USDT",   # سيلو - رافعة 50x
-#        "AR/USDT",     # أرويف - رافعة 50x
+        "AR/USDT",     # أرويف - رافعة 50x   # stop
         "MASK/USDT",   # ماسك نتوورك - رافعة 50x
         "DYDX/USDT",   # دي واي دي إكس - رافعة 50x
         "ENS/USDT",    # إيثيريوم نيم سيرفس - رافعة 50x
         "GMX/USDT",    # جي إم إكس - رافعة 50x
         "MAGIC/USDT",  # ماجيك - رافعة 50x
-        "HIGH/USDT",   # هاي - رافعة 50x
+#        "HIGH/USDT",   # هاي - رافعة 50x.  # stop
         "PENDLE/USDT", # بيندل - رافعة 50x
         "JOE/USDT",    # ترايدر جو - رافعة 50x
         "CYBER/USDT",  # سايبر كونكت - رافعة 50x
@@ -1214,13 +1622,13 @@ def _default_assets():
         "BLUR/USDT",   # بلور - رافعة 50x
         "ID/USDT",     # سبيس آي دي - رافعة 50x
         "EDU/USDT",    # إيدي - رافعة 50x
-#        "PEPE/USDT",   # بيبي - رافعة 50x
-#        "FLOKI/USDT",  # فلوكي - رافعة 50x
-#        "BONK/USDT",   # بونك - رافعة 50x
-#        "MEME/USDT",   # ميم كوين - رافعة 50x
+#        "PEPE/USDT",   # بيبي - رافعة 50x   # stop
+#        "FLOKI/USDT",  # فلوكي - رافعة 50x   # stop
+#        "BONK/USDT",   # بونك - رافعة 50x   # stop
+#        "MEME/USDT",   # ميم كوين - رافعة 50x   # stop
         "ORDI/USDT",   # أوردينالز - رافعة 50x
-#        "1000SATS/USDT", # ساتس - رافعة 50x
-        "JUP/USDT",    # جوبيتر - رافعة 50x
+#        "1000SATS/USDT", # ساتس - رافعة 50x   # stop
+        "JUP/USDT",    # جوبيتر - رافعة 50x 
         "PYTH/USDT",   # بايث - رافعة 50x
         "JTO/USDT",    # جيتو - رافعة 50x
         "DYM/USDT",    # دايمنشن - رافعة 50x
@@ -1229,21 +1637,21 @@ def _default_assets():
         "ALT/USDT",    # ألت لاير - رافعة 50x
         "AEVO/USDT",   # أفيفو - رافعة 50x
         "ETHFI/USDT",  # إيثير فاي - رافعة 50x
-#        "BOME/USDT",   # بوك أوف ميم - رافعة 50x
+#        "BOME/USDT",   # بوك أوف ميم - رافعة 50x  #  stop
         "W/USDT",      # ورم هول - رافعة 50x
         "SAGA/USDT",   # ساغا - رافعة 50x
-#        "OMNI/USDT",   # أومني - رافعة 50x
-#        "REZ/USDT",    # رينزو - رافعة 50x
+#        "OMNI/USDT",   # أومني - رافعة 50x   # stop
+#        "REZ/USDT",    # رينزو - رافعة 50x   # stop
         "BB/USDT",     # باونس بيت - رافعة 50x
         "IO/USDT",     # آي أو نت - رافعة 50x
-        "ZK/USDT",     # zkSync - رافعة 50x
+        "ZK/USDT",     # zkSync - رافعة 50x   # stop
         "LISTA/USDT",  # ليستا - رافعة 50x
-        "TAIKO/USDT",  # تايكو - رافعة 50x
+#        "TAIKO/USDT",  # تايكو - رافعة 50x
         "ZRO/USDT",    # لاير زيرو - رافعة 50x
         "G/USDT",      # جي - رافعة 50x
         "RARE/USDT",   # رير - رافعة 50x
         "SYN/USDT",    # سينابس - رافعة 50x
-        "MEW/USDT",    # ميو - رافعة 50x
+#        "MEW/USDT",    # ميو - رافعة 50x . # stop
         "MERL/USDT",   # ميرلين - رافعة 50x
         "BANANA/USDT", # بانانا - رافعة 50x
     ]
@@ -1272,12 +1680,6 @@ def _robust_center_scale(x):
     return med, scale
 
 def scan_top_assets(exchange, n=None) -> List[str]:
-    # ═══ [730d VERIFIED] Frozen top-10 universe ═══
-    _frozen = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "ADA/USDT",
-               "AVAX/USDT", "LINK/USDT", "DOT/USDT", "UNI/USDT", "LTC/USDT"]
-    log.info(f"[Universe] frozen to {len(_frozen)} assets")
-    return _frozen
-    # ── legacy body below is dead code ──
     n = n or CFG.n_assets
     try:
         tickers = exchange.fetch_tickers()
@@ -1424,10 +1826,15 @@ _REQUIRED_OHLCV = ('Open', 'High', 'Low', 'Close', 'Volume')
 _TS_COL_CANDIDATES = ('ts', 'timestamp', 'time', 'date', 'datetime')
 
 
-def _validate_cache_local(df, symbol: str, timeframe: str, tf_sec: int):
+def _validate_cache_local(df, symbol: str, timeframe: str, tf_sec: int,
+                           since_ts=None):
     """
     مرحلة الإصلاح المحلي (بدون شبكة).
     Returns: (cleaned_df | None, gap_ranges: list[(start_ts, end_ts)], issues: dict)
+
+    since_ts: if given, only gaps whose end_ts >= since_ts are reported.
+              Gaps entirely before it are dropped from gap_ranges AND
+              excluded from issues['gaps'].
     """
     issues = {
         'naive_tz': 0, 'wrong_index_type': 0, 'unsorted': 0,
@@ -1553,8 +1960,16 @@ def _validate_cache_local(df, symbol: str, timeframe: str, tf_sec: int):
                 continue
             start_ts = df.index[gi - 1] + expected
             end_ts = df.index[gi] - expected
-            if start_ts <= end_ts:
-                gap_ranges.append((start_ts, end_ts))
+            if start_ts > end_ts:
+                continue
+            # [WINDOW-FILTER] skip gaps entirely outside the current window
+            if since_ts is not None:
+                try:
+                    if end_ts < since_ts:
+                        continue
+                except Exception:
+                    pass
+            gap_ranges.append((start_ts, end_ts))
         issues['gaps'] = len(gap_ranges)
 
     return df, gap_ranges, issues
@@ -1627,9 +2042,14 @@ def _log_cache_health(symbol: str, timeframe: str,
         log.info(f"[Cache-Health] {symbol} {timeframe}: "
                  f"local repair [{_fixes}]")
     if gaps_filled > 0:
-        log.info(f"[Cache-Health] {symbol} {timeframe}: "
-                 f"filled {bars_fetched} bar(s) across "
-                 f"{gaps_filled} gap(s) — network fetch")
+        if bars_fetched > 0:
+            log.info(f"[Cache-Health] {symbol} {timeframe}: "
+                     f"filled {bars_fetched} bar(s) across "
+                     f"{gaps_filled} gap(s) — network fetch")
+        else:
+            log.debug(f"[Cache-Health] {symbol} {timeframe}: "
+                      f"{gaps_filled} gap(s) confirmed dead "
+                      f"(exchange has no data)")
 
     _CACHE_HEALTH['files_scanned'] += 1
     _CACHE_HEALTH['issues_fixed_local'] += sum(
@@ -1791,7 +2211,7 @@ def _load_cached_sub(symbol, exchange, sub_tf, days):
             log.warning(f"[SubBars] {symbol} backfill: {e}")
     # ═══ 3.5 التحقق والإصلاح المحلي (sub-bars) ═══
     df, gap_ranges, issues = _validate_cache_local(
-        df, symbol, sub_tf, _sub_sec
+        df, symbol, sub_tf, _sub_sec, since_ts=since_full_dt
     )
     if df is None or len(df) < min_rows:
         return None
@@ -1880,36 +2300,51 @@ def fetch_all_with_subbars(symbols, exchange, main_tf, days, workers=5):
 def _align_subbars(main_index, sub_df, sub_per_main, tf_sec):
     """
     Align sub-bars to main-bar grid.
-
-    Returns (sub_highs, sub_lows) with shape (n_main, sub_per_main).
-    Missing sub-bars are filled with the main bar's high/low.
+    Returns (sub_highs, sub_lows, sub_closes) each (n_main, sub_per_main).
+    Missing sub-bars are NaN.
     """
     n = len(main_index)
-    sub_highs = np.full((n, sub_per_main), np.nan, dtype=np.float64)
-    sub_lows  = np.full((n, sub_per_main), np.nan, dtype=np.float64)
+    sub_highs  = np.full((n, sub_per_main), np.nan, dtype=np.float64)
+    sub_lows   = np.full((n, sub_per_main), np.nan, dtype=np.float64)
+    sub_closes = np.full((n, sub_per_main), np.nan, dtype=np.float64)
     if sub_df is None or len(sub_df) == 0 or sub_per_main <= 0:
-        return sub_highs, sub_lows
+        return sub_highs, sub_lows, sub_closes
 
     try:
         sub_ts_ns = sub_df.index.asi8
-        sub_high_vals = sub_df['High'].values.astype(np.float64)
-        sub_low_vals  = sub_df['Low'].values.astype(np.float64)
+        sub_high_vals  = sub_df['High'].values.astype(np.float64)
+        sub_low_vals   = sub_df['Low'].values.astype(np.float64)
+        sub_close_vals = sub_df['Close'].values.astype(np.float64)
         main_ns = main_index.asi8
         tf_ns = int(tf_sec * 1_000_000_000)
 
-        for i in range(n):
-            start_ns = main_ns[i]
-            end_ns = start_ns + tf_ns
-            lo = int(np.searchsorted(sub_ts_ns, start_ns, side='left'))
-            hi = int(np.searchsorted(sub_ts_ns, end_ns, side='left'))
-            if hi <= lo:
+        # ══ [PERF-FIX] Vectorized alignment ══
+        # Same result as the per-bar loop, but 50-100× faster.
+        _m = len(sub_ts_ns)
+        _lo_arr = np.searchsorted(sub_ts_ns, main_ns, side='left')
+        _hi_arr = np.searchsorted(sub_ts_ns, main_ns + tf_ns, side='left')
+        _counts = np.minimum(_hi_arr - _lo_arr, sub_per_main)
+        if len(_counts) > 0:
+            _max_k = int(min(int(_counts.max()), sub_per_main))
+        else:
+            _max_k = 0
+        for _k in range(_max_k):
+            _mask = _counts > _k
+            if not _mask.any():
                 continue
-            take = min(hi - lo, sub_per_main)
-            sub_highs[i, :take] = sub_high_vals[lo:lo+take]
-            sub_lows[i, :take]  = sub_low_vals[lo:lo+take]
+            _src_idx = _lo_arr[_mask] + _k
+            _valid_2 = _src_idx < _m
+            if not _valid_2.all():
+                _mask_idx = np.where(_mask)[0][_valid_2]
+                _src_idx = _src_idx[_valid_2]
+            else:
+                _mask_idx = np.where(_mask)[0]
+            sub_highs[_mask_idx, _k]  = sub_high_vals[_src_idx]
+            sub_lows[_mask_idx, _k]   = sub_low_vals[_src_idx]
+            sub_closes[_mask_idx, _k] = sub_close_vals[_src_idx]
     except Exception as e:
         log.warning(f"[SubBars] align failed: {e}")
-    return sub_highs, sub_lows
+    return sub_highs, sub_lows, sub_closes
 
 # ════════════════════════════════════════════════════════════════
 # § 2  جلب البيانات مع كاش (متوازٍ)
@@ -2077,7 +2512,7 @@ def _load_cached(symbol, exchange, timeframe, days):
 
     # ═══ 3.5 التحقق والإصلاح المحلي ═══
     df, gap_ranges, issues = _validate_cache_local(
-        df, symbol, timeframe, _tf_sec
+        df, symbol, timeframe, _tf_sec, since_ts=since_full_dt
     )
     if df is None or len(df) < min_rows:
         return None
@@ -2086,8 +2521,17 @@ def _load_cached(symbol, exchange, timeframe, days):
     _gaps_filled = 0
     _bars_fetched = 0
     if issues.get('gaps', 0) > 0 and gap_ranges:
-        _relevant = [(s, e) for (s, e) in gap_ranges
-                     if e >= since_full_dt]
+        _candidates = [(s, e) for (s, e) in gap_ranges
+                       if e >= since_full_dt]
+        # [DEAD-GAPS] Skip gaps the exchange cannot fill
+        _relevant = [(s, e) for (s, e) in _candidates
+                     if not _is_dead_gap(symbol, timeframe,
+                                          int(s.timestamp()),
+                                          int(e.timestamp()))]
+        _n_dead_skipped = len(_candidates) - len(_relevant)
+        if _n_dead_skipped > 0:
+            log.debug(f"[Cache-Health] {symbol} {timeframe}: "
+                      f"skipped {_n_dead_skipped} known-dead gap(s)")
         if _relevant:
             _n_before = len(df)
             try:
@@ -2099,7 +2543,15 @@ def _load_cached(symbol, exchange, timeframe, days):
                             f"failed: {e}")
                 df_gap = None
 
+            # [DEAD-GAPS] Identify gaps that returned no bars
             if df_gap is not None and len(df_gap) > 0:
+                _gap_idx = df_gap.index
+                for (s, e) in _relevant:
+                    _hit = _gap_idx[(_gap_idx >= s) & (_gap_idx <= e)]
+                    if len(_hit) == 0:
+                        _mark_dead_gap(symbol, timeframe,
+                                        int(s.timestamp()),
+                                        int(e.timestamp()))
                 df = pd.concat([df, df_gap])
                 df = (df[~df.index.duplicated(keep='last')]
                         .sort_index())
@@ -2110,6 +2562,12 @@ def _load_cached(symbol, exchange, timeframe, days):
                     _CACHE_HEALTH['files_saved'] += 1
                 except Exception as e:
                     log.debug(f"[Cache-Health] {symbol} save failed: {e}")
+            else:
+                # Every candidate gap returned nothing → mark all dead
+                for (s, e) in _relevant:
+                    _mark_dead_gap(symbol, timeframe,
+                                    int(s.timestamp()),
+                                    int(e.timestamp()))
 
     # سجّل الملخص
     _log_cache_health(symbol, timeframe, issues,
@@ -2301,13 +2759,18 @@ def entropy_regression(H):
 def compute_geometry(X, step=None):
     step = step or CFG.L; n,d = X.shape
     C = np.zeros(n); V = np.zeros(n)
+    if n < 2:
+        C[:] = 0.; V[:] = CFG.EPSILON
+        return C, V
+    # ══ [PERF-FIX] Precomputed diffs (one np.diff/norm call total) ══
+    _all_diffs = np.linalg.norm(np.diff(X, axis=0), axis=1)
+    _eye_d = CFG.EPSILON * np.eye(d)
     for s in range(0,n,step):
         e = min(s+step,n); chunk = X[s:e]
         if len(chunk)<2: C[s:e]=0.; V[s:e]=CFG.EPSILON; continue
-        diffs = np.linalg.norm(np.diff(chunk,axis=0),axis=1)
-        C[s:e] = -float(np.mean(diffs))
+        C[s:e] = -float(np.mean(_all_diffs[s:e-1]))
         cov    = np.cov(chunk.T) if chunk.shape[0]>1 else np.eye(d)
-        V[s:e] = max(np.linalg.det(cov+CFG.EPSILON*np.eye(d)), CFG.EPSILON)
+        V[s:e] = max(np.linalg.det(cov+_eye_d), CFG.EPSILON)
     return C, V
 
 
@@ -2317,7 +2780,7 @@ def compute_geometry(X, step=None):
 
 # ─── Kernel 1: Lyapunov dynamic (the biggest bottleneck) ─────────
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _lyapunov_kernel(X, window, steps, min_dist):
     """
     Numba-compiled version of compute_lyapunov_dynamic's core loop.
@@ -2386,7 +2849,7 @@ def _lyapunov_kernel(X, window, steps, min_dist):
 
 # ─── Kernel 2: Gauge force & equilibrium gap ────────────────────
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _gauge_kernel(sym_q, dyn_k, W):
     """
     Numba-compiled gauge force & delta_gap.
@@ -2454,7 +2917,7 @@ def _gauge_kernel(sym_q, dyn_k, W):
 
 # ─── Kernel 3: Entropy series ───────────────────────────────────
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _entropy_kernel(sym_q, W, k):
     """
     Numba-compiled Shannon entropy over a sliding window.
@@ -2486,7 +2949,7 @@ def _entropy_kernel(sym_q, W, k):
 
 # ─── Kernel 0: Features (compute_features bottleneck) ───────────
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _features_kernel(lr, closes, volumes, N):
     """
     Numba-compiled feature extractor — replaces scipy-heavy Python loop.
@@ -2674,9 +3137,23 @@ def compute_lyapunov_dynamic(X, window=60, steps=5, min_dist=10):
 
 def compute_energy_dynamics(closes, lr_full, X, feat_start):
     n = len(X); N = CFG.N; KE = np.zeros(n)
-    for i in range(n):
-        ci = feat_start+i
-        if ci>=N: KE[i] = 0.5*float(np.mean(lr_full[ci-N:ci]**2))
+    # ══ [PERF-FIX] Vectorized KE via cumulative sums ══
+    # sum(lr_full[ci-N:ci]^2) = cs[ci] - cs[ci-N]
+    _lr_sq = lr_full ** 2
+    if (n > 0 and feat_start >= N
+            and len(_lr_sq) >= (feat_start + n)):
+        _cs = np.empty(len(_lr_sq) + 1, dtype=np.float64)
+        _cs[0] = 0.0
+        np.cumsum(_lr_sq, out=_cs[1:])
+        _ci_arr = np.arange(feat_start, feat_start + n, dtype=np.int64)
+        _window_sums = _cs[_ci_arr] - _cs[_ci_arr - N]
+        KE[:] = 0.5 * _window_sums / N
+    else:
+        # Safe fallback for edge cases
+        for i in range(n):
+            ci = feat_start + i
+            if ci >= N:
+                KE[i] = 0.5 * float(np.mean(_lr_sq[ci - N:ci]))
     lya  = compute_lyapunov_dynamic(X, window=60, steps=5, min_dist=10)
     dKE  = np.diff(KE,  prepend=KE[0])
     d2KE = np.diff(dKE, prepend=dKE[0])
@@ -2757,16 +3234,14 @@ def _taker_slippage_bps(adv_usd) -> float:
 
 
 def _exit_is_taker(exit_rsn: str) -> bool:
-    """
-    Classify the exit reason as taker (crosses the book) or maker.
-    Matches Live's classification in run_live():
-        - Emergency SL / Hard TP / LiqProximity → taker
-          (marketable limit or market order)
-        - Apex / Topo-Div / MaxHold / EndOfData → maker
-          (post-only GTX exit)
-    """
     r = str(exit_rsn or "")
-    if ("Emergency" in r) or ("Hard TP" in r) or ("LiqProximity" in r):
+    _apex_urgent = bool(getattr(CFG, 'PO_EXIT_APEX_URGENT', True))
+    _apex_match = _apex_urgent and (("Apex" in r) or ("Topo-Div" in r))
+    # [BEEsc-FIX] "BEEsc-breakeven" تخرج عند entry → تعبر السبريد
+    # → taker (بالضبط مثل Hard TP)
+    if (("Emergency" in r) or ("Hard TP" in r)
+            or ("BEEsc-breakeven" in r)
+            or ("LiqProximity" in r) or _apex_match):
         return True
     return False
 
@@ -2850,8 +3325,9 @@ class AssetData:
     geodesic_accel: np.ndarray
     score_q95_train: float
     # ══ [SUB-BARS] ══
-    sub_highs: Optional[np.ndarray] = None    # shape (n_bars, sub_per_main)
-    sub_lows:  Optional[np.ndarray] = None
+    sub_highs:  Optional[np.ndarray] = None   # shape (n_bars, sub_per_main)
+    sub_lows:   Optional[np.ndarray] = None
+    sub_closes: Optional[np.ndarray] = None
     sub_per_main: int = 0
     sub_tf: str = ""
 
@@ -2898,6 +3374,7 @@ class OpenPosition:
     entry_sub_idx: int = 0
     partial_taken: bool = False      # [FIX 4]
     partial_pnl: float = 0.0         # [FIX 4] accumulated partial profit
+    _signal_sl_above_beesc: bool = False   # [Signal-SL] BEEsc disabled flag
 
 
 # ════════════════════════════════════════════════════════════════
@@ -3052,7 +3529,7 @@ def process_asset(symbol, df, km_ext=None, current_capital=None, sub_df=None):
             # Last resort: force K=2 (guaranteed non-degenerate for any
             # non-trivial distribution: H_max = 1, threshold = 0.25).
             try:
-                _k_chosen = 2
+                _k_chosen = 15
                 _km_chosen = fit_kmeans(X[:train_end], k=2)
                 _sym_q_chosen = assign(X, _km_chosen)
                 _H_chosen = entropy_series(_sym_q_chosen, k=2)
@@ -3189,7 +3666,7 @@ def process_asset(symbol, df, km_ext=None, current_capital=None, sub_df=None):
     tri = compute_tri(dH, d2H, dF, dKE, ed['lya'])
 
     # ══ [SUB-BARS] Align finer bars to the main grid ══
-    _sub_h, _sub_l = None, None
+    _sub_h, _sub_l, _sub_c = None, None, None
     _sub_pm = 0
     _sub_tf_name = ""
     if (getattr(CFG, 'SUBBARS_ENABLED', True)
@@ -3198,7 +3675,7 @@ def process_asset(symbol, df, km_ext=None, current_capital=None, sub_df=None):
         if _sub_tf_name:
             _sub_pm = _sub_per_main(CFG.timeframe, _sub_tf_name)
             if _sub_pm >= 2:
-                _sub_h, _sub_l = _align_subbars(
+                _sub_h, _sub_l, _sub_c = _align_subbars(
                     ts, sub_df, _sub_pm, int(CFG.TF_SECONDS)
                 )
 
@@ -3218,6 +3695,7 @@ def process_asset(symbol, df, km_ext=None, current_capital=None, sub_df=None):
         score_q95_train=_score_q95_train,
         sub_highs=_sub_h,
         sub_lows=_sub_l,
+        sub_closes=_sub_c,
         sub_per_main=_sub_pm,
         sub_tf=_sub_tf_name,
     )
@@ -3895,7 +4373,7 @@ def compute_adaptive_leverage(symbol, sig, open_pos_live, capital,
 
     try:
         _mmr = _get_mmr_for_symbol(exchange, symbol) if exchange else 0.02
-        _sl_frac_max = 0.015 * float(getattr(cfg, "SL_WIDEN_MULT", 1.0))
+        _sl_frac_max = float(getattr(CFG, 'MAX_SL_FRAC', 0.015)) * float(getattr(cfg, "SL_WIDEN_MULT", 1.0))
         L_liq = int(compute_max_leverage_by_liq(
             sl_frac_max=_sl_frac_max,
             mmr=_mmr,
@@ -4206,37 +4684,55 @@ def _sr_filter_check(sig, ad, current_ci: int) -> Tuple[bool, str]:
             return False, "no_clusters"
 
         sl_price = float(sig.sl)
+        entry_price = float(sig.price)
         best_strength = 0.0
         best_level = 0.0
         best_dist = 999.0
 
+        _min_gap = float(getattr(CFG, 'SR_MIN_GAP_FRAC', 0.001))
+
         for c in clusters:
             if c['touch_count'] < min_touches:
                 continue
-            dist = abs(sl_price - c['price']) / max(sl_price, 1e-12)
-            if dist > sl_prox:
+
+            level = float(c['price'])
+
+            # ── [REVERSED] The level must sit BETWEEN entry and SL ──
+            if sig.action == "BUY":
+                # support between SL and entry
+                if not (sl_price < level < entry_price):
+                    continue
+                gap_frac = (level - sl_price) / max(abs(sl_price), 1e-12)
+            else:
+                # resistance between entry and SL
+                if not (entry_price < level < sl_price):
+                    continue
+                gap_frac = (sl_price - level) / max(abs(sl_price), 1e-12)
+
+            # gap bounds: neither attached nor too far
+            if gap_frac < _min_gap:
                 continue
-            if sig.action == "BUY" and c['price'] > sl_price * (1.0 + tol):
+            if gap_frac > sl_prox:
                 continue
-            if sig.action == "SELL" and c['price'] < sl_price * (1.0 - tol):
-                continue
+
             strength = _compute_level_strength(ad, current_ci, c)
             if strength > best_strength:
                 best_strength = strength
-                best_level = c['price']
-                best_dist = dist
+                best_level = level
+                best_dist = gap_frac
 
         if best_strength < str_thr:
             _SR_REJECT_LOG['weak_strength'] += 1
-            # Log first 20 rejections per symbol for diagnosis
             if _SR_REJECT_LOG['weak_strength'] <= 20:
                 log.debug(
-                    f"[SR] {sig.symbol} {sig.action} weak: "
+                    f"[SR] {sig.symbol} {sig.action} no protection: "
                     f"strength={best_strength:.2f} < {str_thr:.2f} "
-                    f"(level={best_level:.6f}, dist={best_dist*1e4:.1f}bps)"
+                    f"(level={best_level:.6f}, gap={best_dist*100:.2f}%)"
                 )
-            return False, f"weak_SR({best_strength:.2f})"
-        return True, f"OK(strength={best_strength:.2f})"
+            return False, f"unprotected_SL(strength={best_strength:.2f})"
+        return True, (f"OK(level={best_level:.6f}, "
+                      f"strength={best_strength:.2f}, "
+                      f"gap={best_dist*100:.2f}%)")
     except Exception as e:
         log.warning(f"[SR] check failed {sig.symbol}: {e}")
         return True, "SR_error"  # fail open
@@ -4464,6 +4960,1007 @@ def _trade_filter_check(sig, ad, fi, ci) -> Tuple[bool, str]:
         log.debug(f"[Filter] exception (fail-open): {e}")
         return False, "filter_error"
 
+
+# ═══════════════════════════════════════════════════════════════
+# [ANALYTICS v1] — Comprehensive output system
+# ═══════════════════════════════════════════════════════════════
+
+_ANALYTICS: Dict = {
+    'enabled': False,
+    'run_id': '',
+    'output_dir': '',
+    'config_snapshot': None,
+    'started_at': None,
+    'started_at_iso': '',
+    'buffers': {},
+    'n_signals_logged': 0,
+    'n_events_logged': 0,
+    'n_trades_logged': 0,
+    'portfolio_snapshots': [],
+    'market_snapshots': [],
+    'last_context_ts': 0.0,
+    'trade_counter': 0,
+    'trade_id_map': {},
+    'symbol_states': {},
+}
+
+_ANALYTICS_OPTIONAL_DEPS: Dict = {}
+
+
+def _analytics_check_deps() -> Dict:
+    """Return dict of {plotly: bool, pyarrow: bool, ...}."""
+    if _ANALYTICS_OPTIONAL_DEPS:
+        return _ANALYTICS_OPTIONAL_DEPS
+    deps = {'plotly': False, 'pyarrow': False}
+    try:
+        import plotly  # noqa: F401
+        deps['plotly'] = True
+    except Exception:
+        pass
+    try:
+        import pyarrow  # noqa: F401
+        deps['pyarrow'] = True
+    except Exception:
+        pass
+    _ANALYTICS_OPTIONAL_DEPS.update(deps)
+    return _ANALYTICS_OPTIONAL_DEPS
+
+
+def _analytics_init(mode: str, cfg=None) -> None:
+    """Initialize analytics system at start of a run."""
+    if cfg is None:
+        cfg = CFG
+    if not getattr(cfg, 'ANALYTICS_ENABLED', False):
+        _ANALYTICS['enabled'] = False
+        return
+    
+    try:
+        _ANALYTICS['enabled'] = True
+        _ANALYTICS['started_at'] = time.time()
+        _ANALYTICS['started_at_iso'] = datetime.now(timezone.utc).isoformat()
+        
+        # Run ID: timestamp + short hash
+        _ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        _rand = str(os.getpid())[-3:]
+        _ANALYTICS['run_id'] = f"{mode}_{_ts}_{_rand}"
+        
+        # Output directory
+        base_dir = str(getattr(cfg, 'ANALYTICS_OUTPUT_DIR', 'analytics'))
+        run_dir = os.path.join(base_dir, _ANALYTICS['run_id'])
+        os.makedirs(run_dir, exist_ok=True)
+        _ANALYTICS['output_dir'] = run_dir
+        
+        # Config snapshot (deep copy of relevant fields)
+        try:
+            _ANALYTICS['config_snapshot'] = {
+                k: (v.tolist() if isinstance(v, np.ndarray) else v)
+                for k, v in cfg.__dict__.items()
+                if not k.startswith('_')
+            }
+        except Exception:
+            _ANALYTICS['config_snapshot'] = {}
+        
+        # Buffers
+        for key in ('signals', 'events'):
+            _ANALYTICS['buffers'][key] = []
+        
+        # Dependency check
+        deps = _analytics_check_deps()
+        if not deps['plotly']:
+            log.info("[Analytics] plotly not installed — HTML report will be limited")
+        if not deps['pyarrow']:
+            log.info("[Analytics] pyarrow not installed — parquet → CSV fallback")
+        
+        log.info(f"[Analytics] Initialized — run_id={_ANALYTICS['run_id']}")
+        log.info(f"[Analytics] Output: {run_dir}")
+    except Exception as e:
+        log.warning(f"[Analytics] init failed: {e}")
+        _ANALYTICS['enabled'] = False
+
+
+def _analytics_path(name: str, ext: str) -> str:
+    """Build a file path inside run directory."""
+    d = _ANALYTICS.get('output_dir') or '.'
+    return os.path.join(d, f"{name}.{ext}")
+
+
+def _analytics_append_buffer(key: str, record: Dict) -> None:
+    """Append record to in-memory buffer, flush if full."""
+    if not _ANALYTICS.get('enabled'):
+        return
+    buf = _ANALYTICS['buffers'].get(key)
+    if buf is None:
+        _ANALYTICS['buffers'][key] = [record]
+        return
+    buf.append(record)
+    if len(buf) >= int(getattr(CFG, 'ANALYTICS_BUFFER_FLUSH_SIZE', 500)):
+        _analytics_flush(key)
+
+
+def _analytics_flush(key: str) -> None:
+    """Flush a buffer to its file (atomic append)."""
+    if not _ANALYTICS.get('enabled'):
+        return
+    buf = _ANALYTICS['buffers'].get(key, [])
+    if not buf:
+        return
+    try:
+        if key == 'signals':
+            path = _analytics_path('signals_candidates', 'jsonl')
+        elif key == 'events':
+            path = _analytics_path('position_events', 'jsonl')
+        else:
+            path = _analytics_path(key, 'jsonl')
+        
+        with open(path, 'a', encoding='utf-8') as f:
+            for rec in buf:
+                try:
+                    f.write(json.dumps(rec, default=str) + "\n")
+                except Exception:
+                    pass
+        _ANALYTICS['buffers'][key] = []
+    except Exception as e:
+        log.debug(f"[Analytics] flush {key} failed: {e}")
+
+
+def _analytics_write_manifest(mode: str, cfg, extra: Optional[Dict] = None) -> None:
+    """Write run manifest for reproducibility."""
+    if not _ANALYTICS.get('enabled'):
+        return
+    try:
+        # File fingerprint
+        import hashlib
+        try:
+            with open(__file__, 'rb') as f:
+                _code_hash = hashlib.md5(f.read()).hexdigest()[:16]
+        except Exception:
+            _code_hash = "unknown"
+        
+        import platform
+        manifest = {
+            'run_id': _ANALYTICS['run_id'],
+            'mode': mode,
+            'started_at': _ANALYTICS['started_at_iso'],
+            'python_version': platform.python_version(),
+            'platform': platform.platform(),
+            'pid': os.getpid(),
+            'cwd': os.getcwd(),
+            'file_path': os.path.abspath(__file__),
+            'code_hash_md5': _code_hash,
+            'config': _ANALYTICS.get('config_snapshot') or {},
+            'dependencies': _analytics_check_deps(),
+        }
+        if extra:
+            manifest.update(extra)
+        
+        path = _analytics_path('run_manifest', 'json')
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, default=str, indent=2)
+        os.replace(tmp, path)
+        log.info(f"[Analytics] Manifest written: {path}")
+    except Exception as e:
+        log.warning(f"[Analytics] manifest write failed: {e}")
+
+
+def _analytics_new_trade_id(symbol: str, entry_ts_iso: str = '') -> str:
+    """Generate a unique trade ID."""
+    _ANALYTICS['trade_counter'] += 1
+    n = _ANALYTICS['trade_counter']
+    safe_sym = symbol.replace('/', '_').replace(':', '_')
+    ts_part = (entry_ts_iso or _ANALYTICS['started_at_iso'])[:16].replace(':', '').replace('-', '').replace(' ', '_')
+    tid = f"{safe_sym}_{ts_part}_{n:06d}"
+    _ANALYTICS['trade_id_map'][tid] = {'symbol': symbol, 'created_at': time.time()}
+    return tid
+
+
+def _analytics_log_signal_candidate(sym: str, fi: int, ci: int, price: float,
+                                     ad, extra: Optional[Dict] = None) -> Dict:
+    """
+    Log a signal candidate BEFORE filters.
+    Returns a context dict for tracking through the filter chain.
+    """
+    if not _ANALYTICS.get('enabled'):
+        return {}
+    try:
+        ctx = {
+            'ts': time.time(),
+            'iso': datetime.now(timezone.utc).isoformat(),
+            'symbol': sym,
+            'fi': int(fi),
+            'ci': int(ci),
+            'price': float(price),
+        }
+        # Snapshot of feature values
+        if ad is not None:
+            try:
+                _feat_names = [
+                    ('score', 'score', fi), ('dF', 'dF', fi), ('dH', 'dH', fi),
+                    ('gauge_force', 'gauge_force', fi), ('friction', 'friction', fi),
+                    ('geodesic_accel', 'geodesic_accel', fi), ('H', 'H', fi),
+                    ('T_info', 'T_info', fi), ('E_therm', 'E_therm', fi),
+                    ('V', 'V', fi), ('delta_gap', 'delta_gap', fi),
+                ]
+                for key, attr, idx in _feat_names:
+                    arr = getattr(ad, attr, None)
+                    if arr is not None and 0 <= idx < len(arr):
+                        val = arr[idx]
+                        ctx[key] = float(val) if np.isfinite(val) else None
+            except Exception:
+                pass
+        if extra:
+            ctx.update(extra)
+        ctx['verdict'] = 'pending'
+        ctx['rejected_by'] = None
+        return ctx
+    except Exception:
+        return {}
+
+
+def _analytics_finalize_signal(ctx: Dict, verdict: str, reason: str = '') -> None:
+    """Finalize a signal candidate with its verdict (accepted/rejected)."""
+    if not _ANALYTICS.get('enabled') or not ctx:
+        return
+    try:
+        ctx['verdict'] = verdict
+        ctx['rejected_by'] = reason if verdict == 'rejected' else None
+        _analytics_append_buffer('signals', ctx)
+        _ANALYTICS['n_signals_logged'] += 1
+    except Exception:
+        pass
+
+
+def _analytics_log_position_event(trade_id: str, sym: str, event_type: str,
+                                    event_data: Dict) -> None:
+    """Log a position management event (SL update, BEEsc, partial, etc.)."""
+    if not _ANALYTICS.get('enabled'):
+        return
+    try:
+        rec = {
+            'ts': time.time(),
+            'iso': datetime.now(timezone.utc).isoformat(),
+            'trade_id': trade_id,
+            'symbol': sym,
+            'event_type': event_type,
+            'data': event_data,
+        }
+        _analytics_append_buffer('events', rec)
+        _ANALYTICS['n_events_logged'] += 1
+    except Exception:
+        pass
+
+
+def _analytics_portfolio_snapshot(ts: float, capital: float, peak: float,
+                                    n_open: int, heat: float,
+                                    unrealized_pnl: float = 0.0,
+                                    realized_pnl_today: float = 0.0) -> None:
+    """Append a portfolio snapshot."""
+    if not _ANALYTICS.get('enabled'):
+        return
+    try:
+        dd = ((peak - capital) / peak * 100) if peak > 0 else 0.0
+        _ANALYTICS['portfolio_snapshots'].append({
+            'ts': float(ts),
+            'iso': datetime.fromtimestamp(ts, timezone.utc).isoformat(),
+            'capital': float(capital),
+            'peak': float(peak),
+            'drawdown_pct': float(dd),
+            'n_open': int(n_open),
+            'heat': float(heat),
+            'unrealized_pnl': float(unrealized_pnl),
+            'realized_pnl_today': float(realized_pnl_today),
+        })
+    except Exception:
+        pass
+
+
+def _analytics_market_snapshot(ts: float, assets: Dict, open_pos: Dict) -> None:
+    """Append a market context snapshot (rate-limited)."""
+    if not _ANALYTICS.get('enabled'):
+        return
+    try:
+        now = float(ts)
+        last = float(_ANALYTICS.get('last_context_ts', 0.0))
+        interval = float(getattr(CFG, 'ANALYTICS_CONTEXT_INTERVAL_S', 3600))
+        if now - last < interval:
+            return
+        _ANALYTICS['last_context_ts'] = now
+        
+        rvols, gauges, accels = [], [], []
+        regimes = {'trending': 0, 'ranging': 0, 'explosive': 0, 'normal': 0}
+        for sym, ad in (assets or {}).items():
+            try:
+                fi = max(0, len(ad.score) - 2 - ad.feat_start)
+                if fi < len(ad.E_therm):
+                    rvols.append(float(ad.E_therm[fi]))
+                if fi < len(ad.gauge_force):
+                    gauges.append(float(ad.gauge_force[fi]))
+                if fi < len(ad.geodesic_accel):
+                    accels.append(float(ad.geodesic_accel[fi]))
+                try:
+                    _reg = _classify_regime_local(ad, fi, 100)
+                    regimes[_reg] = regimes.get(_reg, 0) + 1
+                except Exception:
+                    pass
+            except Exception:
+                continue
+        
+        def _safe_stats(arr):
+            if not arr:
+                return (0.0, 0.0)
+            return (float(np.mean(arr)), float(np.std(arr)))
+        
+        rvol_mu, rvol_sd = _safe_stats(rvols)
+        gauge_mu, gauge_sd = _safe_stats(gauges)
+        accel_mu, accel_sd = _safe_stats(accels)
+        
+        total_regimes = sum(regimes.values()) or 1
+        
+        _ANALYTICS['market_snapshots'].append({
+            'ts': now,
+            'iso': datetime.fromtimestamp(now, timezone.utc).isoformat(),
+            'n_symbols': len(assets or {}),
+            'n_open_positions': len(open_pos or {}),
+            'median_rvol': rvol_mu,
+            'rvol_std': rvol_sd,
+            'median_gauge': gauge_mu,
+            'gauge_std': gauge_sd,
+            'median_accel': accel_mu,
+            'accel_std': accel_sd,
+            'regime_trending_pct': regimes.get('trending', 0) / total_regimes * 100,
+            'regime_ranging_pct': regimes.get('ranging', 0) / total_regimes * 100,
+            'regime_explosive_pct': regimes.get('explosive', 0) / total_regimes * 100,
+        })
+    except Exception:
+        pass
+
+
+def _analytics_extend_trade_record(record: Dict, pos, ad,
+                                     exit_px: float, exit_rsn: str,
+                                     exit_ci: int, entry_cap: float,
+                                     capital_after: float, net_pnl: float,
+                                     log_return: float, mode: str) -> Dict:
+    """
+    Extend a trade record with analytics fields.
+    Modifies `record` in place and returns it.
+    """
+    if not _ANALYTICS.get('enabled'):
+        return record
+    try:
+        # Trade ID
+        _sym = record.get('symbol', '?')
+        _entry_iso = str(record.get('entry_time', ''))
+        _tid = _analytics_new_trade_id(_sym, _entry_iso)
+        record['trade_id'] = _tid
+        record['run_id'] = _ANALYTICS['run_id']
+        
+        # Duration & timing
+        try:
+            if hasattr(pos, 'signal') and hasattr(pos.signal, 'timestamp'):
+                _entry_ts = pd.Timestamp(pos.signal.timestamp).timestamp()
+            else:
+                _entry_ts = record.get('entry_ts') or 0
+            _exit_ts = time.time() if mode in ('live', 'testnet') else None
+            if _exit_ts:
+                record['duration_sec'] = float(_exit_ts - float(_entry_ts))
+        except Exception:
+            pass
+        
+        # MAE (ما لم يكن موجوداً)
+        if 'mae_frac' not in record:
+            try:
+                if hasattr(pos, 'mae_frac'):
+                    record['mae_frac'] = float(pos.mae_frac)
+            except Exception:
+                pass
+        
+        # Features at exit
+        try:
+            if ad is not None and 0 <= exit_ci < len(ad.closes):
+                _fi_exit = exit_ci - ad.feat_start
+                if 0 <= _fi_exit < len(ad.score):
+                    record['exit_score'] = float(ad.score[_fi_exit])
+                    record['exit_dF'] = float(ad.dF[_fi_exit])
+                    record['exit_dH'] = float(ad.dH[_fi_exit])
+                    record['exit_gauge'] = float(ad.gauge_force[_fi_exit])
+                    record['exit_accel'] = float(ad.geodesic_accel[_fi_exit])
+                    record['exit_H'] = float(ad.H[_fi_exit])
+                try:
+                    record['exit_regime'] = _classify_regime_local(ad, _fi_exit, 100)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        
+        # Capital context
+        try:
+            record['capital_before_trade'] = float(entry_cap)
+            record['capital_after_trade'] = float(capital_after)
+            if entry_cap > 0:
+                record['return_on_capital'] = float((capital_after - entry_cap) / entry_cap)
+        except Exception:
+            pass
+        
+        # MFE captured ratio
+        try:
+            mfe = float(record.get('mfe_frac', 0))
+            realized = float(record.get('log_return', 0))
+            if mfe > 0.001:
+                record['mfe_realized_ratio'] = float(min(abs(realized) / mfe, 10.0))
+        except Exception:
+            pass
+        
+        # Analytics counters
+        _ANALYTICS['n_trades_logged'] += 1
+    except Exception:
+        pass
+    return record
+
+
+def _analytics_finalize(mode: str, trades: List, equity: List,
+                         metrics: Optional[Dict] = None) -> None:
+    """Flush buffers, write timeseries, generate reports."""
+    if not _ANALYTICS.get('enabled'):
+        return
+    try:
+        log.info("[Analytics] Finalizing...")
+        
+        # Flush buffers
+        _analytics_flush('signals')
+        _analytics_flush('events')
+        
+        # Portfolio timeseries
+        if getattr(CFG, 'ANALYTICS_LOG_PORTFOLIO_TS', True) and _ANALYTICS['portfolio_snapshots']:
+            _write_portfolio_ts()
+        
+        # Market context
+        if getattr(CFG, 'ANALYTICS_LOG_MARKET_CONTEXT', True) and _ANALYTICS['market_snapshots']:
+            _write_market_context()
+        
+        # Counterfactual post-processing
+        if getattr(CFG, 'ANALYTICS_LOG_SIGNALS', True):
+            _compute_signal_counterfactual(mode)
+        
+        # Expanded PNG
+        if getattr(CFG, 'ANALYTICS_EXPANDED_PNG', True):
+            try:
+                _png_path = _analytics_path('quantum_v6_results_v2', 'png')
+                plot_results_v2(trades, equity, metrics or {}, out=_png_path)
+            except Exception as e:
+                log.warning(f"[Analytics] PNG v2 failed: {e}")
+        
+        # HTML report
+        if getattr(CFG, 'ANALYTICS_HTML_REPORT', True):
+            try:
+                _html_path = _analytics_path('report', 'html')
+                generate_html_report(trades, equity, metrics or {}, out=_html_path)
+            except Exception as e:
+                log.warning(f"[Analytics] HTML failed: {e}")
+        
+        # Update manifest with results
+        try:
+            _analytics_update_manifest_results(mode, trades, equity, metrics or {})
+        except Exception:
+            pass
+        
+        log.info(
+            f"[Analytics] Finalized: "
+            f"{_ANALYTICS['n_trades_logged']} trades, "
+            f"{_ANALYTICS['n_signals_logged']} signals, "
+            f"{_ANALYTICS['n_events_logged']} events"
+        )
+    except Exception as e:
+        log.warning(f"[Analytics] finalize failed: {e}")
+
+
+def _write_portfolio_ts() -> None:
+    """Write portfolio snapshots to parquet or CSV."""
+    snaps = _ANALYTICS['portfolio_snapshots']
+    if not snaps:
+        return
+    try:
+        df = pd.DataFrame(snaps)
+        if _analytics_check_deps().get('pyarrow'):
+            path = _analytics_path('portfolio_timeseries', 'parquet')
+            df.to_parquet(path, index=False)
+        else:
+            path = _analytics_path('portfolio_timeseries', 'csv')
+            df.to_csv(path, index=False)
+        log.info(f"[Analytics] Portfolio timeseries: {path} ({len(df)} rows)")
+    except Exception as e:
+        log.warning(f"[Analytics] portfolio ts write failed: {e}")
+
+
+def _write_market_context() -> None:
+    """Write market snapshots to parquet or CSV."""
+    snaps = _ANALYTICS['market_snapshots']
+    if not snaps:
+        return
+    try:
+        df = pd.DataFrame(snaps)
+        if _analytics_check_deps().get('pyarrow'):
+            path = _analytics_path('market_context', 'parquet')
+            df.to_parquet(path, index=False)
+        else:
+            path = _analytics_path('market_context', 'csv')
+            df.to_csv(path, index=False)
+        log.info(f"[Analytics] Market context: {path} ({len(df)} rows)")
+    except Exception as e:
+        log.warning(f"[Analytics] market context write failed: {e}")
+
+
+def _compute_signal_counterfactual(mode: str) -> None:
+    """
+    Post-process signals_candidates: compute hypothetical PnL for rejected signals.
+    Simplified: use ATR-based approximation from available features.
+    """
+    try:
+        path = _analytics_path('signals_candidates', 'jsonl')
+        if not os.path.exists(path):
+            return
+        # Read all candidates
+        records = []
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                try:
+                    records.append(json.loads(line))
+                except Exception:
+                    continue
+        if not records:
+            return
+        # Aggregate: count per verdict, avg features
+        df = pd.DataFrame(records)
+        summary = {
+            'total_candidates': len(df),
+            'accepted': int((df['verdict'] == 'accepted').sum()) if 'verdict' in df else 0,
+            'rejected': int((df['verdict'] == 'rejected').sum()) if 'verdict' in df else 0,
+            'rejection_reasons': {},
+        }
+        try:
+            if 'rejected_by' in df.columns:
+                reasons = df[df['verdict'] == 'rejected']['rejected_by'].dropna()
+                summary['rejection_reasons'] = reasons.value_counts().to_dict()
+        except Exception:
+            pass
+        # Write summary
+        path_sum = _analytics_path('signals_summary', 'json')
+        with open(path_sum, 'w', encoding='utf-8') as f:
+            json.dump(summary, f, indent=2, default=str)
+        log.info(
+            f"[Analytics] Signal summary: {summary['accepted']} accepted, "
+            f"{summary['rejected']} rejected"
+        )
+    except Exception as e:
+        log.warning(f"[Analytics] counterfactual failed: {e}")
+
+
+def _analytics_update_manifest_results(mode: str, trades: List, equity: List,
+                                          metrics: Dict) -> None:
+    """Append results to run_manifest.json."""
+    try:
+        path = _analytics_path('run_manifest', 'json')
+        if not os.path.exists(path):
+            return
+        with open(path, 'r', encoding='utf-8') as f:
+            manifest = json.load(f)
+        manifest['finalized_at'] = datetime.now(timezone.utc).isoformat()
+        manifest['wall_clock_secs'] = round(time.time() - _ANALYTICS['started_at'], 1)
+        manifest['results'] = {
+            'n_trades': len(trades),
+            'final_capital': float(equity[-1]) if equity else 0.0,
+            'mean_log_return': float(metrics.get('mean_log_return', 0)),
+            'sharpe_ratio': float(metrics.get('sharpe_ratio', 0)),
+            'profit_factor': float(metrics.get('profit_factor', 0)),
+            'max_drawdown_pct': float(metrics.get('max_drawdown_pct', 0)),
+            'win_rate': float(metrics.get('win_rate', 0)),
+            'n_signals_logged': _ANALYTICS['n_signals_logged'],
+            'n_events_logged': _ANALYTICS['n_events_logged'],
+        }
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, indent=2, default=str)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+# ═══════════════════════════════════════════════════════════════
+
+
+
+# ═══════════════════════════════════════════════════════════════
+# [RESCUE EXIT] — Loss Zone Guardian
+# Fills the "dead zone" between BEEsc trigger and SL with a
+# state-based early exit.
+# ═══════════════════════════════════════════════════════════════
+
+
+def _rescue_compute_physics_z(ad, fi, action):
+    """
+    Compute physics z-score in [-1, +1] for the current bar.
+
+    Each component is normalized to [-1, +1]:
+        +1 = physics supports holding (hopeful)
+        -1 = physics against holding (breaking)
+    """
+    sign = 1.0 if action == "BUY" else -1.0
+    components = {}
+    weights = {
+        'accel':    0.30,
+        'gauge':    0.20,
+        'friction': 0.10,
+        'dfree':    0.10,
+        'dh':       0.10,
+        'ema':      0.15,
+        'score':    0.05,
+    }
+
+    # 1. Accel alignment
+    try:
+        a_now = float(ad.geodesic_accel[fi])
+        win = ad.geodesic_accel[max(0, fi - 100):fi + 1]
+        a_std = float(np.std(win)) + 1e-9
+        z = sign * a_now / a_std
+        components['accel'] = float(np.tanh(z * 0.5))
+    except Exception:
+        components['accel'] = 0.0
+
+    # 2. Gauge strength vs p90 (normalized to [-1, +1])
+    try:
+        g_now = float(ad.gauge_force[fi])
+        g_past = ad.gauge_force[max(0, fi - 100):fi + 1]
+        g_p90 = float(np.percentile(g_past, 90)) + 1e-9
+        components['gauge'] = float(np.clip(2.0 * (g_now / g_p90) - 1.0,
+                                             -1.0, 1.0))
+    except Exception:
+        components['gauge'] = 0.0
+
+    # 3. Friction (low = good) normalized
+    try:
+        f_now = float(ad.friction[fi])
+        f_past = ad.friction[max(0, fi - 100):fi + 1]
+        f_med = float(np.median(f_past)) + 1e-9
+        ratio = f_now / f_med
+        components['friction'] = float(np.clip(2.0 - 2.0 * ratio, -1.0, 1.0))
+    except Exception:
+        components['friction'] = 0.0
+
+    # 4. dF (free energy change)
+    try:
+        df_now = float(ad.dF[fi])
+        df_past = ad.dF[max(0, fi - 100):fi + 1]
+        df_std = float(np.std(df_past)) + 1e-9
+        components['dfree'] = float(np.tanh(-sign * df_now / (2.0 * df_std)))
+    except Exception:
+        components['dfree'] = 0.0
+
+    # 5. dH (entropy change)
+    try:
+        dh_now = float(ad.dH[fi])
+        dh_past = ad.dH[max(0, fi - 100):fi + 1]
+        dh_std = float(np.std(dh_past)) + 1e-9
+        components['dh'] = float(np.tanh(-sign * dh_now / (2.0 * dh_std)))
+    except Exception:
+        components['dh'] = 0.0
+
+    # 6. EMA slope
+    try:
+        if fi >= 50 and fi < len(ad.ema200):
+            slope = (float(ad.ema200[fi])
+                     - float(ad.ema200[fi - 50])) / 50.0
+            components['ema'] = float(np.tanh(sign * slope * 100.0))
+        else:
+            components['ema'] = 0.0
+    except Exception:
+        components['ema'] = 0.0
+
+    # 7. Score freshness
+    try:
+        sc_now = float(ad.score[fi]) if 0 <= fi < len(ad.score) else 0.0
+        components['score'] = float(np.tanh(sc_now * 0.3))
+    except Exception:
+        components['score'] = 0.0
+
+    z_phys = 0.0
+    for k, w in weights.items():
+        z_phys += w * components[k]
+
+    return float(np.clip(z_phys, -1.0, 1.0)), components
+
+
+def _rescue_compute_physics_multiplier(ad, fi, action):
+    """f_phys = clip(1 + gamma * z_phys, min, max)"""
+    try:
+        z_phys, _ = _rescue_compute_physics_z(ad, fi, action)
+    except Exception:
+        return 1.0
+    gamma = float(getattr(CFG, 'RESCUE_PHYS_GAMMA', 0.5))
+    lo = float(getattr(CFG, 'RESCUE_PHYS_MIN', 0.4))
+    hi = float(getattr(CFG, 'RESCUE_PHYS_MAX', 1.6))
+    return float(np.clip(1.0 + gamma * z_phys, lo, hi))
+
+
+def _rescue_compute_drift(ad, fi, action, cfg):
+    """
+    μ_eff = mean_return(window) + κ_a·sign·accel + κ_g·sign·gauge·sign(dH)
+    """
+    sign = 1.0 if action == "BUY" else -1.0
+    n_hist = int(getattr(cfg, 'RESCUE_DRIFT_HIST_BARS', 20))
+    n_hist = max(5, n_hist)
+
+    # Base drift (mean of last N log-returns)
+    r_hist = 0.0
+    try:
+        lo = max(1, fi - n_hist)
+        cl = ad.closes[lo:fi + 1]
+        if len(cl) >= 2:
+            lr = np.diff(np.log(np.maximum(cl, 1e-12)))
+            r_hist = float(np.mean(lr)) if len(lr) > 0 else 0.0
+    except Exception:
+        r_hist = 0.0
+
+    # Accel contribution
+    kappa_a = float(getattr(cfg, 'RESCUE_ACCEL_KAPPA', 0.5))
+    try:
+        accel = float(ad.geodesic_accel[fi]) if fi < len(ad.geodesic_accel) else 0.0
+    except Exception:
+        accel = 0.0
+    mu_accel = kappa_a * sign * accel
+
+    # Gauge contribution
+    kappa_g = float(getattr(cfg, 'RESCUE_GAUGE_KAPPA', 0.3))
+    try:
+        gauge = float(ad.gauge_force[fi]) if fi < len(ad.gauge_force) else 0.0
+        dH_now = float(ad.dH[fi]) if fi < len(ad.dH) else 0.0
+        dH_sign = 1.0 if dH_now >= 0 else -1.0
+    except Exception:
+        gauge = 0.0
+        dH_sign = 0.0
+    mu_gauge = kappa_g * sign * gauge * dH_sign
+
+    mu_eff = r_hist + mu_accel + mu_gauge
+    # Guard against zero drift (avoid division by zero)
+    if abs(mu_eff) < 1e-9:
+        mu_eff = 1e-9 * sign if sign != 0 else 1e-9
+    return float(mu_eff)
+
+
+def _rescue_compute_P_BM(mu, sigma, a, b):
+    """
+    Classic two-sided barrier Brownian probability:
+        P_BM = (1 - exp(-2μb/σ²)) / (1 - exp(-2μ(a+b)/σ²))
+
+    - μ: drift (log-return per bar)
+    - σ: volatility (log-return std per bar)
+    - a: log distance to entry (positive)
+    - b: log distance to SL (positive)
+    """
+    if sigma <= 1e-9:
+        return 0.5
+    sv = sigma * sigma
+    try:
+        z = -2.0 * mu / sv
+        na = z * b
+        da = z * (a + b)
+        # Numerically stable exp for small/large args
+        if abs(na) > 40.0:
+            num = 1.0 if na > 0 else -1.0
+        else:
+            num = 1.0 - np.exp(na)
+        if abs(da) > 40.0:
+            den = 1.0 if da > 0 else -1.0
+        else:
+            den = 1.0 - np.exp(da)
+        if abs(den) < 1e-9:
+            P = b / (a + b) if (a + b) > 0 else 0.5
+        else:
+            P = num / den
+        if not np.isfinite(P):
+            P = b / (a + b) if (a + b) > 0 else 0.5
+        return float(np.clip(P, 0.0, 1.0))
+    except Exception:
+        return b / (a + b) if (a + b) > 0 else 0.5
+
+
+def _rescue_compute_P(ad, fi, action, entry, sl, price, bars_held, cfg):
+    """
+    Unified rescue probability:
+        P_rescue = P_BM(μ_eff, σ, a, b) × f_phys × f_time
+    Returns dict with all components.
+    """
+    out = {
+        'P': 1.0, 'P_BM': 0.5, 'f_phys': 1.0, 'f_time': 1.0,
+        'a': 0.0, 'b': 0.0, 'mu': 0.0, 'sigma': 0.01,
+        'L_now_frac': 0.0, 'L_sl_frac': 0.01,
+        'threshold': 0.5, 'error': None,
+    }
+    try:
+        if ad is None or fi < 3 or entry <= 0 or sl <= 0 or price <= 0:
+            out['error'] = 'invalid_inputs'
+            return out
+
+        # Distances in log space
+        if action == "BUY":
+            a = float(np.log(entry / price))
+            b = float(np.log(price / sl))
+        else:
+            a = float(np.log(price / entry))
+            b = float(np.log(sl / price))
+        if a <= 0 or b <= 0:
+            out['error'] = 'invalid_distances'
+            return out
+        out['a'] = a
+        out['b'] = b
+
+        # Volatility (per bar)
+        sigma = float(ad.E_therm[fi]) if 0 <= fi < len(ad.E_therm) else 0.01
+        if not np.isfinite(sigma) or sigma <= 1e-6:
+            sigma = 0.01
+        out['sigma'] = sigma
+
+        # Drift
+        mu = _rescue_compute_drift(ad, fi, action, cfg)
+        out['mu'] = mu
+
+        # P_BM
+        P_BM = _rescue_compute_P_BM(mu, sigma, a, b)
+        out['P_BM'] = P_BM
+
+        # Physics multiplier
+        f_phys = _rescue_compute_physics_multiplier(ad, fi, action)
+        out['f_phys'] = f_phys
+
+        # Time factor
+        max_hold = int(getattr(cfg, 'MAX_HOLD_BARS', 2000))
+        try:
+            max_hold_eff = effective_bars(max_hold)
+        except Exception:
+            max_hold_eff = max_hold
+        t_rem = max(0.0, float(max_hold_eff) - float(bars_held))
+        t_need = a / (abs(mu) + 1e-9)
+        if t_rem <= 0:
+            f_time = 0.0
+        elif t_need <= 0:
+            f_time = 1.0
+        else:
+            f_time = float(min(1.0, t_rem / t_need))
+        out['f_time'] = f_time
+
+        # Final P
+        P = float(np.clip(P_BM * f_phys * f_time, 0.0, 1.0))
+        out['P'] = P
+
+        # Loss fractions
+        L_now_frac = abs(entry - price) / entry
+        L_sl_frac = abs(entry - sl) / entry
+        out['L_now_frac'] = float(L_now_frac)
+        out['L_sl_frac'] = float(max(L_sl_frac, 1e-9))
+
+        # Threshold
+        margin = float(getattr(cfg, 'RESCUE_MARGIN', 0.05))
+        floor = float(getattr(cfg, 'RESCUE_FLOOR', 0.15))
+        th_math = 1.0 - L_now_frac / max(L_sl_frac, 1e-9) - margin
+        th = max(th_math, floor)
+        out['threshold'] = float(np.clip(th, 0.0, 1.0))
+
+        return out
+    except Exception as e:
+        out['error'] = f'exception:{e}'
+        return out
+
+
+def _rescue_check(pos, ad, current_ci, current_fi, bars_held,
+                  be_esc_done, cfg):
+    """
+    Main decision function.
+    Returns (should_exit: bool, reason: str, info: dict).
+    """
+    if not getattr(cfg, 'RESCUE_EXIT_ENABLED', False):
+        return False, 'disabled', {}
+    if not getattr(cfg, 'RESCUE_ONLY_AFTER_BEESC', True):
+        pass  # allow rescue even without BEEsc
+    elif not be_esc_done:
+        return False, 'beesc_not_done', {}
+    if ad is None:
+        return False, 'no_data', {}
+    if bars_held < int(getattr(cfg, 'RESCUE_MIN_BARS_AFTER_BEESC', 2)):
+        return False, 'too_early', {}
+    if current_fi < 3 or current_fi >= len(ad.score):
+        return False, 'bad_index', {}
+
+    try:
+        entry = float(pos.get('entry') if isinstance(pos, dict)
+                      else pos.entry_px)
+        sl = float(pos.get('sl') if isinstance(pos, dict)
+                   else pos.trail_sl)
+        action = str(pos.get('action') if isinstance(pos, dict)
+                     else pos.signal.action)
+        price = float(ad.closes[current_ci])
+        tp = float(pos.get('tp1') if isinstance(pos, dict)
+                   else pos.signal.tp1)
+    except Exception as e:
+        return False, f'extract_error:{e}', {}
+
+    info = _rescue_compute_P(ad, current_fi, action, entry, sl, price,
+                             bars_held, cfg)
+    if info.get('error'):
+        return False, f"calc_error:{info['error']}", info
+
+    P = float(info['P'])
+    th = float(info['threshold'])
+    L_now = info['L_now_frac']
+    L_sl = info['L_sl_frac']
+
+    if P < th:
+        return True, (f"Rescue(P={P:.2f}<th={th:.2f}, "
+                      f"L={L_now*100:.1f}%/{L_sl*100:.1f}%, "
+                      f"a={info['a']:.4f}, b={info['b']:.4f}, "
+                      f"μ={info['mu']:.4f})"), info
+
+    return False, 'ok', info
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# [BEAR-SHIELD] Bear Market Detection
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _asset_bias_at_index(ad, fi: int) -> float:
+    """Compute bear/bull bias at bar fi using ONLY data up to fi (no look-ahead)."""
+    try:
+        if ad is None or fi < 200:
+            return 0.0
+        if fi >= len(ad.closes) or fi >= len(ad.ema200):
+            return 0.0
+        current = float(ad.closes[fi])
+        ema = float(ad.ema200[fi])
+        if current <= 0 or ema <= 0:
+            return 0.0
+        c1 = current < ema
+        lb = int(getattr(CFG, 'BEAR_EMA_SLOPE_LOOKBACK', 30))
+        c2 = False
+        if fi >= lb:
+            try:
+                c2 = ema < float(ad.ema200[fi - lb])
+            except Exception:
+                c2 = False
+        days = int(getattr(CFG, 'BEAR_RETURN_LOOKBACK_DAYS', 30))
+        bars = max(30, int(days * 24 / max(CFG.TF_HOURS, 1e-6)))
+        c3 = False
+        if fi >= bars:
+            try:
+                past_px = float(ad.closes[fi - bars])
+                if past_px > 0:
+                    ret = current / past_px - 1.0
+                    c3 = ret < float(getattr(CFG, 'BEAR_RETURN_THRESHOLD', -0.15))
+            except Exception:
+                c3 = False
+        bear_count = int(c1) + int(c2) + int(c3)
+        if bear_count >= 2:
+            return -1.0
+        if bear_count == 0:
+            return 1.0
+        return 0.0
+    except Exception:
+        return 0.0
+
+
+def _asset_bias_at_bar(ad, target_ts) -> float:
+    """Compute bias at the nearest bar to target_ts (no look-ahead)."""
+    if ad is None:
+        return 0.0
+    try:
+        idx = int(np.searchsorted(
+            ad.timestamps.asi8,
+            pd.Timestamp(target_ts).value,
+            side='right'
+        ) - 1)
+        idx = max(0, min(idx, len(ad.closes) - 1))
+        return _asset_bias_at_index(ad, idx)
+    except Exception:
+        return 0.0
+
+# ═══════════════════════════════════════════════════════════════════════════
+
 def build_signals(assets, mode="backtest"):
     """
     محرك استشعار الإشارات الكمي:
@@ -4472,6 +5969,10 @@ def build_signals(assets, mode="backtest"):
     3. Gauge Filter: يفلتر الإشارات بناءً على قوة حقل المقياس.
     """
     sigs = []
+
+    # ══ [BEAR-SHIELD] BTC reference for market bias ══
+    _btc_ref_sig = (assets.get('BTC/USDT')
+                    or assets.get('BTC/USDT:USDT'))
 
     # ══ [GAUGE-FILTER] حساب العتبات العالمية مرة واحدة ══
     _gauge_thr_buy = 0.0
@@ -4559,7 +6060,7 @@ def build_signals(assets, mode="backtest"):
             P_activation = np.exp(-fric_val / (force_mag * T_info))
             
             # لا ندخل إلا إذا كان احتمال التفاعل والتغلب على الاحتكاك الحراري أكبر من 35%
-            if P_activation < 0.35: 
+            if P_activation < 0.20: 
                 continue
 
             # ══ [ABLATION-1] Direction from mean-reversion in σ units ══
@@ -4573,13 +6074,32 @@ def build_signals(assets, mode="backtest"):
             _z_dev = (p - _z_mu) / _z_sd
             if _z_dev == 0.0:
                 continue
-# ═══ [730d VERIFIED — symmetric gate] ═══
-            # Same z-range for BUY and SELL. No T_info, no gauge.
-            _absz = abs(_z_dev)
-            if _absz < 1.5 or _absz > 2.5:
+
+            # ═══ [B5] Direction gate: honor SELL_ONLY / BUY_ONLY ═══
+            if _z_dev > 0:
+                if getattr(CFG, 'BUY_ONLY', False):
+                    continue
+            else:
+                if getattr(CFG, 'SELL_ONLY', False):
+                    continue
+            # [ABLATION-2c] softer deviation gate
+            # ══ [BEAR-SHIELD] Bear mode filter ══
+            _bear_now = False
+            if (getattr(CFG, 'BEAR_SHIELD_ENABLED', True)
+                    and _btc_ref_sig is not None):
+                try:
+                    _b = _asset_bias_at_bar(
+                        _btc_ref_sig, ad.timestamps[ci])
+                    _bear_now = (_b < 0)
+                except Exception:
+                    _bear_now = False
+            if _bear_now and _z_dev < 0:
+                _bmz = float(getattr(CFG, 'BEAR_MIN_Z', 2.5))
+                if abs(_z_dev) < _bmz:
+                    continue
+            if abs(_z_dev) < 1.5:
                 continue
             action = "BUY" if _z_dev < 0 else "SELL"
-
 
             # ══ [SELL-RND] بوابة SELL المستقلة ══
             # BUY لا يُلمَس. SELL فقط يُمرّر عبر هذه البوابة.
@@ -4621,7 +6141,12 @@ def build_signals(assets, mode="backtest"):
                         continue
                 try:
                     _gf = float(ad.gauge_force[fi])
-                    if action == "BUY" and _gf < _gauge_thr_buy:
+                    # ══ [BEAR-SHIELD] Bear gauge boost ══
+                    _eff_gf_thr = _gauge_thr_buy
+                    if _bear_now:
+                        _eff_gf_thr *= float(getattr(
+                            CFG, 'BEAR_GAUGE_BOOST', 1.3))
+                    if action == "BUY" and _gf < _eff_gf_thr:
                         continue
                     if action == "SELL":
                         if getattr(CFG, 'SELL_ENABLED', False):
@@ -4659,6 +6184,10 @@ def build_signals(assets, mode="backtest"):
             if getattr(CFG, 'DYNAMIC_MIN_SCORE_ENABLED', False):
                 _min_score = float(getattr(ad, 'score_q95_train',
                                             CFG.MIN_SCORE))
+            # ══ [BEAR-SHIELD] Bear score floor ══
+            if _bear_now:
+                _min_score = max(_min_score,
+                    float(getattr(CFG, 'BEAR_MIN_SCORE', 0)))
             if ad.score[fi] < _min_score: continue
 
             # ══ [SR FILTER] SL must be protected by strong support/resistance ══
@@ -4847,27 +6376,29 @@ def precompute_correlations(assets) -> Dict[Tuple[str,str], float]:
     return cm
 
 
-def _compute_entry_target(sig, ad, side, exchange=None) -> float:
+def _compute_entry_target(sig, ad, side, exchange=None, qty: float = 1.0) -> float:
     """
     [UNIFIED-ENTRY] Single source of truth for entry pricing in BOTH
     backtest and live.
 
-    Two modes, controlled by CFG.PO_FIXED_PRICE:
+    [OFFSET-SEMANTICS]
+      Reference = close[sig.close_idx] (the freshest market snapshot
+                  available at signal time).
+      Direction = AWAY from reference, in the mean-reversion sense:
+          BUY  →  order = reference − offset   (below market, waits for dip)
+          SELL →  order = reference + offset   (above market, waits for rally)
+      This is the "patience" convention: we wait for the market to
+      move a bit further before we get filled.
 
-      PO_FIXED_PRICE = True:
-          target = sig.price   (the tunnel price, no offset)
-          Backtest and live both use the exact same value.
+      Compare with monitor_watch_signals, which uses the "eagerness"
+      convention (reference = tunnel, order placed TOWARD market).
+      Both are correct in their contexts — they differ in what the
+      reference point represents, not in the trading intent.
 
-      PO_FIXED_PRICE = False (--no-fixed-price):
-          base   = close[sig.close_idx]
-          offset = dynamic (tick / sigma_bar / ADV)
-          Direction is mean-reversion:
-              BUY : target = base - offset   (below -> wait for a dip)
-              SELL: target = base + offset   (above -> wait for a rally)
-
-    The offset function _watch_compute_entry_offset is shared with the
-    live Watch mode. With exchange=None (backtest) it uses a pure-bps
-    tick fallback so the result is deterministic and reproducible.
+    Args:
+      qty: order quantity in base units. Used by the size-impact term
+           of _watch_compute_entry_offset. Pass the FINAL size here
+           (before rounding) so the size-impact component is accurate.
     """
     # ── PO_FIXED_PRICE path (identical in backtest and live) ──
     if getattr(CFG, 'PO_FIXED_PRICE', True):
@@ -4900,6 +6431,7 @@ def _compute_entry_target(sig, ad, side, exchange=None) -> float:
     except Exception:
         pass
 
+    # [FIX-2] Use the real qty passed by the caller instead of 1.0
     _off = _watch_compute_entry_offset(
         tunnel_p=_base,
         sigma_bar=_sigma,
@@ -4907,12 +6439,10 @@ def _compute_entry_target(sig, ad, side, exchange=None) -> float:
         exchange=exchange,
         symbol=(getattr(sig, 'symbol', None)
                 if exchange is not None else None),
-        qty=1.0,
+        qty=float(qty),   # ← was 1.0 (killed the size-impact term)
     )
 
-    # Direction: mean-reversion
-    #   BUY  -> below market (wait for a dip)
-    #   SELL -> above market (wait for a rally)
+    # Direction: patience convention — away from market reference
     if side == 'buy':
         return float(_base - _off)
     return float(_base + _off)
@@ -4927,9 +6457,567 @@ def _backtest_entry_target(sig, ad) -> float:
 # § 15  محاكاة المحفظة (التعديلات ①②)
 # ════════════════════════════════════════════════════════════════
 
+def _check_confirmation(ad, sig, cfg):
+    """
+    [CONFIRMATION ENTRY]
+    At bar N+1 (one bar after signal), check whether the market moved
+    in our direction by at least CONFIRM_KAPPA × σ_bar × close[N].
+    Returns (ok, entry_px, entry_ci) or (False, 0.0, -1).
+    """
+    ci = int(sig.close_idx)
+    cf_ci = ci + 1
+    if cf_ci >= len(ad.closes):
+        return False, 0.0, -1
+
+    close_sig = float(ad.closes[ci])
+    close_cf = float(ad.closes[cf_ci])
+    if close_sig <= 0 or close_cf <= 0:
+        return False, 0.0, -1
+
+    delta = close_cf - close_sig
+
+    fi = ci - ad.feat_start
+    if not (0 <= fi < len(ad.E_therm)):
+        return False, 0.0, -1
+    sigma_bar = float(ad.E_therm[fi])
+    if not np.isfinite(sigma_bar) or sigma_bar <= 1e-9:
+        sigma_bar = 0.01
+
+    thr = float(cfg.CONFIRM_KAPPA) * sigma_bar * close_sig
+
+    if sig.action == "BUY":
+        ok = delta > thr
+    else:
+        ok = -delta > thr
+
+    if not ok:
+        return False, 0.0, -1
+    return True, close_cf, cf_ci
+
+# ═══════════════════════════════════════════════════════════════
+# [BREAKEVEN ESCAPE] — reversal-confirmed exit at entry price
+# ═══════════════════════════════════════════════════════════════
+
+
+def _ema_slope_against(ad, current_ci: int, action: str,
+                        lookback: int = 50) -> bool:
+    """True if EMA200 slope is against the position direction."""
+    try:
+        if ad is None or ad.ema200 is None:
+            return False
+        n = len(ad.ema200)
+        if current_ci < lookback or current_ci >= n:
+            return False
+        ema_now  = float(ad.ema200[current_ci])
+        ema_prev = float(ad.ema200[current_ci - lookback])
+        slope = ema_now - ema_prev
+        if action == "BUY"  and slope < 0:
+            return True
+        if action == "SELL" and slope > 0:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _should_breakeven_escape(ad, current_ci: int, current_price: float,
+                              action: str, entry: float,
+                              sl_dist0: float,
+                              sig_opp=None, pos=None,
+                              mfe_override=None):
+    """
+    BEEsc trigger — مطابق لنية المالك:
+      • LOSS-ONLY (لا يلمس منطقة الربح)
+      • MFE-GUARD (لا يُطلق على صفقات كانت رابحة سابقاً)
+      • reversal-confirmed (إشارة معاكسة قوية أو هبوط 0.80R)
+      • small positive gain عند الخروج
+    """
+    if not getattr(CFG, 'BREAKEVEN_ESCAPE_ENABLED', False):
+        return False, "disabled"
+    if entry <= 0 or sl_dist0 <= 0 or current_price <= 0:
+        return False, "invalid"
+
+    # ════════════════════════════════════════════════════════════════
+    # [LOSS-ONLY-GUARD] — لا يعمل في منطقة الربح
+    # ════════════════════════════════════════════════════════════════
+    if action == "BUY" and current_price >= entry:
+        _pnl_pct = (current_price - entry) / entry * 100.0
+        return False, f"in_profit({_pnl_pct:+.2f}%)"
+    if action == "SELL" and current_price <= entry:
+        _pnl_pct = (entry - current_price) / entry * 100.0
+        return False, f"in_profit({_pnl_pct:+.2f}%)"
+
+    # ════════════════════════════════════════════════════════════════
+    # [MFE-GUARD] — لا يُطلق إذا كانت الصفقة رابحة سابقاً
+    # يدعم كلاً من OpenPosition (backtest) و pos dict (live)
+    # ════════════════════════════════════════════════════════════════
+    _guard_r = float(getattr(CFG, 'BREAKEVEN_ESCAPE_MFE_GUARD_R', 0.50))
+    if _guard_r > 0:
+        _mfe_r = None
+        try:
+            if mfe_override is not None:
+                _mfe_r = float(mfe_override)
+            elif pos is not None and isinstance(pos, dict):
+                # live: compute from _hi/_lo
+                _hi = float(pos.get('_hi', entry) or entry)
+                _lo = float(pos.get('_lo', entry) or entry)
+                if action == "BUY":
+                    _mfe_r = (_hi - entry) / sl_dist0
+                else:
+                    _mfe_r = (entry - _lo) / sl_dist0
+            elif pos is not None:
+                # backtest: pos.mfe_frac (fraction of entry)
+                _mfe_frac = float(getattr(pos, 'mfe_frac', 0.0))
+                _mfe_r = (_mfe_frac * entry) / sl_dist0 if entry > 0 else 0.0
+        except Exception:
+            _mfe_r = None
+        if _mfe_r is not None and _mfe_r > _guard_r:
+            return False, f"was_profitable(mfe={_mfe_r:.2f}R>{_guard_r:.2f}R)"
+
+    # ════════════════════════════════════════════════════════════════
+    # TRIGGER 1 — PRICE: هبوط عميق (0.80R افتراضياً)
+    # ════════════════════════════════════════════════════════════════
+    price_trig = False
+    price_reason = ""
+    _min_move = float(getattr(
+        CFG, 'BREAKEVEN_ESCAPE_PRICE_MOVE_R', 0.80)) * sl_dist0
+
+    if action == "BUY":
+        _adverse = entry - current_price
+    else:
+        _adverse = current_price - entry
+
+    if _adverse >= _min_move:
+        if getattr(CFG, 'BREAKEVEN_ESCAPE_REQUIRE_EMA_FLIP', True):
+            _lb = int(getattr(CFG, 'BREAKEVEN_ESCAPE_EMA_LOOKBACK', 50))
+            if _ema_slope_against(ad, current_ci, action, _lb):
+                price_trig = True
+                price_reason = f"price+EMA(adv={_adverse/sl_dist0:.2f}R)"
+        else:
+            price_trig = True
+            price_reason = f"price_only(adv={_adverse/sl_dist0:.2f}R)"
+
+    # ════════════════════════════════════════════════════════════════
+    # TRIGGER 2 — SIGNAL: إشارة معاكسة قوية حديثة
+    # ════════════════════════════════════════════════════════════════
+    sig_trig = False
+    sig_reason = ""
+    if (getattr(CFG, 'BREAKEVEN_ESCAPE_SIGNAL_ENABLED', True)
+            and sig_opp is not None):
+        if sig_opp.action != action:
+            _age = current_ci - int(getattr(sig_opp, 'close_idx', current_ci))
+            _max_age = int(getattr(
+                CFG, 'BREAKEVEN_ESCAPE_SIGNAL_MAX_AGE_BARS', 6))
+            if 0 <= _age <= _max_age:
+                try:
+                    _sc_o = float(getattr(sig_opp, 'score', 0.0) or 0.0)
+                    _sc_orig = 0.0
+                    if pos is not None:
+                        if isinstance(pos, dict):
+                            _sc_orig = float(pos.get('_orig_score', 0.0) or 0.0)
+                        else:
+                            _sc_orig = float(getattr(
+                                getattr(pos, 'signal', None), 'score', 0.0) or 0.0)
+                    _mult = float(getattr(
+                        CFG, 'BREAKEVEN_ESCAPE_SIGNAL_SCORE_MULT', 1.15))
+                    if _sc_o > 0 and (_sc_orig <= 0 or _sc_o >= _sc_orig * _mult):
+                        sig_trig = True
+                        sig_reason = f"opp_signal(age={_age},score={_sc_o:.2f})"
+                except Exception:
+                    pass
+
+    if price_trig or sig_trig:
+        _reasons = [r for r in (price_reason, sig_reason) if r]
+        return True, "|".join(_reasons)
+    return False, "not_triggered"
+
+
+def _apply_breakeven_escape(action: str, entry: float, sl_dist0: float,
+                              tp_old: float, partial_taken: bool):
+    """
+    Compute the new TP (entry ± small gain) and validate it.
+    Returns new_tp (float) or None (no change).
+    """
+    if entry <= 0 or sl_dist0 <= 0 or tp_old <= 0:
+        return None
+    _min_gain = float(getattr(
+        CFG, 'BREAKEVEN_ESCAPE_MIN_PROFIT_R', 0.0)) * sl_dist0
+
+    if action == "BUY":
+        tp_new = entry + _min_gain
+        if tp_new >= tp_old:
+            return None
+        if (getattr(CFG, 'PARTIAL_TP_ENABLED', False)
+                and not partial_taken
+                and getattr(CFG,
+                    'BREAKEVEN_ESCAPE_RESPECT_PARTIAL', True)):
+            _p_trig = entry + float(CFG.PARTIAL_TP_R) * sl_dist0
+            if tp_new <= _p_trig:
+                return None
+    else:
+        tp_new = entry - _min_gain
+        if tp_new <= tp_old:
+            return None
+        if (getattr(CFG, 'PARTIAL_TP_ENABLED', False)
+                and not partial_taken
+                and getattr(CFG,
+                    'BREAKEVEN_ESCAPE_RESPECT_PARTIAL', True)):
+            _p_trig = entry - float(CFG.PARTIAL_TP_R) * sl_dist0
+            if tp_new >= _p_trig:
+                return None
+    return float(tp_new)
+
+# ══ [SIGNAL-SL] Live: track last processed signal close_idx per symbol ══
+_SIGNAL_SL_LAST_PROCESSED: Dict[str, int] = {}
+
+
+def _maybe_update_sl_from_signal(pos, sig, current_price, ad):
+    """
+    [Signal-SL] Try to raise SL when a new same-direction signal appears
+    on a symbol with an open position.
+
+    Ratchet-only: SL moves only in the favorable direction (up for BUY,
+    down for SELL). Never widens.
+
+    Works with both OpenPosition dataclass (backtest) and pos dict (live).
+
+    Returns
+    -------
+    (updated: bool, new_sl: float, reason: str)
+        - updated=False → new_sl equals current pos SL (no change).
+        - updated=True  → new_sl is the proposed SL; caller must apply it.
+    """
+    # ── 0. Validate inputs ──
+    try:
+        if ad is None or sig is None:
+            return False, 0.0, "no_data"
+        if current_price is None or current_price <= 0:
+            return False, 0.0, "invalid_price"
+    except Exception as e:
+        return False, 0.0, f"input_err:{e}"
+
+    is_dict = isinstance(pos, dict)
+
+    # ── 1. Extract position fields ──
+    try:
+        if is_dict:
+            pos_action = str(pos.get('action', '?'))
+            pos_sl_cur = float(pos.get('sl') or 0)
+            pos_entry = float(pos.get('entry') or 0)
+            pos_score = float(pos.get('_orig_score') or 0)
+            pos_sl_dist0 = float(pos.get('sl_dist_initial') or 0)
+            be_esc_done = bool(pos.get('_be_esc_done', False))
+            sl_above_beesc = bool(pos.get('_signal_sl_above_beesc', False))
+        else:
+            pos_action = str(pos.signal.action)
+            pos_sl_cur = float(pos.trail_sl)
+            pos_entry = float(pos.entry_px)
+            pos_score = float(pos.signal.score)
+            pos_sl_dist0 = float(getattr(pos, 'sl_dist_initial', 0.0))
+            be_esc_done = bool(getattr(pos, '_be_esc_done', False))
+            sl_above_beesc = bool(getattr(pos, '_signal_sl_above_beesc', False))
+    except Exception as e:
+        return False, 0.0, f"extract_err:{e}"
+
+    # ── 2. Same-direction guard ──
+    if pos_action not in ('BUY', 'SELL'):
+        return False, pos_sl_cur, "invalid_pos_action"
+    if sig.action != pos_action:
+        return False, pos_sl_cur, "opposite_direction"
+
+    # ── 3. Basic validity ──
+    if pos_sl_cur <= 0 or pos_entry <= 0:
+        return False, pos_sl_cur, "invalid_position"
+    if be_esc_done:
+        return False, pos_sl_cur, "be_esc_already_done"
+
+    # ── 4. Score filter ──
+    score_ratio = float(getattr(CFG, 'SIGNAL_SL_MIN_SCORE_RATIO', 1.5))
+    sig_score = float(getattr(sig, 'score', 0.0))
+    if pos_score > 0 and sig_score > 0:
+        if sig_score < pos_score * score_ratio:
+            return False, pos_sl_cur, (
+                f"score_below_ratio({sig_score:.2f}<{pos_score * score_ratio:.2f})")
+
+    # ── 5. Signal SL validity ──
+    sig_sl = float(getattr(sig, 'sl', 0.0))
+    if sig_sl <= 0 or not np.isfinite(sig_sl):
+        return False, pos_sl_cur, "invalid_sig_sl"
+
+    # ── 6. Ratchet: only improve ──
+    if pos_action == 'BUY':
+        if sig_sl <= pos_sl_cur:
+            return False, pos_sl_cur, (
+                f"ratchet_no_improve(BUY {sig_sl:.6f}<={pos_sl_cur:.6f})")
+    else:  # SELL
+        if sig_sl >= pos_sl_cur:
+            return False, pos_sl_cur, (
+                f"ratchet_no_improve(SELL {sig_sl:.6f}>={pos_sl_cur:.6f})")
+
+    # ── 7. Minimum improvement ──
+    min_imp = float(getattr(CFG, 'SIGNAL_SL_MIN_IMPROVEMENT', 0.005))
+    improvement = abs(sig_sl - pos_sl_cur) / max(abs(pos_sl_cur), 1e-12)
+    if improvement < min_imp:
+        return False, pos_sl_cur, (
+            f"tiny_improvement({improvement*100:.3f}%<{min_imp*100:.3f}%)")
+
+    # ── 8. Protect profit only (optional) ──
+    if getattr(CFG, 'SIGNAL_SL_PROTECT_PROFIT_ONLY', False):
+        if pos_action == 'BUY' and sig_sl <= pos_entry:
+            return False, pos_sl_cur, (
+                f"not_protecting_profit(BUY {sig_sl:.6f}<={pos_entry:.6f})")
+        if pos_action == 'SELL' and sig_sl >= pos_entry:
+            return False, pos_sl_cur, (
+                f"not_protecting_profit(SELL {sig_sl:.6f}>={pos_entry:.6f})")
+
+    # ── 9. Safety margin: SL must be away from current price ──
+    safety = float(getattr(CFG, 'SIGNAL_SL_SAFETY_MARGIN', 0.001))
+    new_sl = sig_sl
+    if pos_action == 'BUY':
+        max_allowed = current_price * (1.0 - safety)
+        if new_sl > max_allowed:
+            new_sl = max_allowed
+    else:
+        min_allowed = current_price * (1.0 + safety)
+        if new_sl < min_allowed:
+            new_sl = min_allowed
+
+    # Re-check ratchet after safety clamp
+    if pos_action == 'BUY' and new_sl <= pos_sl_cur:
+        return False, pos_sl_cur, "safety_clamp_no_improve"
+    if pos_action == 'SELL' and new_sl >= pos_sl_cur:
+        return False, pos_sl_cur, "safety_clamp_no_improve"
+
+    # ── 10. BEEsc interaction ──
+    allow_above = bool(getattr(CFG, 'SIGNAL_SL_ALLOW_ABOVE_BEESC', True))
+    set_above_flag = False
+
+    if (not be_esc_done
+            and not sl_above_beesc
+            and getattr(CFG, 'BREAKEVEN_ESCAPE_ENABLED', False)
+            and pos_sl_dist0 > 0):
+        kb = float(getattr(CFG, 'BREAKEVEN_ESCAPE_PRICE_MOVE_R', 0.30))
+        be_buffer = 0.001
+        if pos_action == 'BUY':
+            be_level = pos_entry - kb * pos_sl_dist0
+            be_max = be_level * (1.0 - be_buffer)
+            if new_sl > be_max:
+                if allow_above:
+                    set_above_flag = True
+                else:
+                    new_sl = be_max
+                    if new_sl <= pos_sl_cur:
+                        return False, pos_sl_cur, "beesc_clamp_no_improve"
+        else:  # SELL
+            be_level = pos_entry + kb * pos_sl_dist0
+            be_min = be_level * (1.0 + be_buffer)
+            if new_sl < be_min:
+                if allow_above:
+                    set_above_flag = True
+                else:
+                    new_sl = be_min
+                    if new_sl >= pos_sl_cur:
+                        return False, pos_sl_cur, "beesc_clamp_no_improve"
+
+    # ── 11. Apply BEEsc-disable flag (sticky) ──
+    if set_above_flag:
+        try:
+            if is_dict:
+                pos['_signal_sl_above_beesc'] = True
+            else:
+                pos._signal_sl_above_beesc = True
+        except Exception:
+            pass
+
+    reason = (f"signal_sl {pos_sl_cur:.6f}->{new_sl:.6f} "
+              f"(imp={improvement*100:.2f}%")
+    if set_above_flag:
+        reason += ",beesc_disabled"
+    reason += ")"
+    return True, new_sl, reason
+
+# ═══════════════════════════════════════════════════════════════
+
+
+
 # ════════════════════════════════════════════════════════════════
 # § 14.5  Precompute Realistic Entry Fills (Backtest Only)
 # ════════════════════════════════════════════════════════════════
+
+_REV_ENTRY_SUB = {}   # [REV-FIX v1] (symbol, close_idx) -> entry sub-bar index inside the entry main bar
+
+
+def _check_reversal_fill_subbars(ad, sig, target0, cfg,
+                                  first_main_ci, deadline_main_ci):
+    """
+    [REVERSAL-CONFIRM / SUB-BARS] Touch-and-Bounce entry on sub-bars.
+
+    Signal fires at close of main bar `sig.close_idx`.
+    Scan sub-bars starting at (sig.close_idx + 1, sub_idx = 0).
+
+    Returns (confirm_main_ci, fill_px) or None.
+    """
+    if ad.sub_highs is None or ad.sub_closes is None or ad.sub_per_main < 2:
+        return None
+
+    action  = sig.action
+    sub_pm  = int(ad.sub_per_main)
+    start_main = sig.close_idx + 1
+    end_main   = min(deadline_main_ci, ad.sub_highs.shape[0])
+    if end_main <= start_main:
+        return None
+
+    # Flatten sub-bar blocks into single arrays
+    sh_flat = ad.sub_highs[start_main:end_main].reshape(-1)
+    sl_flat = ad.sub_lows[start_main:end_main].reshape(-1)
+    sc_flat = ad.sub_closes[start_main:end_main].reshape(-1)
+    n_flat  = sh_flat.size
+    if n_flat == 0:
+        return None
+
+    touch_win  = max(1, int(getattr(cfg, 'REVERSAL_TOUCH_SUBBARS', 20)))
+    bounce_win = max(1, int(getattr(cfg, 'REVERSAL_BOUNCE_SUBBARS', 4)))
+    mode = str(getattr(cfg, 'REVERSAL_CONFIRM_MODE', 'close_back'))
+
+    # ── PHASE 1: TOUCH ──
+    _touch_limit = min(touch_win, n_flat)
+    touch_k = -1
+    for k in range(_touch_limit):
+        if not np.isfinite(sl_flat[k]) or not np.isfinite(sh_flat[k]):
+            continue
+        if action == "BUY" and sl_flat[k] <= target0:
+            touch_k = k; break
+        if action == "SELL" and sh_flat[k] >= target0:
+            touch_k = k; break
+    if touch_k < 0:
+        return None
+
+    # ── PHASE 2: BOUNCE ──
+    b0 = touch_k + 1
+    b1 = min(b0 + bounce_win, n_flat)
+    if b1 <= b0:
+        return None
+
+    confirm_k = -1
+
+    if mode == "close_back":
+        for k in range(b0, b1):
+            c = sc_flat[k]
+            if not np.isfinite(c):
+                continue
+            if action == "BUY" and c > target0:
+                confirm_k = k; break
+            if action == "SELL" and c < target0:
+                confirm_k = k; break
+
+    elif mode == "two_bar":
+        for k in range(b0, b1 - 1):
+            c1, c2 = sc_flat[k], sc_flat[k + 1]
+            if not (np.isfinite(c1) and np.isfinite(c2)):
+                continue
+            if action == "BUY" and c1 > target0 and c2 > target0:
+                confirm_k = k + 1; break
+            if action == "SELL" and c1 < target0 and c2 < target0:
+                confirm_k = k + 1; break
+
+    elif mode == "sigma_bounce":
+        fi = int(sig.feat_idx)
+        sigma_bar = 0.01
+        if 0 <= fi < len(ad.E_therm):
+            _s = float(ad.E_therm[fi])
+            if np.isfinite(_s) and _s > 1e-9:
+                sigma_bar = _s
+        thr = (float(getattr(cfg, 'REVERSAL_CONFIRM_KAPPA', 0.20))
+               * sigma_bar * float(target0))
+        for k in range(b0, b1):
+            c = sc_flat[k]
+            if not np.isfinite(c):
+                continue
+            if action == "BUY" and (c - target0) > thr:
+                confirm_k = k; break
+            if action == "SELL" and (target0 - c) > thr:
+                confirm_k = k; break
+
+    elif mode == "bar_color":
+        for k in range(b0, b1):
+            c = sc_flat[k]
+            c_prev = sc_flat[k - 1] if k > 0 else c
+            if not (np.isfinite(c) and np.isfinite(c_prev)):
+                continue
+            if action == "BUY" and c > c_prev:
+                confirm_k = k; break
+            if action == "SELL" and c < c_prev:
+                confirm_k = k; break
+
+#    if confirm_k < 0:
+#        return None
+
+##    # [REV-FIX v1] live can only enter AFTER the confirm bar closes:
+##    # entry = first sub-bar after the confirm (+ optional latency).
+##    _lat = max(0, int(getattr(cfg, 'REV_ENTRY_LATENCY_SUBBARS', 0)))
+##    entry_k = confirm_k + 1 + _lat
+##    if entry_k >= n_flat:
+##        return None
+##    confirm_main = start_main + entry_k // sub_pm
+##    _entry_sub = entry_k % sub_pm
+#
+#    # ── PHASE 3: FILL ──
+#    fill_mode = str(getattr(cfg, 'REVERSAL_FILL_AT', 'target'))
+#    c_conf = float(sc_flat[confirm_k]) if np.isfinite(sc_flat[confirm_k]) else float(target0)
+#    if fill_mode == "close":
+#        fill_px = c_conf
+#    elif fill_mode == "best":
+#        fill_px = (min(float(target0), c_conf) if action == "BUY"
+#                   else max(float(target0), c_conf))
+#    else:
+#        fill_px = float(target0)
+#
+#    _REV_ENTRY_SUB[(str(sig.symbol), int(sig.close_idx))] = int(_entry_sub)
+#    return (int(confirm_main), float(fill_px))
+    if confirm_k < 0:
+        return None
+
+    # ════════════════════════════════════════════════════════════════
+    # التعديل الصحيح: تحديد مكان الدخول عند شمعة التأكيد بالضبط بدون تأخير
+    # ════════════════════════════════════════════════════════════════
+    confirm_main = start_main + (confirm_k // sub_pm)
+    _entry_sub = confirm_k % sub_pm
+
+    # ── PHASE 3: FILL ──
+    fill_mode = str(getattr(cfg, 'REVERSAL_FILL_AT', 'target'))
+    c_conf = float(sc_flat[confirm_k]) if np.isfinite(sc_flat[confirm_k]) else float(target0)
+    
+    if fill_mode == "close":
+        fill_px = c_conf
+    elif fill_mode == "best":
+        fill_px = (min(float(target0), c_conf) if action == "BUY"
+                   else max(float(target0), c_conf))
+    else:
+        fill_px = float(target0)
+
+    _REV_ENTRY_SUB[(str(sig.symbol), int(sig.close_idx))] = int(_entry_sub)
+    return (int(confirm_main), float(fill_px))
+
+
+# <<REV-FIX v4 wrapper>>
+_check_reversal_fill_subbars_core = _check_reversal_fill_subbars
+
+
+def _check_reversal_fill_subbars(ad, sig, target0, cfg,
+                                 first_main_ci, deadline_main_ci):
+    """Same decisions as the core function; additionally accounts the cost of the
+    touches that would NOT confirm (the price of getting the target fill live)."""
+    res = _check_reversal_fill_subbars_core(ad, sig, target0, cfg,
+                                            first_main_ci, deadline_main_ci)
+    if getattr(cfg, "REV_OPT_STATS", True):
+        try:
+            _roe_bt_account(ad, sig, target0, cfg, first_main_ci,
+                            deadline_main_ci, res)
+        except Exception:
+            pass
+    return res
+# <</REV-FIX v4 wrapper>>
+
 
 def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps,
                            time_decay_enabled=False,
@@ -4988,6 +7076,30 @@ def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps,
             # DECAYING → رفض الإشارة كلياً (مطابق لـ Live)
             if _sing_state == "DECAYING":
                 result[sig_i] = None
+                continue
+
+            # ══ [CONFIRMATION ENTRY] ══
+            # Bar N+1 must show direction agreement. If not → drop.
+            # Uses the existing Stage-2 path for SL/TP rebuild.
+            if getattr(CFG, 'CONFIRM_ENTRY_ENABLED', False):
+                _cf_ok, _cf_px, _cf_ci = _check_confirmation(ad, sig, CFG)
+                if not _cf_ok:
+                    result[sig_i] = None
+                    continue
+                _cf_fi = _cf_ci - ad.feat_start
+                if not (0 <= _cf_fi < len(ad.score)):
+                    result[sig_i] = None
+                    continue
+                _geom = _recompute_entry_geometry_at_market(
+                    sig, ad, _cf_ci, _cf_fi, CFG
+                )
+                if _geom is None:
+                    result[sig_i] = None
+                    continue
+                result[sig_i] = (
+                    'S2', _cf_ci, _geom['entry_px'],
+                    _geom['sl'], _geom['tp1'], _geom['sl_dist_new']
+                )
                 continue
 
             # ══ [SING-TIMING Layer 3A] Funding Guard ══
@@ -5075,6 +7187,25 @@ def precompute_entry_fills(assets, signals, max_wait_bars, pen_bps,
             target0 = _backtest_entry_target(sig, ad)
             ref_px = float(getattr(sig, 'entry_ref_price', 0.0) or 0.0)
             base_dip = float(getattr(sig, 'entry_base_dip', 0.0) or 0.0)
+
+            # ═══ [REVERSAL-CONFIRM] Touch-and-Bounce on SUB-BARS ═══
+            if getattr(CFG, 'REVERSAL_CONFIRM_ENABLED', False):
+                _max_h = float(getattr(CFG, 'REVERSAL_MAX_HOURS', 24.0))
+                # [REV-FIX v1] main-bar hours (was sub-bar hours -> 96 bars instead of 6)
+                _max_main_bars = max(1, int(np.ceil(
+                    _max_h / max(float(CFG.TF_HOURS), 1e-6)
+                )))
+                _dl = min(sig.close_idx + _max_main_bars + 1, n_bars)
+                _rev = _check_reversal_fill_subbars(
+                    ad, sig, target0, CFG,
+                    sig.close_idx + 1, _dl
+                )
+                if _rev is None:
+                    result[sig_i] = None
+                    continue
+                _rev_main, _rev_px = _rev
+                result[sig_i] = ('S1', int(_rev_main), float(_rev_px))
+                continue
 
             # ── Stage 1 ──
             # [PARITY-FIX] Fill criterion now matches live exactly:
@@ -5389,93 +7520,7 @@ def compute_trail_params(ad, entry_fi: int) -> Tuple[float, float]:
     except Exception:
         return float(CFG.TRAIL_DISTANCE), float(CFG.TRAIL_ACTIVATE_MFE)
 
-def _advance_raw(pos, ad, to_ci, partial_cb=None):
-    """[730d VERIFIED] SL / TP / MaxHold only."""
-    sig = pos.signal
-    sl = pos.trail_sl
-    start = pos.current_ci + 1
-    end = min(to_ci, len(ad.closes) - 1)
-    if start > end:
-        return 0., "", -1
-
-    pen_frac = (CFG.FILL_PENETRATION_BPS * 1e-4
-                if CFG.FILL_APPLY_TO_EXITS else 0.0)
-    _use_sub = (ad.sub_highs is not None
-                and ad.sub_lows is not None
-                and ad.sub_per_main >= 2)
-
-    def _check(high, low):
-        if sig.action == "BUY":
-            if low <= sl * (1.0 - pen_frac):
-                return "SL", sl
-            if high >= sig.tp1 * (1.0 + pen_frac):
-                return "TP", sig.tp1
-        else:
-            if high >= sl * (1.0 + pen_frac):
-                return "SL", sl
-            if low <= sig.tp1 * (1.0 - pen_frac):
-                return "TP", sig.tp1
-        return None, 0.0
-
-    _side_hold = (getattr(CFG, 'MAX_HOLD_BUY', 30)
-                  if sig.action == "BUY"
-                  else getattr(CFG, 'MAX_HOLD_SELL', 20))
-    _max_hold = effective_bars(_side_hold)
-
-    for cidx in range(start, end + 1):
-        p = ad.closes[cidx]
-        if _use_sub and cidx == pos.entry_ci:
-            j0, j1 = int(pos.entry_sub_idx) + 1, ad.sub_per_main
-        elif _use_sub:
-            j0, j1 = 0, ad.sub_per_main
-        else:
-            j0, j1 = 0, 0
-
-        if _use_sub:
-            for j in range(j0, j1):
-                sh = ad.sub_highs[cidx, j]
-                sll = ad.sub_lows[cidx, j]
-                if not (np.isfinite(sh) and np.isfinite(sll)):
-                    continue
-                mfe = ((sh - pos.entry_px) / pos.entry_px
-                       if sig.action == "BUY"
-                       else (pos.entry_px - sll) / pos.entry_px)
-                if mfe > pos.mfe_frac:
-                    pos.mfe_frac = mfe
-                r, px = _check(sh, sll)
-                if r == "SL":
-                    pos.current_ci = cidx
-                    return px, "Emergency SL", cidx
-                if r == "TP":
-                    pos.current_ci = cidx
-                    return px, "Hard TP", cidx
-        else:
-            if cidx == pos.entry_ci:
-                continue
-            high = ad.highs[cidx]
-            low = ad.lows[cidx]
-            mfe = ((high - pos.entry_px) / pos.entry_px
-                   if sig.action == "BUY"
-                   else (pos.entry_px - low) / pos.entry_px)
-            if mfe > pos.mfe_frac:
-                pos.mfe_frac = mfe
-            r, px = _check(high, low)
-            if r == "SL":
-                pos.current_ci = cidx
-                return px, "Emergency SL", cidx
-            if r == "TP":
-                pos.current_ci = cidx
-                return px, "Hard TP", cidx
-
-        if cidx - pos.entry_ci > _max_hold:
-            pos.current_ci = cidx
-            return p, "MaxHold", cidx
-
-    pos.current_ci = max(end, pos.current_ci)
-    return 0., "", -1
-
-
-def _advance(pos, ad, to_ci, partial_cb=None):
+def _advance(pos, ad, to_ci, partial_cb=None, opp_by_sym_ci=None):
     """
     Walk bars from current_ci+1 to to_ci.
 
@@ -5527,6 +7572,166 @@ def _advance(pos, ad, to_ci, partial_cb=None):
     for cidx in range(start, end+1):
         p = ad.closes[cidx]
         fi = cidx - ad.feat_start
+
+        # ══ [BEEsc-FIX] Price Trigger — يجمع sig_opp من نفس الشمعة ══
+        if (getattr(CFG, 'BREAKEVEN_ESCAPE_ENABLED', False)
+                and not getattr(pos, '_be_esc_done', False)
+                and not getattr(pos, '_signal_sl_above_beesc', False)
+                and pos.sl_dist_initial > 0):
+            # ابحث عن إشارة معاكسة صدرت في نفس الشمعة (إن وجدت)
+            _sig_opp_here = None
+            if (getattr(CFG, 'BREAKEVEN_ESCAPE_SIGNAL_ENABLED', True)
+                    and opp_by_sym_ci is not None):
+                try:
+                    for _c_opp in opp_by_sym_ci.get((sig.symbol, cidx), []):
+                        if _c_opp.action != sig.action:
+                            _sig_opp_here = _c_opp
+                            break
+                except Exception:
+                    pass
+            _be_trig, _be_rsn = _should_breakeven_escape(
+                ad, cidx, float(p), sig.action,
+                pos.entry_px, pos.sl_dist_initial,
+                sig_opp=_sig_opp_here,
+                pos=pos,
+            )
+            if _be_trig:
+                _tp_new_be = _apply_breakeven_escape(
+                    sig.action, pos.entry_px, pos.sl_dist_initial,
+                    float(sig.tp1),
+                    bool(getattr(pos, 'partial_taken', False))
+                )
+                if _tp_new_be is not None:
+                    _tp_old_be = float(sig.tp1)
+                    sig.tp1 = _tp_new_be
+                    pos._be_esc_done = True
+                    pos._be_orig_tp1 = _tp_old_be
+                    if sig.action == "BUY":
+                        pos._be_low = float(p)
+                    else:
+                        pos._be_high = float(p)
+                    #log.info(
+                    #    f"[BEEsc-BT] {sig.symbol} {sig.action} "
+                    #    f"TP {_tp_old_be:.6f} → {_tp_new_be:.6f} "
+                    #    f"({_be_rsn})"
+                    #)
+
+        # ══ [BEEsc-CANCEL] track extremes + cancel on strong bounce ══
+        # [BEEsc-Cancel-Close] Optional close-only (no wick)
+        # [BEEsc-Cancel-SR] Optional S/R intact check
+        # [BEEsc-Cancel-USE-HIGH] كشف الارتداد بـ high/low بدل close
+        #   — يمنع race condition حيث close منخفض يخفي ارتداداً حقيقياً
+        if (getattr(pos, '_be_esc_done', False)
+                and not getattr(pos, '_be_cancelled', False)
+                and float(getattr(CFG, 'BREAKEVEN_ESCAPE_CANCEL_KAPPA', 0.0)) > 0
+                and hasattr(pos, '_be_orig_tp1')):
+            try:
+                _be_use_close = bool(getattr(
+                    CFG, 'BREAKEVEN_ESCAPE_CANCEL_CLOSE_ONLY', False))
+                _be_sr_check = bool(getattr(
+                    CFG, 'BREAKEVEN_ESCAPE_CANCEL_SR_CHECK', False))
+                _use_high_for_bounce = bool(getattr(
+                    CFG, 'BREAKEVEN_ESCAPE_CANCEL_USE_HIGH', True))
+                _be_sr_ok = True
+
+                # ── [SR check] هل الدعم/المقاومة لا يزال سليماً؟ ──
+                if _be_sr_check:
+                    _be_lb = int(getattr(
+                        CFG, 'BREAKEVEN_ESCAPE_CANCEL_SR_LOOKBACK', 60))
+                    _be_swing = _find_recent_swing(
+                        ad, max(0, cidx - _be_lb), cidx, sig.action)
+                    if _be_swing is not None:
+                        _be_close_now = float(ad.closes[cidx])
+                        if (sig.action == 'BUY'
+                                and _be_close_now < _be_swing):
+                            _be_sr_ok = False
+                            log.debug(
+                                f"[BEEsc-Cancel-SR] {sig.symbol} "
+                                f"BUY skip: support broken "
+                                f"close={_be_close_now:.6f}<"
+                                f"swing={_be_swing:.6f}")
+                        elif (sig.action == 'SELL'
+                                and _be_close_now > _be_swing):
+                            _be_sr_ok = False
+                            log.debug(
+                                f"[BEEsc-Cancel-SR] {sig.symbol} "
+                                f"SELL skip: resistance broken "
+                                f"close={_be_close_now:.6f}>"
+                                f"swing={_be_swing:.6f}")
+
+                # ── [Bounce check] ارتداد كافٍ من القاع/القمة؟ ──
+                if _be_sr_ok:
+                    _sigma_c = (float(ad.E_therm[fi])
+                                if 0 <= fi < len(ad.E_therm) else 0.01)
+                    if not np.isfinite(_sigma_c) or _sigma_c <= 1e-9:
+                        _sigma_c = 0.01
+                    _kappa_c = float(CFG.BREAKEVEN_ESCAPE_CANCEL_KAPPA)
+                    _thr_c = _kappa_c * _sigma_c * pos.entry_px
+
+                    if sig.action == "BUY":
+                        # ① تحديث القاع الأدنى المُسجَّل
+                        _low_src = (float(ad.closes[cidx]) if _be_use_close
+                                    else float(ad.lows[cidx]))
+                        _low_c = min(
+                            float(getattr(pos, '_be_low', pos.entry_px)),
+                            _low_src,
+                        )
+                        pos._be_low = _low_c
+
+                        # ② مصدر الارتداد: high (افتراضي) أو close
+                        if _be_use_close:
+                            _bounce_src = float(ad.closes[cidx])
+                        elif _use_high_for_bounce:
+                            _bounce_src = float(ad.highs[cidx])
+                        else:
+                            _bounce_src = float(p)
+                        _bounce_c = _bounce_src - _low_c
+
+                        if _bounce_c >= _thr_c:
+                            _restore_c = float(pos._be_orig_tp1)
+                            sig.tp1 = _restore_c
+                            pos._be_cancelled = True
+                            log.info(
+                                f"[BEEsc-Cancel-BT] {sig.symbol} "
+                                f"BUY bounce={_bounce_c:.6f} >= "
+                                f"{_thr_c:.6f} -> TP restored to "
+                                f"{_restore_c:.6f} "
+                                f"(mode={'close' if _be_use_close else 'high' if _use_high_for_bounce else 'wick'}, "
+                                f"low={_low_c:.6f}, src={_bounce_src:.6f})"
+                            )
+                    else:
+                        # ① تحديث القمة الأعلى المُسجَّلة
+                        _high_src = (float(ad.closes[cidx]) if _be_use_close
+                                     else float(ad.highs[cidx]))
+                        _high_c = max(
+                            float(getattr(pos, '_be_high', pos.entry_px)),
+                            _high_src,
+                        )
+                        pos._be_high = _high_c
+
+                        # ② مصدر الارتداد: low (افتراضي) أو close
+                        if _be_use_close:
+                            _bounce_src = float(ad.closes[cidx])
+                        elif _use_high_for_bounce:
+                            _bounce_src = float(ad.lows[cidx])
+                        else:
+                            _bounce_src = float(p)
+                        _bounce_c = _high_c - _bounce_src
+
+                        if _bounce_c >= _thr_c:
+                            _restore_c = float(pos._be_orig_tp1)
+                            sig.tp1 = _restore_c
+                            pos._be_cancelled = True
+                            log.info(
+                                f"[BEEsc-Cancel-BT] {sig.symbol} "
+                                f"SELL bounce={_bounce_c:.6f} >= "
+                                f"{_thr_c:.6f} -> TP restored to "
+                                f"{_restore_c:.6f} "
+                                f"(mode={'close' if _be_use_close else 'low' if _use_high_for_bounce else 'wick'}, "
+                                f"high={_high_c:.6f}, src={_bounce_src:.6f})"
+                            )
+            except Exception as _e_c:
+                log.debug(f"[BEEsc-Cancel-BT] {sig.symbol}: {_e_c}")
 
         # ── Determine sub-bar iteration range for this bar ──
         if _use_sub and cidx == pos.entry_ci:
@@ -5621,7 +7826,11 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                     return px, "Emergency SL", cidx
                 if res == "TP":
                     pos.trail_sl = trail_sl; pos.current_ci = cidx
-                    return px, "Hard TP", cidx
+                    # [BEEsc-LABEL] ميّز الخروج عند entry (BEEsc) عن TP الأصلي
+                    _tp_label = ("BEEsc-breakeven"
+                                 if getattr(pos, '_be_esc_done', False)
+                                 else "Hard TP")
+                    return px, _tp_label, cidx
 
         else:
             # Main-bar fallback — skip entry bar entirely
@@ -5667,7 +7876,11 @@ def _advance(pos, ad, to_ci, partial_cb=None):
                 return px, "Emergency SL", cidx
             if res == "TP":
                 pos.trail_sl = trail_sl; pos.current_ci = cidx
-                return px, "Hard TP", cidx
+                # [BEEsc-LABEL] ميّز الخروج عند entry (BEEsc) عن TP الأصلي
+                _tp_label = ("BEEsc-breakeven"
+                             if getattr(pos, '_be_esc_done', False)
+                             else "Hard TP")
+                return px, _tp_label, cidx
 
         # ── Physics-based exits (close-only, per main bar) ──
         is_apex, apex_rsn = False, ""
@@ -5678,6 +7891,38 @@ def _advance(pos, ad, to_ci, partial_cb=None):
         if is_apex:
             pos.trail_sl = trail_sl; pos.current_ci = cidx
             return p, apex_rsn, cidx
+
+
+        # ══ [RESCUE EXIT — Backtest] ══
+        if getattr(CFG, 'RESCUE_EXIT_ENABLED', False):
+            try:
+                _bars_held = cidx - pos.entry_ci
+                _be_done = bool(getattr(pos, '_be_esc_done', False))
+                _rescue_exit, _rescue_rsn, _rescue_info = _rescue_check(
+                    {'entry': float(pos.entry_px),
+                     'sl': float(trail_sl),
+                     'action': str(sig.action),
+                     'tp1': float(sig.tp1)},
+                    ad, cidx, fi, _bars_held, _be_done, CFG
+                )
+                if getattr(CFG, 'RESCUE_LOG_VERBOSE', False) and _rescue_info:
+                    log.debug(
+                        f"[Rescue-BT] {sig.symbol} {sig.action} "
+                        f"P={_rescue_info.get('P', 0):.3f} "
+                        f"th={_rescue_info.get('threshold', 0):.3f} "
+                        f"L={_rescue_info.get('L_now_frac', 0)*100:.2f}% "
+                        f"bars={_bars_held} be={_be_done}"
+                    )
+                if _rescue_exit:
+                    pos.trail_sl = trail_sl
+                    pos.current_ci = cidx
+                    log.info(
+                        f"[Rescue-BT] {sig.symbol} {sig.action} EXIT "
+                        f"@ {p:.6f} — {_rescue_rsn}"
+                    )
+                    return p, _rescue_rsn, cidx
+            except Exception as _e:
+                log.debug(f"[Rescue-BT] error {sig.symbol}: {_e}")
 
         if 0 < fi < len(ad.V) and cidx > 0:
             V_curr = ad.V[fi]
@@ -5920,6 +8165,9 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
     """
     capital  = CFG.INITIAL_CAPITAL
     peak_cap = capital
+    # ══ [BEAR-SHIELD] BTC reference ══
+    _btc_ref_sim = (assets.get('BTC/USDT')
+                    or assets.get('BTC/USDT:USDT'))
     equity   = [capital]
     trades_out: List[Trade] = []
     open_pos: Dict[str, OpenPosition] = {}
@@ -6032,6 +8280,21 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
             mfe_frac=pos.mfe_frac
         ))
 
+        # ══ [Analytics] log trade close event ══
+        try:
+            _tid = _ANALYTICS.get('trade_id_map', {}).get(id(pos), None)
+            if _tid is None and _ANALYTICS.get('enabled'):
+                _tid = _analytics_new_trade_id(sig.symbol,
+                                                 str(sig.timestamp))
+                _ANALYTICS['trade_id_map'][id(pos)] = _tid
+            _analytics_log_position_event(
+                _tid or '?', sig.symbol, 'closed',
+                {'exit_px': float(exit_eff), 'exit_rsn': str(exit_rsn),
+                 'net_pnl': float(net), 'log_return': float(lr)}
+            )
+        except Exception:
+            pass
+        
         # ══ [TradeLog] تسجيل الصفقة ══
         try:
             _trade_log_from_backtest(
@@ -6084,18 +8347,38 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         pos.pos_size -= _close_qty
         log.debug(f"[PartialTP] {sig.symbol} closed {_pct*100:.0f}% "
                   f"@ {px:.6f}  net=${_net:+.4f}  remaining={pos.pos_size:.6f}")
+    # ══ [BEEsc-FIX] خريطة إشارات معاكسة لكل (رمز، ci) ══
+    # تُستخدم لتفعيل signal-trigger داخل _advance
+    _opp_by_sym_ci = defaultdict(list)
+    for _s in signals:
+        try:
+            _opp_by_sym_ci[(_s.symbol, int(_s.close_idx))].append(_s)
+        except Exception:
+            pass
 
     for sig_i, sig in enumerate(signals):
         # حاجز أمان مطلق: يستحيل بدء تداول جديد إذا اقترب الجسيم من عتبة الفناء (5.1$)
         if capital <= CFG.CAPITAL_FLOOR + 0.1:
             break
 
+        # ══ [BEAR-SHIELD] Bias for this signal ══
+        _bear_sig = False
+        if (getattr(CFG, 'BEAR_SHIELD_ENABLED', True)
+                and _btc_ref_sim is not None):
+            try:
+                _b_sig = _asset_bias_at_bar(
+                    _btc_ref_sim, sig.timestamp)
+                _bear_sig = (_b_sig < 0)
+            except Exception:
+                _bear_sig = False
+
         # 1. تحديث ومراقبة الفضاء للمراكز المفتوحة (التقدم في الزمكان)
         to_close = []
         for sym, pos in open_pos.items():
             ad   = assets[sym]
             toci = _ts_to_ci(ad, sig.timestamp)
-            ep, er, ec = _advance(pos, ad, toci, partial_cb=_partial_tp)
+            ep, er, ec = _advance(pos, ad, toci, partial_cb=_partial_tp,
+                                   opp_by_sym_ci=_opp_by_sym_ci)
             if ep > 0:
                 _close(pos, ad, ep, er, ec)
                 to_close.append(sym)
@@ -6104,12 +8387,97 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         for sym in to_close:
             del open_pos[sym]
 
+        # ══ [Analytics] portfolio snapshot per signal ══
+        if _ANALYTICS.get('enabled'):
+            try:
+                _an_ts = (sig.timestamp.timestamp()
+                           if hasattr(sig.timestamp, 'timestamp') else time.time())
+                _an_heat = sum(float(p.signal.dynamic_risk)
+                                for p in open_pos.values())
+                _analytics_portfolio_snapshot(
+                    _an_ts, capital, peak_cap,
+                    len(open_pos), _an_heat,
+                )
+            except Exception:
+                pass
+        
         # ══ [OppTP] نقل TP لمركز مفتوح عند ظهور إشارة معاكسة ══
         if getattr(CFG, 'OPP_TP_ENABLED', False) and sig.symbol in open_pos:
             _maybe_adapt_tp_backtest(
                 open_pos[sig.symbol], sig, assets[sig.symbol],
                 int(sig.close_idx)
             )
+
+        # ══ [SIGNAL-SL] رفع SL من إشارة جديدة (نفس الاتجاه) ══
+        if (getattr(CFG, 'SIGNAL_BASED_SL_ENABLED', False)
+                and sig.symbol in open_pos):
+            try:
+                _ssl_pos = open_pos[sig.symbol]
+                _ssl_ad = assets.get(sig.symbol)
+                _ssl_ci = int(sig.close_idx)
+                if _ssl_ad is not None and 0 <= _ssl_ci < len(_ssl_ad.closes):
+                    _ssl_price = float(_ssl_ad.closes[_ssl_ci])
+                else:
+                    _ssl_price = float(sig.price)
+                _ssl_ok, _ssl_new, _ssl_rsn = _maybe_update_sl_from_signal(
+                    _ssl_pos, sig, _ssl_price, _ssl_ad
+                )
+                if _ssl_ok:
+                    _ssl_old = float(_ssl_pos.trail_sl)
+                    _ssl_pos.trail_sl = _ssl_new
+                    log.debug(
+                        f"[Signal-SL-BT] {sig.symbol} {sig.action} "
+                        f"SL {_ssl_old:.6f}->{_ssl_new:.6f} ({_ssl_rsn})"
+                    )
+                elif VERBOSE:
+                    log.debug(
+                        f"[Signal-SL-BT] {sig.symbol} {sig.action} "
+                        f"rejected: {_ssl_rsn}"
+                    )
+            except Exception as _ssl_e:
+                log.debug(f"[Signal-SL-BT] {sig.symbol} error: {_ssl_e}")
+
+        # ══ [BREAKEVEN ESCAPE — Signal Trigger] ══
+        if (getattr(CFG, 'BREAKEVEN_ESCAPE_ENABLED', False)
+                and sig.symbol in open_pos):
+            _be_pos = open_pos[sig.symbol]
+            if (not getattr(_be_pos, '_be_esc_done', False)
+                    and _be_pos.signal.action != sig.action
+                    and _be_pos.sl_dist_initial > 0):
+                _be_ad = assets.get(sig.symbol)
+                _be_ci = int(sig.close_idx)
+                _be_px = (float(_be_ad.closes[_be_ci])
+                          if _be_ad is not None
+                          and 0 <= _be_ci < len(_be_ad.closes)
+                          else float(sig.price))
+                _be_trig, _be_rsn = _should_breakeven_escape(
+                    _be_ad, _be_ci, _be_px,
+                    _be_pos.signal.action,
+                    _be_pos.entry_px, _be_pos.sl_dist_initial,
+                    sig_opp=sig,
+                )
+                if _be_trig:
+                    _tp_new_be = _apply_breakeven_escape(
+                        _be_pos.signal.action, _be_pos.entry_px,
+                        _be_pos.sl_dist_initial,
+                        float(_be_pos.signal.tp1),
+                        bool(getattr(_be_pos, 'partial_taken', False))
+                    )
+                    if _tp_new_be is not None:
+                        _tp_old_be = float(_be_pos.signal.tp1)
+                        _be_pos.signal.tp1 = _tp_new_be
+                        _be_pos._be_esc_done = True
+                        _be_pos._be_orig_tp1 = _tp_old_be
+                        if _be_pos.signal.action == "BUY":
+                            _be_pos._be_low = float(_be_px)
+                        else:
+                            _be_pos._be_high = float(_be_px)
+                        log.info(
+                            f"[BEEsc-BT-Sig] {_be_pos.symbol} "
+                            f"{_be_pos.signal.action} "
+                            f"TP {_tp_old_be:.6f} → {_tp_new_be:.6f} "
+                            f"({_be_rsn})"
+                        )
 
         sym = sig.symbol
         if sym in open_pos: continue
@@ -6128,7 +8496,12 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         drawdown = (peak_cap - capital) / (peak_cap + 1e-12)
         dd_mult  = _get_risk_multiplier(drawdown)
 
-        if len(open_pos) >= CFG.MAX_CONCURRENT_ASSETS: continue
+        # ══ [BEAR-SHIELD] Bear concurrency cap ══
+        _eff_max_sim = CFG.MAX_CONCURRENT_ASSETS
+        if _bear_sig:
+            _eff_max_sim = min(_eff_max_sim,
+                int(getattr(CFG, 'BEAR_MAX_CONCURRENT', 3)))
+        if len(open_pos) >= _eff_max_sim: continue
 
         # تجنب التداخل الطيفي (منع الصفقات المترابطة إحصائياً)
         too_corr = any(
@@ -6197,6 +8570,14 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
                 if len(_idx) > 0:
                     opt_sub_idx = int(_idx[0])
 
+        # [REV-FIX v1] reversal-confirm: SL/TP are evaluated only from the
+        # entry sub-bar (after the confirm), never from the touch sub-bar.
+        if (getattr(CFG, 'REVERSAL_CONFIRM_ENABLED', False)
+                and isinstance(fill_info, tuple) and fill_info[0] == 'S1'):
+            _rk = (str(sym), int(sig.close_idx))
+            if _rk in _REV_ENTRY_SUB:
+                opt_sub_idx = int(_REV_ENTRY_SUB[_rk])
+
         # ══ [SL/TP SETUP — works for both fixed and no-fix] ══
         # Design distances from the original signal (preserves R:R intent).
         _design_sl_dist = abs(sig.price - sig.sl)
@@ -6205,7 +8586,7 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
             continue
 
         # Clip SL to max_sl_frac × opt_px (entry-based cap)
-        _max_sl_frac = 0.015 * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
+        _max_sl_frac = float(getattr(CFG, 'MAX_SL_FRAC', 0.015)) * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
         if _design_sl_dist > opt_px * _max_sl_frac:
             _rr = _design_tp_dist / max(_design_sl_dist, 1e-12)
             _design_sl_dist = opt_px * _max_sl_frac
@@ -6244,10 +8625,18 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         free_ratio = max(0.0, (capital - CFG.CAPITAL_FLOOR) / capital)
         power_law_scale = np.sqrt(free_ratio)
 
+        # ══ [BEAR-SHIELD] Risk reduction ══
+        if _bear_sig:
+            _risk_mult_sim = float(getattr(CFG, 'BEAR_RISK_MULT', 0.30))
+        else:
+            _risk_mult_sim = 1.0
         risk_frac = compute_portfolio_risk_frac(sig, capital, open_pos, CFG)
         if risk_frac <= 0.0:
             log.debug(f"[Budget] {sym} skipped: no heat budget available")
             continue
+        # ══ [BEAR-SHIELD] Risk reduction ══
+        if _bear_sig:
+            risk_frac *= _risk_mult_sim
 
         # ══ [SING-TIMING Layer 3B] Resonance Risk Boost ══
         # مطابق تماماً لمنطق Live: يضاعف المخاطرة في ACTIVE.
@@ -6299,7 +8688,7 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         # LIQ_FALLBACK_MMR (2%) as a proxy — same as live's fallback.
         if _sim_live and getattr(CFG, 'LIQ_ENABLED', True):
             _mmr = float(CFG.LIQ_FALLBACK_MMR)
-            _sl_frac_max = 0.015 * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
+            _sl_frac_max = float(getattr(CFG, 'MAX_SL_FRAC', 0.015)) * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
             _lev_by_liq = compute_max_leverage_by_liq(
                 sl_frac_max=_sl_frac_max,
                 mmr=_mmr,
@@ -6380,7 +8769,8 @@ def simulate_portfolio(signals, assets, corr_matrix, mode="backtest"):
         ad = assets[sym]
         # [N6-FIX] simulate SL/TP/MaxHold on remaining bars before
         # closing at the final price. Matches live broker behaviour.
-        _advance(pos, ad, len(ad.closes) - 1, partial_cb=_partial_tp)
+        _advance(pos, ad, len(ad.closes) - 1, partial_cb=_partial_tp,
+                 opp_by_sym_ci=_opp_by_sym_ci)
         ep = ad.closes[-1]
         _close(pos, ad, ep, "EndOfData", len(ad.closes)-1)
 
@@ -6522,6 +8912,361 @@ def print_report(m, mode):
 
     print(f"\n{sep}\n")
     
+
+
+
+def plot_results_v2(trades, equity, m, out="quantum_v6_results_v2.png"):
+    """
+    [Analytics] 24-panel comprehensive visualization.
+    Replaces plot_results when ANALYTICS_EXPANDED_PNG=True.
+    """
+    if not trades or m.get('n_trades', 0) == 0:
+        log.info("[Plot v2] no trades — skipping")
+        return
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import matplotlib.gridspec as gridspec
+    except Exception as e:
+        log.warning(f"[Plot v2] matplotlib unavailable: {e}")
+        return
+    
+    try:
+        fig = plt.figure(figsize=(32, 24), facecolor='#0d0d0d')
+        gs = gridspec.GridSpec(6, 4, figure=fig, hspace=0.55, wspace=0.35)
+        bk, tc, gr = '#111111', '#e0e0e0', '#2a2a2a'
+        plt.rcParams.update({
+            'text.color': tc, 'axes.labelcolor': tc,
+            'xtick.color': tc, 'ytick.color': tc
+        })
+        eq = np.array(equity) if len(equity) > 0 else np.array([0])
+        
+        # ── Row 1: Macro ──
+        ax = fig.add_subplot(gs[0, :])
+        ax.semilogy(eq, c='#00e5ff', lw=0.8, alpha=0.9)
+        ax.axhline(CFG.INITIAL_CAPITAL, c='#ff6b6b', ls='--', lw=1)
+        ax.set_facecolor(bk); ax.grid(True, c=gr, lw=0.4)
+        ax.set_title(
+            f"Equity (Log) | {m['n_trades']:,} trades | "
+            f"Final=${m.get('final_capital', 0):,.0f} | "
+            f"MaxDD={m.get('max_drawdown_pct', 0):.1f}%",
+            c='#00e5ff', fontsize=14, fontweight='bold')
+        
+        # ── Row 2 col 0: Rolling Sharpe ──
+        ax = fig.add_subplot(gs[1, 0])
+        lrs = [t.log_return for t in trades]
+        if len(lrs) > 30:
+            w = min(50, len(lrs) // 3)
+            rs = pd.Series(lrs).rolling(w).apply(
+                lambda x: (x.mean() / (x.std() + 1e-9)) * np.sqrt(252)
+                if x.std() > 0 else 0, raw=True)
+            ax.plot(rs, c='#66bb6a', lw=1)
+            ax.axhline(1, c='white', ls='--', lw=0.8)
+        ax.set_facecolor(bk); ax.grid(True, c=gr, lw=0.4)
+        ax.set_title("Rolling Sharpe", c='#66bb6a', fontsize=10)
+        
+        # ── Row 2 col 1: Monthly Returns ──
+        ax = fig.add_subplot(gs[1, 1])
+        try:
+            if all(hasattr(t, 'entry_time') for t in trades):
+                df_t = pd.DataFrame([
+                    {'month': pd.Timestamp(t.entry_time).to_period('M'),
+                     'pnl': t.net_pnl}
+                    for t in trades
+                ])
+                monthly = df_t.groupby('month')['pnl'].sum()
+                if len(monthly) > 0:
+                    colors = ['#66bb6a' if x >= 0 else '#ef5350' for x in monthly.values]
+                    ax.bar(range(len(monthly)), monthly.values, color=colors)
+                    ax.set_xticks(range(0, len(monthly), max(1, len(monthly)//6)))
+                    ax.set_xticklabels([str(m_) for m_ in monthly.index[::max(1, len(monthly)//6)]],
+                                        rotation=45, fontsize=7)
+        except Exception:
+            pass
+        ax.set_facecolor(bk); ax.grid(True, c=gr, lw=0.4)
+        ax.set_title("Monthly PnL", c=tc, fontsize=10)
+        
+        # ── Row 2 col 2: Returns Distribution ──
+        ax = fig.add_subplot(gs[1, 2])
+        ax.hist(lrs, bins=80, color='#ab47bc', alpha=0.7, edgecolor='none')
+        ax.axvline(0, c='#ff6b6b', lw=1.5, ls='--')
+        ax.axvline(m.get('mean_log_return', 0), c='#00e5ff', lw=1.5,
+                    label=f"μ={m.get('mean_log_return', 0):.4f}")
+        try:
+            from scipy.stats import skew, kurtosis
+            sk = skew(lrs); ku = kurtosis(lrs)
+            ax.text(0.05, 0.95, f"Skew={sk:.2f}\nKurt={ku:.2f}",
+                    transform=ax.transAxes, va='top', fontsize=8,
+                    bbox=dict(boxstyle='round', fc='#1e1e1e', alpha=0.8))
+        except Exception:
+            pass
+        ax.set_facecolor(bk); ax.grid(True, c=gr, lw=0.4)
+        ax.set_title("Returns Distribution", c='#ab47bc', fontsize=10)
+        ax.legend(fontsize=7, framealpha=0.3)
+        
+        # ── Row 2 col 3: Drawdown ──
+        ax = fig.add_subplot(gs[1, 3])
+        peak = np.maximum.accumulate(eq)
+        dd = (peak - eq) / (peak + 1e-12) * 100
+        ax.fill_between(range(len(dd)), 0, -dd, color='#ef5350', alpha=0.6)
+        ax.set_facecolor(bk); ax.grid(True, c=gr, lw=0.4)
+        ax.set_title(f"Drawdown (max={m.get('max_drawdown_pct', 0):.1f}%)",
+                     c='#ef5350', fontsize=10)
+        
+        # ── Row 3 col 0: Exit Reasons ──
+        ax = fig.add_subplot(gs[2, 0])
+        ed = m.get('exit_distribution', {})
+        if ed:
+            labs = list(ed.keys()); vals = list(ed.values())
+            clrs = ['#26c6da','#66bb6a','#ffa726','#ef5350','#ab47bc','#78909c','#ff7043']
+            ax.pie(vals, labels=labs, autopct='%1.1f%%',
+                    colors=clrs[:len(labs)], textprops={'color': tc, 'fontsize': 7})
+        ax.set_title("Exit Reasons", c=tc, fontsize=10)
+        
+        # ── Row 3 col 1: Exit Reason × R ──
+        ax = fig.add_subplot(gs[2, 1])
+        try:
+            by_reason = {}
+            for t in trades:
+                reason = t.exit_reason.split("(")[0].split("=")[0].strip()
+                by_reason.setdefault(reason, []).append(t.log_return)
+            reasons = sorted(by_reason.keys())
+            data = [by_reason[r] for r in reasons]
+            bp = ax.boxplot(data, labels=[r[:8] for r in reasons], patch_artist=True)
+            for patch in bp['boxes']:
+                patch.set_facecolor('#26c6da'); patch.set_alpha(0.6)
+            ax.tick_params(axis='x', labelsize=7, rotation=30)
+        except Exception:
+            pass
+        ax.set_facecolor(bk); ax.grid(True, c=gr, lw=0.4)
+        ax.set_title("R by Exit Reason", c='#26c6da', fontsize=10)
+        
+        # ── Row 3 col 2: MFE vs Realized ──
+        ax = fig.add_subplot(gs[2, 2])
+        try:
+            mfes = [t.mfe_frac for t in trades]
+            realized = [t.log_return for t in trades]
+            colors = ['#66bb6a' if x > 0 else '#ef5350' for x in realized]
+            ax.scatter(mfes, realized, c=colors, s=8, alpha=0.5)
+            ax.axhline(0, c='white', lw=0.5, ls='--')
+            max_r = max(realized) if realized else 0
+            ax.plot([0, max(mfes) if mfes else 1],
+                    [0, max(mfes) if mfes else 1],
+                    c='yellow', lw=1, ls='--', alpha=0.5, label="100% capture")
+            ax.legend(fontsize=7, framealpha=0.3)
+        except Exception:
+            pass
+        ax.set_facecolor(bk); ax.grid(True, c=gr, lw=0.4)
+        ax.set_title("MFE vs Realized", c=tc, fontsize=10)
+        
+        # ── Row 3 col 3: Trade Duration ──
+        ax = fig.add_subplot(gs[2, 3])
+        try:
+            durations = [t.exit_ci - t.entry_ci if hasattr(t, 'exit_ci') else 0
+                          for t in trades]
+            durations = [d for d in durations if d > 0]
+            if durations:
+                ax.hist(durations, bins=50, color='#ffa726', alpha=0.7)
+                ax.axvline(np.median(durations), c='#00e5ff', lw=1.5,
+                            label=f"median={np.median(durations):.0f}")
+                ax.legend(fontsize=7, framealpha=0.3)
+        except Exception:
+            pass
+        ax.set_facecolor(bk); ax.grid(True, c=gr, lw=0.4)
+        ax.set_title("Trade Duration (bars)", c='#ffa726', fontsize=10)
+        
+        # ── Row 4 col 0: PnL by Hour ──
+        ax = fig.add_subplot(gs[3, 0])
+        try:
+            hours = {}
+            for t in trades:
+                if hasattr(t, 'entry_time'):
+                    h = pd.Timestamp(t.entry_time).hour
+                    hours.setdefault(h, []).append(t.net_pnl)
+            if hours:
+                hr_labels = sorted(hours.keys())
+                hr_means = [np.mean(hours[h]) for h in hr_labels]
+                colors = ['#66bb6a' if x > 0 else '#ef5350' for x in hr_means]
+                ax.bar(hr_labels, hr_means, color=colors)
+        except Exception:
+            pass
+        ax.set_facecolor(bk); ax.grid(True, c=gr, lw=0.4, axis='y')
+        ax.set_title("Mean PnL by Hour (UTC)", c=tc, fontsize=10)
+        ax.set_xlabel("Hour", fontsize=8)
+        
+        # ── Row 4 col 1: PnL by DoW ──
+        ax = fig.add_subplot(gs[3, 1])
+        try:
+            dows = {}
+            for t in trades:
+                if hasattr(t, 'entry_time'):
+                    d = pd.Timestamp(t.entry_time).dayofweek
+                    dows.setdefault(d, []).append(t.net_pnl)
+            if dows:
+                dow_labels = sorted(dows.keys())
+                dow_means = [np.mean(dows[d]) for d in dow_labels]
+                colors = ['#66bb6a' if x > 0 else '#ef5350' for x in dow_means]
+                ax.bar(dow_labels, dow_means, color=colors)
+                ax.set_xticks(dow_labels)
+                ax.set_xticklabels(['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][:len(dow_labels)],
+                                    fontsize=7)
+        except Exception:
+            pass
+        ax.set_facecolor(bk); ax.grid(True, c=gr, lw=0.4, axis='y')
+        ax.set_title("Mean PnL by DoW", c=tc, fontsize=10)
+        
+        # ── Row 4 col 2: Win Rate by Score ──
+        ax = fig.add_subplot(gs[3, 2])
+        try:
+            sg = {}
+            for t in trades:
+                sg.setdefault(int(t.score), []).append(1. if t.net_pnl > 0 else 0.)
+            scs = sorted(sg.keys())
+            wrs = [np.mean(sg[s]) * 100 for s in scs]
+            cnts = [len(sg[s]) for s in scs]
+            ax.bar(scs, wrs, color='#26c6da', alpha=0.8)
+            for s_, w_, c_ in zip(scs, wrs, cnts):
+                ax.text(s_, w_ + 1, str(c_), ha='center', fontsize=6, color=tc)
+        except Exception:
+            pass
+        ax.set_facecolor(bk); ax.grid(True, c=gr, lw=0.4, axis='y')
+        ax.set_title("Win Rate by Score", c='#26c6da', fontsize=10)
+        
+        # ── Row 4 col 3: Risk-Return Scatter ──
+        ax = fig.add_subplot(gs[3, 3])
+        try:
+            risks = [t.dynamic_risk_used * 100 for t in trades]
+            rets = [t.log_return for t in trades]
+            colors = ['#66bb6a' if x > 0 else '#ef5350' for x in rets]
+            ax.scatter(risks, rets, c=colors, s=8, alpha=0.4)
+            ax.axhline(0, c='white', lw=0.5, ls='--')
+        except Exception:
+            pass
+        ax.set_facecolor(bk); ax.grid(True, c=gr, lw=0.4)
+        ax.set_title("Risk vs Return", c=tc, fontsize=10)
+        ax.set_xlabel("Risk %", fontsize=8)
+        
+        # ── Row 5 col 0: Top 10 Symbols ──
+        ax = fig.add_subplot(gs[4, 0])
+        try:
+            by_sym = {}
+            for t in trades:
+                by_sym.setdefault(t.symbol, []).append(t.net_pnl)
+            sym_pnl = {s: sum(v) for s, v in by_sym.items()}
+            top10 = sorted(sym_pnl.items(), key=lambda x: -x[1])[:10]
+            if top10:
+                syms = [s.replace('/USDT','') for s, _ in top10]
+                pnls = [p for _, p in top10]
+                ax.barh(range(len(syms)), pnls, color='#66bb6a')
+                ax.set_yticks(range(len(syms)))
+                ax.set_yticklabels(syms, fontsize=7)
+                ax.invert_yaxis()
+        except Exception:
+            pass
+        ax.set_facecolor(bk); ax.grid(True, c=gr, lw=0.4, axis='x')
+        ax.set_title("Top 10 Symbols", c='#66bb6a', fontsize=10)
+        
+        # ── Row 5 col 1: Bottom 10 Symbols ──
+        ax = fig.add_subplot(gs[4, 1])
+        try:
+            bottom10 = sorted(sym_pnl.items(), key=lambda x: x[1])[:10]
+            if bottom10:
+                syms = [s.replace('/USDT','') for s, _ in bottom10]
+                pnls = [p for _, p in bottom10]
+                ax.barh(range(len(syms)), pnls, color='#ef5350')
+                ax.set_yticks(range(len(syms)))
+                ax.set_yticklabels(syms, fontsize=7)
+                ax.invert_yaxis()
+        except Exception:
+            pass
+        ax.set_facecolor(bk); ax.grid(True, c=gr, lw=0.4, axis='x')
+        ax.set_title("Bottom 10 Symbols", c='#ef5350', fontsize=10)
+        
+        # ── Row 5 col 2: BUY vs SELL ──
+        ax = fig.add_subplot(gs[4, 2])
+        try:
+            buy_pnl = [t.net_pnl for t in trades if t.action=="BUY"]
+            sell_pnl = [t.net_pnl for t in trades if t.action=="SELL"]
+            ax.hist(buy_pnl, bins=40, alpha=0.7, color='#66bb6a',
+                    label=f'BUY n={len(buy_pnl)}')
+            ax.hist(sell_pnl, bins=40, alpha=0.7, color='#ef5350',
+                    label=f'SELL n={len(sell_pnl)}')
+            ax.axvline(0, c='white', lw=0.5, ls='--')
+            ax.legend(fontsize=7, framealpha=0.3)
+        except Exception:
+            pass
+        ax.set_facecolor(bk); ax.grid(True, c=gr, lw=0.4)
+        ax.set_title("BUY vs SELL", c=tc, fontsize=10)
+        
+        # ── Row 5 col 3: Consecutive Streaks ──
+        ax = fig.add_subplot(gs[4, 3])
+        try:
+            wins_seq = []
+            cur_w = cur_l = 0
+            max_w = max_l = 0
+            for t in trades:
+                if t.net_pnl > 0:
+                    cur_w += 1; cur_l = 0
+                    max_w = max(max_w, cur_w)
+                else:
+                    cur_l += 1; cur_w = 0
+                    max_l = max(max_l, cur_l)
+            ax.text(0.5, 0.7, f"Max Win Streak: {max_w}", ha='center',
+                    transform=ax.transAxes, fontsize=14, color='#66bb6a')
+            ax.text(0.5, 0.4, f"Max Loss Streak: {max_l}", ha='center',
+                    transform=ax.transAxes, fontsize=14, color='#ef5350')
+            ax.text(0.5, 0.1, f"Total Trades: {len(trades)}", ha='center',
+                    transform=ax.transAxes, fontsize=10, color=tc)
+            ax.axis('off')
+        except Exception:
+            pass
+        ax.set_title("Streak Analysis", c=tc, fontsize=10)
+        
+        # ── Row 6: Summary stats ──
+        ax = fig.add_subplot(gs[5, :])
+        ax.axis('off'); ax.set_facecolor(bk)
+        summ = (
+            f"═══ PERFORMANCE ═══\n"
+            f"E[ln]={m.get('mean_log_return', 0):+.5f}  |  "
+            f"Median={m.get('median_log_return', 0):+.5f}  |  "
+            f"σ={m.get('std_log_return', 0):.5f}\n"
+            f"PF={m.get('profit_factor', 0):.3f}  |  "
+            f"Sharpe={m.get('sharpe_ratio', 0):.3f}  |  "
+            f"WinRate={m.get('win_rate', 0)*100:.2f}%\n"
+            f"Final=${m.get('final_capital', 0):,.0f}  |  "
+            f"Return={m.get('total_return_pct', 0):,.0f}%  |  "
+            f"MaxDD={m.get('max_drawdown_pct', 0):.2f}%\n"
+            f"\n═══ EXITS ═══\n"
+            f"{', '.join(f'{k}={v}' for k, v in list(m.get('exit_distribution', {}).items())[:8])}\n"
+            f"\n═══ CONTEXT ═══\n"
+            f"Avg T_info={m.get('avg_T_info', 0):.3f}  |  "
+            f"Avg Risk={m.get('avg_dynamic_risk', 0)*100:.3f}%\n"
+            f"BUY={m.get('buy_count', 0)}  |  SELL={m.get('sell_count', 0)}  |  "
+            f"LiqWarns={m.get('liq_warnings', 0)} ({m.get('liq_warn_pct', 0):.1f}%)\n"
+        )
+        ax.text(0.02, 0.98, summ, transform=ax.transAxes, va='top',
+                color=tc, fontsize=9, fontfamily='monospace',
+                bbox=dict(boxstyle='round', fc='#1e1e1e', alpha=0.9))
+        
+        fig.suptitle(
+            f"QTT Analytics Report — {m.get('n_trades', 0):,} trades | "
+            f"E[ln]={m.get('mean_log_return', 0):+.5f} | "
+            f"PF={m.get('profit_factor', 0):.2f}",
+            color='#00e5ff', fontsize=16, fontweight='bold', y=0.998)
+        
+        plt.savefig(out, dpi=110, bbox_inches='tight',
+                    facecolor='#0d0d0d', edgecolor='none')
+        plt.close(fig)
+        log.info(f"📊 Analytics PNG v2: {out}")
+    except Exception as e:
+        log.warning(f"[Plot v2] failed: {e}")
+        try:
+            plt.close('all')
+        except Exception:
+            pass
+
+# ═══════════════════════════════════════════════════════════════
 
 
 def plot_results(trades, equity, m, out="quantum_v6_results.png"):
@@ -7267,6 +10012,321 @@ def filter_signals_ml(signals, assets):
              f"({pct:.1f}%) @ threshold={CFG.ML_FILTER_THRESHOLD:.3f}")
     return kept
 
+
+def generate_html_report(trades, equity, m, out="report.html"):
+    """
+    [Analytics] Generate interactive HTML report using Plotly.
+    Falls back to a static placeholder if plotly is unavailable.
+    """
+    deps = _analytics_check_deps()
+    if not deps.get('plotly'):
+        _write_html_fallback(trades, equity, m, out)
+        return
+    
+    try:
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+        import plotly.io as pio
+    except Exception as e:
+        log.warning(f"[HTML] plotly import failed: {e}")
+        _write_html_fallback(trades, equity, m, out)
+        return
+    
+    try:
+        eq = np.array(equity) if len(equity) > 0 else np.array([0])
+        n_trades = len(trades)
+        
+        # ═══ Overview charts ═══
+        # 1. Equity curve
+        fig_eq = go.Figure()
+        fig_eq.add_trace(go.Scatter(
+            y=eq.tolist(), mode='lines', name='Equity',
+            line=dict(color='#00e5ff', width=1.5)
+        ))
+        fig_eq.add_hline(y=CFG.INITIAL_CAPITAL, line_dash="dash",
+                          line_color="red", opacity=0.6)
+        fig_eq.update_layout(
+            title="Equity Curve (Log Scale)",
+            yaxis_type="log", template="plotly_dark",
+            height=400, showlegend=False
+        )
+        
+        # 2. Drawdown
+        peak = np.maximum.accumulate(eq)
+        dd_pct = (peak - eq) / (peak + 1e-12) * 100
+        fig_dd = go.Figure()
+        fig_dd.add_trace(go.Scatter(
+            y=(-dd_pct).tolist(), fill='tozeroy',
+            mode='lines', name='Drawdown',
+            line=dict(color='#ef5350', width=1)
+        ))
+        fig_dd.update_layout(
+            title="Drawdown %",
+            template="plotly_dark", height=300, showlegend=False
+        )
+        
+        # 3. Returns distribution
+        lrs = [t.log_return for t in trades]
+        fig_ret = go.Figure()
+        fig_ret.add_trace(go.Histogram(
+            x=lrs, nbinsx=80, marker_color='#ab47bc', opacity=0.8,
+            name='Returns'
+        ))
+        fig_ret.add_vline(x=0, line_color="red", line_dash="dash")
+        fig_ret.add_vline(x=float(np.mean(lrs)) if lrs else 0,
+                           line_color="#00e5ff", line_dash="dash")
+        fig_ret.update_layout(
+            title="Log Return Distribution",
+            xaxis_title="Log Return",
+            template="plotly_dark", height=300, showlegend=False
+        )
+        
+        # 4. Exit reasons
+        ed = m.get('exit_distribution', {})
+        fig_exits = go.Figure(data=[go.Pie(
+            labels=list(ed.keys()),
+            values=list(ed.values()),
+            hole=0.4
+        )])
+        fig_exits.update_layout(
+            title="Exit Reasons",
+            template="plotly_dark", height=300
+        )
+        
+        # ═══ Trades table ═══
+        trade_rows = []
+        for t in trades[:5000]:  # cap at 5000 for HTML size
+            trade_rows.append({
+                'symbol': getattr(t, 'symbol', ''),
+                'action': getattr(t, 'action', ''),
+                'entry_time': str(getattr(t, 'entry_time', '')),
+                'entry_px': round(getattr(t, 'entry_price', 0), 6),
+                'exit_px': round(getattr(t, 'exit_price', 0), 6),
+                'exit_rsn': getattr(t, 'exit_reason', '')[:40],
+                'net_pnl': round(getattr(t, 'net_pnl', 0), 4),
+                'log_return': round(getattr(t, 'log_return', 0), 6),
+                'mfe_frac': round(getattr(t, 'mfe_frac', 0), 6),
+                'score': round(getattr(t, 'score', 0), 2),
+                'risk%': round(getattr(t, 'dynamic_risk_used', 0) * 100, 3),
+            })
+        
+        df_trades = pd.DataFrame(trade_rows)
+        
+        # ═══ Summary stats table ═══
+        summary_stats = {
+            'E[ln]': f"{m.get('mean_log_return', 0):+.5f}",
+            'Median ln': f"{m.get('median_log_return', 0):+.5f}",
+            'Std ln': f"{m.get('std_log_return', 0):.5f}",
+            'Profit Factor': f"{m.get('profit_factor', 0):.3f}",
+            'Sharpe (annual)': f"{m.get('sharpe_ratio', 0):.3f}",
+            'Win Rate': f"{m.get('win_rate', 0)*100:.2f}%",
+            'N Trades': f"{m.get('n_trades', 0):,}",
+            'BUY / SELL': f"{m.get('buy_count', 0)} / {m.get('sell_count', 0)}",
+            'Final Capital': f"${m.get('final_capital', 0):,.2f}",
+            'Total Return': f"{m.get('total_return_pct', 0):,.1f}%",
+            'Max Drawdown': f"{m.get('max_drawdown_pct', 0):.2f}%",
+            'Avg Risk/Trade': f"{m.get('avg_dynamic_risk', 0)*100:.3f}%",
+            'Avg T_info': f"{m.get('avg_T_info', 0):.3f}",
+        }
+        
+        # ═══ Build HTML ═══
+        html_parts = []
+        html_parts.append("<!DOCTYPE html>")
+        html_parts.append("<html><head>")
+        html_parts.append("<meta charset='utf-8'>")
+        html_parts.append(f"<title>{getattr(CFG, 'ANALYTICS_HTML_TITLE', 'QTT Report')}</title>")
+        html_parts.append("<style>")
+        html_parts.append("""
+        body { background: #0d0d0d; color: #e0e0e0; font-family: -apple-system, sans-serif; margin: 0; padding: 20px; }
+        h1 { color: #00e5ff; border-bottom: 2px solid #00e5ff; padding-bottom: 10px; }
+        h2 { color: #66bb6a; margin-top: 30px; }
+        .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 20px 0; }
+        .kpi { background: #1e1e1e; padding: 15px; border-radius: 8px; border-left: 4px solid #00e5ff; }
+        .kpi-label { font-size: 11px; color: #999; text-transform: uppercase; }
+        .kpi-value { font-size: 22px; font-weight: bold; color: #00e5ff; margin-top: 5px; }
+        .kpi-value.positive { color: #66bb6a; }
+        .kpi-value.negative { color: #ef5350; }
+        .tab-container { margin-top: 20px; }
+        .tab-buttons { display: flex; gap: 5px; margin-bottom: 15px; }
+        .tab-btn { background: #1e1e1e; color: #999; border: none; padding: 10px 20px; cursor: pointer; border-radius: 4px 4px 0 0; }
+        .tab-btn.active { background: #00e5ff; color: #000; font-weight: bold; }
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 15px; }
+        th { background: #1e1e1e; padding: 8px; text-align: left; border-bottom: 2px solid #333; }
+        td { padding: 6px; border-bottom: 1px solid #222; }
+        tr:hover { background: #1a1a1a; }
+        .pos { color: #66bb6a; }
+        .neg { color: #ef5350; }
+        """)
+        html_parts.append("</style>")
+        # Embed plotly.js from CDN (smaller file)
+        html_parts.append("<script src='https://cdn.plot.ly/plotly-2.27.0.min.js'></script>")
+        html_parts.append("</head><body>")
+        
+        # Header
+        html_parts.append(f"<h1>📊 {getattr(CFG, 'ANALYTICS_HTML_TITLE', 'QTT Report')}</h1>")
+        html_parts.append(f"<p>Run ID: <code>{_ANALYTICS.get('run_id', '?')}</code> | "
+                          f"Mode: {CFG.mode} | Generated: {datetime.now(timezone.utc).isoformat()}</p>")
+        
+        # KPI cards
+        html_parts.append("<div class='kpi-grid'>")
+        _kpis = [
+            ('E[ln]', m.get('mean_log_return', 0),
+             f"{m.get('mean_log_return', 0):+.5f}",
+             'pos' if m.get('mean_log_return', 0) > 0 else 'neg'),
+            ('Profit Factor', m.get('profit_factor', 0),
+             f"{m.get('profit_factor', 0):.3f}",
+             'pos' if m.get('profit_factor', 0) > 1 else 'neg'),
+            ('Sharpe', m.get('sharpe_ratio', 0),
+             f"{m.get('sharpe_ratio', 0):.3f}",
+             'pos' if m.get('sharpe_ratio', 0) > 1 else 'neg'),
+            ('Win Rate', m.get('win_rate', 0),
+             f"{m.get('win_rate', 0)*100:.1f}%", ''),
+            ('Max Drawdown', m.get('max_drawdown_pct', 0),
+             f"{m.get('max_drawdown_pct', 0):.1f}%", 'neg'),
+            ('Final Capital', m.get('final_capital', 0),
+             f"${m.get('final_capital', 0):,.0f}",
+             'pos' if m.get('final_capital', 0) > CFG.INITIAL_CAPITAL else 'neg'),
+            ('N Trades', m.get('n_trades', 0),
+             f"{m.get('n_trades', 0):,}", ''),
+            ('Total Return', m.get('total_return_pct', 0),
+             f"{m.get('total_return_pct', 0):,.0f}%",
+             'pos' if m.get('total_return_pct', 0) > 0 else 'neg'),
+        ]
+        for label, _, value, cls in _kpis:
+            html_parts.append(f"<div class='kpi'><div class='kpi-label'>{label}</div>"
+                              f"<div class='kpi-value {cls}'>{value}</div></div>")
+        html_parts.append("</div>")
+        
+        # Tabs
+        html_parts.append("<div class='tab-container'>")
+        html_parts.append("<div class='tab-buttons'>")
+        html_parts.append("<button class='tab-btn active' onclick=\"showTab('overview', this)\">📈 Overview</button>")
+        html_parts.append("<button class='tab-btn' onclick=\"showTab('charts', this)\">📊 Charts</button>")
+        html_parts.append("<button class='tab-btn' onclick=\"showTab('trades', this)\">📋 Trades</button>")
+        html_parts.append("<button class='tab-btn' onclick=\"showTab('summary', this)\">📋 Summary</button>")
+        html_parts.append("</div>")
+        
+        # Tab 1: Overview
+        html_parts.append("<div id='tab-overview' class='tab-panel active'>")
+        html_parts.append(pio.to_html(fig_eq, include_plotlyjs=False, full_html=False))
+        html_parts.append(pio.to_html(fig_dd, include_plotlyjs=False, full_html=False))
+        html_parts.append("</div>")
+        
+        # Tab 2: Charts
+        html_parts.append("<div id='tab-charts' class='tab-panel'>")
+        html_parts.append(pio.to_html(fig_ret, include_plotlyjs=False, full_html=False))
+        html_parts.append(pio.to_html(fig_exits, include_plotlyjs=False, full_html=False))
+        html_parts.append("</div>")
+        
+        # Tab 3: Trades
+        html_parts.append("<div id='tab-trades' class='tab-panel'>")
+        html_parts.append(f"<p>Showing {len(trade_rows):,} of {n_trades:,} trades</p>")
+        html_parts.append("<table><thead><tr>")
+        for col in ['symbol', 'action', 'entry_time', 'entry_px', 'exit_px',
+                    'exit_rsn', 'net_pnl', 'log_return', 'mfe_frac', 'score', 'risk%']:
+            html_parts.append(f"<th>{col}</th>")
+        html_parts.append("</tr></thead><tbody>")
+        for row in trade_rows:
+            cls_pnl = 'pos' if row['net_pnl'] > 0 else 'neg'
+            html_parts.append("<tr>")
+            html_parts.append(f"<td>{row['symbol']}</td>")
+            html_parts.append(f"<td>{row['action']}</td>")
+            html_parts.append(f"<td>{row['entry_time'][:19]}</td>")
+            html_parts.append(f"<td>{row['entry_px']}</td>")
+            html_parts.append(f"<td>{row['exit_px']}</td>")
+            html_parts.append(f"<td>{row['exit_rsn']}</td>")
+            html_parts.append(f"<td class='{cls_pnl}'>{row['net_pnl']:+.4f}</td>")
+            html_parts.append(f"<td class='{cls_pnl}'>{row['log_return']:+.6f}</td>")
+            html_parts.append(f"<td>{row['mfe_frac']:.6f}</td>")
+            html_parts.append(f"<td>{row['score']:.2f}</td>")
+            html_parts.append(f"<td>{row['risk%']:.3f}</td>")
+            html_parts.append("</tr>")
+        html_parts.append("</tbody></table>")
+        html_parts.append("</div>")
+        
+        # Tab 4: Summary
+        html_parts.append("<div id='tab-summary' class='tab-panel'>")
+        html_parts.append("<table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>")
+        for k, v in summary_stats.items():
+            html_parts.append(f"<tr><td>{k}</td><td>{v}</td></tr>")
+        html_parts.append("</tbody></table>")
+        html_parts.append("</div>")
+        
+        html_parts.append("</div>")  # tab-container
+        
+        # JS for tabs
+        html_parts.append("""
+        <script>
+        function showTab(name, btn) {
+            document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.getElementById('tab-' + name).classList.add('active');
+            btn.classList.add('active');
+        }
+        </script>
+        """)
+        
+        html_parts.append("</body></html>")
+        
+        with open(out, 'w', encoding='utf-8') as f:
+            f.write("\n".join(html_parts))
+        log.info(f"🌐 HTML report: {out}")
+    except Exception as e:
+        log.warning(f"[HTML] generation failed: {e}")
+        _write_html_fallback(trades, equity, m, out)
+
+
+def _write_html_fallback(trades, equity, m, out):
+    """Fallback HTML without plotly — just tables and text."""
+    try:
+        rows_html = ""
+        for t in trades[:1000]:
+            rows_html += (
+                f"<tr><td>{getattr(t,'symbol','')}</td>"
+                f"<td>{getattr(t,'action','')}</td>"
+                f"<td>{getattr(t,'entry_price',0):.6f}</td>"
+                f"<td>{getattr(t,'exit_price',0):.6f}</td>"
+                f"<td>{getattr(t,'exit_reason','')[:40]}</td>"
+                f"<td>{getattr(t,'net_pnl',0):+.4f}</td>"
+                f"<td>{getattr(t,'log_return',0):+.6f}</td></tr>"
+            )
+        html = f"""<!DOCTYPE html>
+<html><head><meta charset='utf-8'><title>QTT Report (fallback)</title>
+<style>
+body {{ background: #0d0d0d; color: #e0e0e0; font-family: monospace; padding: 20px; }}
+h1 {{ color: #00e5ff; }}
+table {{ border-collapse: collapse; width: 100%; margin-top: 20px; }}
+th, td {{ border: 1px solid #333; padding: 6px; text-align: left; }}
+th {{ background: #1e1e1e; }}
+</style></head><body>
+<h1>QTT Report (Static Fallback)</h1>
+<p>plotly not available — showing summary and trades table only.</p>
+<h2>Summary</h2>
+<ul>
+<li>E[ln] = {m.get('mean_log_return', 0):+.5f}</li>
+<li>PF = {m.get('profit_factor', 0):.3f}</li>
+<li>Sharpe = {m.get('sharpe_ratio', 0):.3f}</li>
+<li>Win Rate = {m.get('win_rate', 0)*100:.2f}%</li>
+<li>N Trades = {m.get('n_trades', 0):,}</li>
+<li>Final = ${m.get('final_capital', 0):,.2f}</li>
+</ul>
+<h2>Trades (first 1000)</h2>
+<table>
+<thead><tr><th>Symbol</th><th>Action</th><th>Entry</th><th>Exit</th>
+<th>Reason</th><th>PnL</th><th>Log Ret</th></tr></thead>
+<tbody>{rows_html}</tbody></table>
+</body></html>"""
+        with open(out, 'w', encoding='utf-8') as f:
+            f.write(html)
+        log.info(f"🌐 HTML report (fallback): {out}")
+    except Exception as e:
+        log.warning(f"[HTML fallback] failed: {e}")
+
+# ═══════════════════════════════════════════════════════════════
+
+
 def run_backtest(cfg):
     try:
         import ccxt
@@ -7275,6 +10335,10 @@ def run_backtest(cfg):
 
     exchange = ccxt.binance({'enableRateLimit':True,'options':{'defaultType':'future'}})
 
+    # ══ [Analytics] init before backtest ══
+    _analytics_init('backtest', cfg)
+    _analytics_write_manifest('backtest', cfg)
+    
     log.info("§1  مسح أعلى 15 عملة...")
     syms = scan_top_assets(exchange, cfg.n_assets)
 
@@ -7470,7 +10534,32 @@ def run_backtest(cfg):
             log.info(f"  {sym:14s}: b={r['slope']:+.5f}  R²={r['r2']:.3f}  [{r['trend']}]")
 
     print_report(m, "backtest")
-    plot_results(trades, equity, m)
+    
+    # ══ [BEAR-SHIELD] Final bias report ══
+    if getattr(CFG, 'BEAR_SHIELD_ENABLED', True):
+        _btc_final = (assets.get('BTC/USDT')
+                      or assets.get('BTC/USDT:USDT'))
+        if _btc_final is not None:
+            try:
+                _fb = _asset_bias_at_index(
+                    _btc_final, len(_btc_final.closes) - 1)
+                _lbl = ('BEAR' if _fb < 0 else
+                        ('BULL' if _fb > 0 else 'NEUTRAL'))
+                log.info(f"[BearShield] Final market bias: "
+                         f"{_fb:+.1f} ({_lbl})")
+            except Exception:
+                pass
+    
+    # ══ [Analytics] finalize backtest ══
+    if _ANALYTICS.get('enabled'):
+        if getattr(CFG, 'ANALYTICS_EXPANDED_PNG', True):
+            # v2 PNG is generated inside finalize
+            _analytics_finalize('backtest', trades, equity, m)
+        else:
+            plot_results(trades, equity, m)
+            _analytics_finalize('backtest', trades, equity, m)
+    else:
+        plot_results(trades, equity, m)
 
     # ══ [Cache-Health] تقرير نهائي ══
     if _CACHE_HEALTH['files_scanned'] > 0:
@@ -8492,7 +11581,54 @@ def _place_protective_orders(exchange, sym: str, pos: Dict) -> bool:
         # ══════════════════════════════════════════════════════════════
         # SL — place only if missing
         # ══════════════════════════════════════════════════════════════
-        if not placed['sl']:
+        _use_sl_limit = bool(getattr(CFG, 'PROTECTIVE_SL_USE_LIMIT', True))
+        _sl_buf = float(getattr(CFG, 'PROTECTIVE_SL_LIMIT_BUFFER_FRAC', 0.002))
+
+        if not placed['sl'] and _use_sl_limit:
+            # ══ [SL LIMIT] STOP_LIMIT with bounded slippage ══
+            if close_side == 'sell':
+                _lim_px = sl * (1.0 - _sl_buf)
+            else:
+                _lim_px = sl * (1.0 + _sl_buf)
+            try:
+                _lim_px = float(exchange.price_to_precision(sym, _lim_px))
+            except Exception:
+                pass
+            for attempt in range(max_retries):
+                try:
+                    exchange.create_order(
+                        sym, 'STOP', close_side, qty, _lim_px,
+                        params={'stopPrice': sl,
+                                'reduceOnly': True,
+                                'workingType': wt,
+                                'timeInForce': 'GTC'})
+                    placed['sl'] = True
+                    log.info(f"[Prot] {sym} SL STOP_LIMIT "
+                             f"trigger={sl:.6f} limit={_lim_px:.6f} "
+                             f"(buf={_sl_buf*100:.2f}%)")
+                    break
+                except Exception as e:
+                    log.debug(f"[Prot] {sym} STOP_LIMIT "
+                              f"attempt {attempt+1} failed: {e}")
+                    # Fallback to STOP_MARKET if STOP_LIMIT rejected
+                    if attempt == max_retries - 1:
+                        log.warning(f"[Prot] {sym} STOP_LIMIT failed, "
+                                    f"falling back to STOP_MARKET")
+                        try:
+                            exchange.create_order(
+                                sym, 'STOP_MARKET', close_side, qty, None,
+                                params={'stopPrice': sl,
+                                        'reduceOnly': True,
+                                        'workingType': wt})
+                            placed['sl'] = True
+                            log.info(f"[Prot] {sym} SL STOP_MARKET "
+                                     f"(fallback) @ {sl:.6f}")
+                            break
+                        except Exception as e2:
+                            log.debug(f"[Prot] {sym} STOP_MARKET "
+                                      f"attempt {attempt+1} failed: {e2}")
+        elif not placed['sl']:
+            # ── Legacy STOP_MARKET path (PROTECTIVE_SL_USE_LIMIT=False) ──
             for attempt in range(max_retries):
                 try:
                     exchange.create_order(
@@ -9832,10 +12968,7 @@ def save_symbol_meta() -> None:
     if not _SYMBOL_META_PATH:
         return
     try:
-        tmp = _SYMBOL_META_PATH + ".tmp"
-        with open(tmp, 'w') as f:
-            json.dump(_SYMBOL_META, f, indent=2)
-        os.replace(tmp, _SYMBOL_META_PATH)
+        _json_write_if_changed(_SYMBOL_META_PATH, _SYMBOL_META, indent=2)
     except Exception as e:
         log.warning(f"[Meta] save failed: {e}")
 
@@ -10239,6 +13372,13 @@ def _degenerate_put(sym: str, tf: str, last_closed_ts: int) -> None:
     _DEGENERATE_CACHE[(sym, tf, last_closed_ts)] = time.time()
     # [PERF-FIX] Track consecutive failures per symbol
     _DEGENERATE_STREAK[sym] = _DEGENERATE_STREAK.get(sym, 0) + 1
+    # [REV-FIX v2] bans expire (was: banned for the whole process lifetime)
+    if (_DEGENERATE_STREAK[sym] >= _DEGENERATE_BAN_THRESHOLD
+            and sym not in _DEGENERATE_BAN_UNTIL):
+        _DEGENERATE_BAN_UNTIL[sym] = time.time() + float(
+            getattr(CFG, 'DEGENERATE_BAN_TTL_S', 86400.0))
+        log.warning(f"[Degenerate-Ban] {sym} banned for "
+                    f"{getattr(CFG, 'DEGENERATE_BAN_TTL_S', 86400.0)/3600:.0f}h")
     if len(_DEGENERATE_CACHE) > _DEGENERATE_CACHE_MAX:
         # Drop oldest 100 by insertion order
         for k in list(_DEGENERATE_CACHE.keys())[:100]:
@@ -10733,8 +13873,27 @@ def monitor_watch_signals(exchange, open_pos_live: Dict,
         if not _watch_proximity_ok(p_now, tunnel_p, sigma_bar):
             continue
 
-        # ══ [ENTRY-OFFSET] Compute dynamic offset FIRST ══
-        # الإزاحة ديناميكية: tick size, σ_bar, ADV, حجم الأمر.
+        # ═══════════════════════════════════════════════════════════
+        # [OFFSET-SEMANTICS — Watch convention]
+        # ═══════════════════════════════════════════════════════════
+        # Reference = tunnel_entry_p (the deep mean-reversion target,
+        #             already far below market for BUY).
+        # Direction = TOWARD market (the "eager" convention):
+        #     BUY  →  order = tunnel + offset   (above tunnel,
+        #                                       fills as market descends)
+        #     SELL →  order = tunnel − offset   (below tunnel,
+        #                                       fills as market ascends)
+        #
+        # This is the opposite sign of _compute_entry_target, but the
+        # trading intent is IDENTICAL: both place the order BETWEEN
+        # the theoretical entry and the current market, guaranteeing
+        # a maker fill on the way to the target.
+        #
+        # The difference in sign is purely because the reference point
+        # is different: _compute_entry_target anchors at market close
+        # (so it moves AWAY from market), while this watch logic
+        # anchors at the tunnel (so it moves TOWARD market).
+        # ═══════════════════════════════════════════════════════════
         _qty_tmp = float(rec.get('qty', 0.0) or 0.0)
         _adv_now = 1e8
         try:
@@ -10754,7 +13913,7 @@ def monitor_watch_signals(exchange, open_pos_live: Dict,
 
         # أمرنا يواجه السعر الهابط/الصاعد ليملأ عند أول تلامس
         if sig.action == "BUY":
-            _expected_entry = tunnel_p  + _offset
+            _expected_entry = tunnel_p + _offset
             _effective_sl = _expected_entry - abs(
                 float(rec['sl']) - tunnel_p
             )
@@ -10845,6 +14004,166 @@ def monitor_watch_signals(exchange, open_pos_live: Dict,
         except Exception as e:
             log.warning(f"[Watch] {sym} trigger failed: {e}")
 
+#def monitor_reversal_watchers(exchange, open_pos_live: Dict,
+#                                assets: Optional[Dict] = None,
+#                                cap_now=None, corr_cache=None) -> None:
+#    if not getattr(CFG, "REVERSAL_CONFIRM_ENABLED", False):
+#        return
+#    if not _REVERSAL_WATCHERS:
+#        return
+#    now = _t_rev.time()
+#    if now < _REV_BACKOFF_UNTIL:
+#        return
+#    sub_tf, sub_sec = _rev_sub_info()
+#    tw = int(getattr(CFG, "REVERSAL_TOUCH_SUBBARS", 20))
+#    bw = int(getattr(CFG, "REVERSAL_BOUNCE_SUBBARS", 4))
+#    max_fetch = int(_revc("REV_MAX_FETCH_PER_CYCLE", 10))
+#    # ══ [BOUNCE-TICKER] live ticker params ══
+#    _ticker_throttle = float(_revc("REV_TICKER_THROTTLE_S", 2.0))
+#    _thr_sigma_frac  = float(_revc("REV_BOUNCE_SIGMA_FRAC", 0.05))
+#    _thr_min_bps     = float(_revc("REV_BOUNCE_MIN_BPS", 4.0))
+#    _thr_max_bps     = float(_revc("REV_BOUNCE_MAX_BPS", 15.0))
+#    dirty = False
+#    starts = 0
+#    fetched = 0
+#    scan_syms = []
+#
+#    for sym in list(_REVERSAL_WATCHERS.keys()):
+#        w = _REVERSAL_WATCHERS[sym]
+#        st = w.get("status", "WAITING_TOUCH")
+#        try:
+#            if st in ("FILLED", "EXPIRED"):
+#                _REVERSAL_WATCHERS.pop(sym, None)
+#                dirty = True
+#                continue
+#            if st == "FILLING":
+#                _rev_advance_filling(exchange, sym, w, open_pos_live,
+#                                     assets, now)
+#                dirty = True
+#                continue
+#            if st == "READY_TO_FILL":
+#                if starts < _REV_MAX_PER_CYCLE:
+#                    _rev_handle_ready(exchange, sym, w, open_pos_live, now,
+#                                      sub_sec, cap_now, corr_cache)
+#                    if w["status"] == "FILLING":
+#                        starts += 1
+#                        _rev_advance_filling(exchange, sym, w,
+#                                             open_pos_live, assets, now)
+#                    dirty = True
+#                continue
+#            # waiting states — time-based hard expiry (never stuck)
+#            start_ts = float(w["start_ts"])
+#            if now > float(w.get("expire_ts", 0.0)):
+#                _rev_expire(w, "max_age")
+#                dirty = True
+#                continue
+#            if st == "WAITING_TOUCH" and \
+#                    now > start_ts + (tw + 3) * sub_sec:
+#                _rev_expire(w, "touch_window_time")
+#                dirty = True
+#                continue
+#            if st == "WAITING_BOUNCE" and \
+#                    now > start_ts + (int(w["touch_k"]) + bw + 4) * sub_sec:
+#                _rev_expire(w, "bounce_time")
+#                dirty = True
+#                continue
+#
+#            # ═══════════════════════════════════════════════════════════
+#            # [BOUNCE-TICKER] Fast bounce detection on the live ticker.
+#            # Runs every cycle (throttled per symbol). If detected:
+#            #   status -> READY_TO_FILL, ref_px = ticker, and the fill
+#            #   flow starts immediately without waiting for a 15m close.
+#            # The sub-bar scan below stays as an automatic backup when
+#            # the ticker is unavailable or too noisy.
+#            # ═══════════════════════════════════════════════════════════
+#            if st == "WAITING_BOUNCE":
+#                _last_tick_ts = float(w.get("last_ticker_ts", 0.0))
+#                if now - _last_tick_ts >= _ticker_throttle:
+#                    w["last_ticker_ts"] = now
+#                    try:
+#                        _tk = _rev_api(exchange.fetch_ticker, sym,
+#                                       weight=2.0)
+#                        _last_px = float(_tk.get("last") or 0.0)
+#                        if _last_px > 0:
+#                            _sigma = float(w.get("sigma_bar", 0.01))
+#                            _target = float(w["target"])
+#                            _action = w["action"]
+#                            _thr_bps = _thr_sigma_frac * _sigma * 1e4
+#                            _thr_bps = max(_thr_bps, _thr_min_bps)
+#                            _thr_bps = min(_thr_bps, _thr_max_bps)
+#                            _thr = _thr_bps * 1e-4 * _target
+#                            _bounced = False
+#                            if _action == "BUY" and _last_px > _target + _thr:
+#                                _bounced = True
+#                            elif _action == "SELL" and _last_px < _target - _thr:
+#                                _bounced = True
+#                            if _bounced:
+#                                w["status"] = "READY_TO_FILL"
+#                                w["ref_px"] = float(_last_px)
+#                                w["confirm_close_ts"] = now
+#                                w["bounce_source"] = "ticker"
+#                                log.info(
+#                                    f"[LiveRev] {sym} BOUNCE (ticker) "
+#                                    f"@ {_last_px:.6f} "
+#                                    f"(target={_target:.6f} "
+#                                    f"thr={_thr_bps:.2f}bps "
+#                                    f"sigma={_sigma*1e4:.1f}bps)"
+#                                )
+#                                dirty = True
+#                                if starts < _REV_MAX_PER_CYCLE:
+#                                    _rev_handle_ready(
+#                                        exchange, sym, w, open_pos_live,
+#                                        now, sub_sec, cap_now, corr_cache
+#                                    )
+#                                    if w["status"] == "FILLING":
+#                                        starts += 1
+#                                        _rev_advance_filling(
+#                                            exchange, sym, w,
+#                                            open_pos_live, assets, now
+#                                        )
+#                                continue
+#                    except Exception as _te:
+#                        log.debug(f"[LiveRev] {sym} ticker error: {_te}")
+#
+#            if now >= float(w.get("next_fetch_ts", 0.0)):
+#                scan_syms.append(sym)
+#        except Exception as e:
+#            w["err"] = int(w.get("err", 0)) + 1
+#            log.warning(f"[LiveRev] {sym} step error #{w['err']}: {e}")
+#            if w["err"] >= 20 and w.get("status") not in ("FILLING",):
+#                _rev_expire(w, "errors")
+#                dirty = True
+#
+#    scan_syms.sort(key=lambda s: float(
+#        _REVERSAL_WATCHERS[s].get("next_fetch_ts", 0.0)))
+#    for sym in scan_syms:
+#        if fetched >= max_fetch or _t_rev.time() < _REV_BACKOFF_UNTIL:
+#            break
+#        w = _REVERSAL_WATCHERS.get(sym)
+#        if w is None or w.get("status") not in ("WAITING_TOUCH",
+#                                                "WAITING_BOUNCE"):
+#            continue
+#        try:
+#            fetched += 1
+#            _rev_scan(exchange, sym, w, sub_tf, sub_sec, now)
+#            dirty = True
+#            if w["status"] == "READY_TO_FILL" and starts < _REV_MAX_PER_CYCLE:
+#                _rev_handle_ready(exchange, sym, w, open_pos_live, now,
+#                                  sub_sec, cap_now, corr_cache)
+#                if w["status"] == "FILLING":
+#                    starts += 1
+#                    _rev_advance_filling(exchange, sym, w, open_pos_live,
+#                                         assets, now)
+#        except Exception as e:
+#            w["next_fetch_ts"] = now + 5.0
+#            w["err"] = int(w.get("err", 0)) + 1
+#            log.debug(f"[LiveRev] {sym} scan error #{w['err']}: {e}")
+#            if w["err"] >= 40:
+#                _rev_expire(w, "errors")
+#                dirty = True
+#    if dirty:
+#        save_reversal_watchers()
+
 def load_pending_orders(mode: str) -> Dict[str, Dict]:
     """Restore pending orders from disk."""
     global _PENDING_ORDERS, _PENDING_ORDERS_PATH
@@ -10900,9 +14219,7 @@ def save_pending_orders() -> None:
                 _r[k] = v
             serializable[sym] = _r
 
-        with open(tmp, 'w') as f:
-            json.dump(serializable, f, indent=2, default=str)
-        os.replace(tmp, _PENDING_ORDERS_PATH)
+        _json_write_if_changed(_PENDING_ORDERS_PATH, serializable, indent=2)
     except Exception as e:
         log.warning(f"[Pending] save failed: {e}")
 
@@ -10991,7 +14308,7 @@ def _promote_pending_to_position(exchange, sym: str, rec: Dict,
 
     rr = orig_tp_dist / orig_sl_dist
     # Cap scales with widening so the loosened SL isn't re-clipped.
-    max_sl_frac = 0.015 * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
+    max_sl_frac = float(getattr(CFG, 'MAX_SL_FRAC', 0.015)) * float(getattr(CFG, 'SL_WIDEN_MULT', 1.0))
     if orig_sl_dist > entry_price * max_sl_frac:
         orig_sl_dist = entry_price * max_sl_frac
         orig_tp_dist = orig_sl_dist * rr
@@ -11063,6 +14380,9 @@ def _promote_pending_to_position(exchange, sym: str, rec: Dict,
         '_trail_bars_held': 0,
         '_trail_peak_R': 0.0,
         '_trail_last_update_ts': 0.0,
+        '_hi': float(entry_price),
+        '_lo': float(entry_price),
+        '_last_sub_ts': 0,
         '_sym': sym,
         '_orig_score': float(rec.get('_orig_score', 0.0)
                              or getattr(rec.get('signal_ref'), 'score', 0.0)),
@@ -11826,10 +15146,22 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
         log.debug(f"[RateLimit] {sym} placement skipped — usage high")
         return None
 
-    # ══ [DYNAMIC-OFFSET-ALWAYS] ══
-    # حساب offset ديناميكي (tick, σ_bar, ADV, order size) في كل المسارات.
-    # الاتجاه: BUY → فوق المرجع، SELL → تحت المرجع.
-    # هذا يضمن الملء عند أول تلامس، بغض النظر عن Watch mode.
+    # ═══ [B2] Snap qty to exchange precision ═══
+    try:
+        qty = float(_snap_qty(exchange, sym, qty))
+        if qty <= 0:
+            log.warning(f"[Pending] {sym} qty after precision = 0 — skip")
+            return None
+    except Exception:
+        pass
+
+    # ══ [OFFSET-DELEGATION] ══
+    # The offset is computed INSIDE _compute_entry_target (unified
+    # source of truth). We must NOT recompute it here — doing so was
+    # dead code that only produced a misleading log line.
+    #
+    # We still need `pen` for the emergency fallback path below, when
+    # _compute_entry_target raises.
     pen = float(CFG.PO_PENETRATION_BPS) * 1e-4
 
     # احسب ADV و σ_bar مرة واحدة
@@ -11869,7 +15201,8 @@ def place_pending_entry(exchange, sym: str, side: str, qty: float,
     else:
         try:
             target = _compute_entry_target(sig, ad, side,
-                                            exchange=exchange)
+                                            exchange=exchange,
+                                            qty=float(qty))
         except Exception as e:
             log.warning(
                 f"[Pending] {sym} unified target computation failed: "
@@ -12363,16 +15696,8 @@ def _lv_cfg(name, default):
 
 
 def _lv_atomic_json(path, obj) -> None:
-    # write-then-rename: a crash can never leave a truncated state file
-    tmp = f"{path}.tmp"
-    with open(tmp, 'w') as f:
-        json.dump(obj, f, indent=2, default=str)
-        f.flush()
-        try:
-            os.fsync(f.fileno())
-        except Exception:
-            pass
-    os.replace(tmp, path)
+    # write-then-rename (crash-safe) and [REV-FIX v2] skipped when unchanged
+    _json_write_if_changed(path, obj, indent=2, fsync=True)
 
 
 def _lv_save_state(path, obj) -> None:
@@ -12555,6 +15880,7 @@ def _lv_finalize_position(exchange, sym, pos, ad=None) -> None:
         if entry > 0:
             pos.setdefault('_hi', entry)
             pos.setdefault('_lo', entry)
+            pos.setdefault('_last_sub_ts', 0)
     except Exception as e:
         log.debug(f"[LV] finalize {sym} failed: {e}")
 
@@ -12562,7 +15888,7 @@ def _lv_finalize_position(exchange, sym, pos, ad=None) -> None:
 def _lv_adopt(exchange, sym, ex, assets=None, state_hint=None):
     # build a complete local record for an exchange-only position and PROTECT it now
     entry, side, qty = float(ex['entry']), ex['side'], float(ex['qty'])
-    max_sl_frac = 0.015 * float(_lv_cfg('SL_WIDEN_MULT', 1.0))
+    max_sl_frac = float(getattr(CFG, 'MAX_SL_FRAC', 0.015)) * float(_lv_cfg('SL_WIDEN_MULT', 1.0))
     tp_mult = float(_lv_cfg('TP_MULT', 1.5))
     sl_dist = tp_dist = 0.0
     src = 'fallback'
@@ -12712,11 +16038,101 @@ def _lv_sync_with_exchange(exchange, sym, pos) -> str:
 
 
 def _lv_update_extremes(exchange, sym, pos, price, now) -> None:
-    # running high/low since entry (ticker + 1m candles) ≙ backtest sub-bar extremes
+    """
+    Update _hi/_lo for trailing SL.
+
+    Two modes:
+      • Default (TRAIL_USE_SUBBARS_ONLY=False):
+          ticker (5s) + 1m candles (15s). Fast but not parity.
+
+      • [SUB-BAR PARITY MODE] (TRAIL_USE_SUBBARS_ONLY=True):
+          CLOSED sub-bars only. Uses OHLCV of sub_tf (e.g., 15m),
+          EXCLUDING the currently-forming bar. Matches backtest
+          ad.sub_highs/ad.sub_lows exactly.
+
+    Only _hi/_lo (peak tracking) is affected.
+    SL/TP hit detection remains ticker-based for safety.
+    """
     try:
         entry = float(pos.get('entry') or 0.0)
         if entry <= 0:
             return
+
+        # ══ [SUB-BAR PARITY MODE] ══
+        if getattr(CFG, 'TRAIL_USE_SUBBARS_ONLY', False):
+            _sub_tf = _get_subbars_tf(CFG.timeframe) or CFG.timeframe
+            try:
+                import ccxt as _cc
+                _sub_sec = int(_cc.binance().parse_timeframe(_sub_tf))
+            except Exception:
+                _sub_sec = 900  # 15m fallback
+
+            _now_ms = int(now * 1000)
+            _last_ts = int(pos.get('_last_sub_ts', 0))
+            _entry_ts_ms = int(float(pos.get('entry_ts', 0)) * 1000)
+            if _entry_ts_ms <= 0:
+                _entry_ts_ms = _now_ms - (24 * 60 * 60 * 1000)
+
+            if _last_ts <= 0:
+                _last_ts = _entry_ts_ms
+                _max_lookback_ms = _now_ms - (7 * 24 * 60 * 60 * 1000)
+                if _last_ts < _max_lookback_ms:
+                    _last_ts = _max_lookback_ms
+                    log.debug(f"[SubBar-Parity] {sym} capped lookback at 7 days")
+
+            _current_open_ms = (_now_ms // (_sub_sec * 1000)) * (_sub_sec * 1000)
+            _last_closed_open_ms = _current_open_ms - (_sub_sec * 1000)
+
+            if _last_ts >= _last_closed_open_ms:
+                return
+
+            _all_candles = []
+            _loop_since = _last_ts
+            for _ in range(20):
+                try:
+                    _rate_record(2.0)
+                    _chunk = exchange.fetch_ohlcv(
+                        sym, _sub_tf, since=_loop_since, limit=500
+                    )
+                except Exception as _e:
+                    log.debug(f"[SubBar-Parity] {sym} fetch failed: {_e}")
+                    break
+                if not _chunk:
+                    break
+                _all_candles.extend(_chunk)
+                _last_chunk_ts = int(_chunk[-1][0])
+                if _last_chunk_ts + _sub_sec * 1000 > _now_ms:
+                    break
+                if _last_chunk_ts <= _loop_since:
+                    break
+                _loop_since = _last_chunk_ts + _sub_sec * 1000
+
+            if not _all_candles:
+                return
+
+            _new_bar_count = 0
+            for _c in _all_candles:
+                _ts = int(_c[0])
+                if _ts + _sub_sec * 1000 > _now_ms:
+                    break
+                if _ts <= int(pos.get('_last_sub_ts', 0)):
+                    continue
+                _high = float(_c[2])
+                _low = float(_c[3])
+                pos['_hi'] = max(float(pos.get('_hi', entry)), _high)
+                pos['_lo'] = min(float(pos.get('_lo', entry)), _low)
+                pos['_last_sub_ts'] = _ts
+                _new_bar_count += 1
+
+            if _new_bar_count > 0:
+                log.debug(
+                    f"[SubBar-Parity] {sym} {_new_bar_count} new "
+                    f"{_sub_tf} bar(s) closed: hi={pos['_hi']:.6f} "
+                    f"lo={pos['_lo']:.6f}"
+                )
+            return
+
+        # ══ [LEGACY MODE] Current ticker-based behavior ══
         hi = max(float(pos.get('_hi', entry)), float(price))
         lo = min(float(pos.get('_lo', entry)), float(price))
         if now - float(pos.get('_ext_ts', 0.0)) >= float(_lv_cfg('LIVE_MFE_POLL_S', 15.0)):
@@ -12731,8 +16147,8 @@ def _lv_update_extremes(exchange, sym, pos, price, now) -> None:
             except Exception as e:
                 log.debug(f"[LV] 1m extremes {sym} failed: {e}")
         pos['_hi'], pos['_lo'] = hi, lo
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug(f"[LV] update_extremes {sym} failed: {e}")
 
 
 def _lv_open_orders_all(exchange, sym):
@@ -13395,6 +16811,2544 @@ def _lv_upgrade_adopted(exchange, sym, pos, ad) -> None:
 
 
 
+# ═══════════════════════════════════════════════════════════════
+# [LIVE REVERSAL] [REV-FIX v1] Touch-and-Bounce on sub-bars (non-blocking)
+#   WAITING_TOUCH -> WAITING_BOUNCE -> READY_TO_FILL -> FILLING
+#                                                    -> FILLED | EXPIRED
+#   * no blocking loops (one REST step per watcher per cycle)
+#   * parity with _check_reversal_fill_subbars (touch window, bounce
+#     window, scan origin = first sub-bar of the bar AFTER the signal)
+#   * once-per-signal ledger, fill-time slot gate, stale-confirm guard
+#   * clientOrderId idempotency + crash-safe resume of FILLING watchers
+# ═══════════════════════════════════════════════════════════════
+import time as _t_rev
+import hashlib as _hl_rev
+from decimal import Decimal as _Dec_rev, ROUND_FLOOR as _RF_rev, ROUND_CEILING as _RC_rev
+
+
+_REVERSAL_WATCHERS: Dict[str, Dict] = {}
+_REVERSAL_WATCHERS_PATH: str = ""
+_REV_LEDGER: Dict[str, float] = {}
+_REV_LEDGER_PATH: str = ""
+_REV_STATE_FILE: str = ""
+_REV_BACKOFF_UNTIL: float = 0.0
+_REV_BACKOFF_STEP: float = 0.0
+_REV_MAX_PER_CYCLE: int = 3
+_REV_TERMINAL = ("closed", "canceled", "cancelled", "expired", "rejected")
+
+
+def _revc(name: str, default):
+    return getattr(CFG, name, default)
+
+
+def _sub_tf_seconds(sub_tf: str) -> int:
+    try:
+        import ccxt as _cc
+        return int(_cc.binance().parse_timeframe(sub_tf))
+    except Exception:
+        return {"1m": 60, "5m": 300, "15m": 900,
+                "30m": 1800, "1h": 3600, "4h": 14400}.get(sub_tf, 900)
+
+
+def _rev_sub_info():
+    sub_tf = _get_subbars_tf(CFG.timeframe) or "15m"
+    return sub_tf, int(_sub_tf_seconds(sub_tf))
+
+
+def _rev_main_sec() -> int:
+    _s = int(getattr(CFG, "TF_SECONDS", 0) or 0)
+    return _s if _s > 0 else int(_sub_tf_seconds(CFG.timeframe))
+
+
+# ───────────────────────── persistence ─────────────────────────
+def _rev_atomic_dump(path: str, obj) -> None:
+    _json_write_if_changed(path, obj, indent=1)   # [REV-FIX v2]
+
+
+def load_reversal_watchers(mode: str) -> Dict[str, Dict]:
+    global _REVERSAL_WATCHERS, _REVERSAL_WATCHERS_PATH
+    global _REV_LEDGER, _REV_LEDGER_PATH, _REV_STATE_FILE
+    _REVERSAL_WATCHERS_PATH = f"reversal_watchers_{mode}.json"
+    _REV_LEDGER_PATH = f"reversal_ledger_{mode}.json"
+    _REV_STATE_FILE = f"live_state_{mode}.json"
+    _REVERSAL_WATCHERS = {}
+    _REV_LEDGER = {}
+    if os.path.exists(_REVERSAL_WATCHERS_PATH):
+        try:
+            with open(_REVERSAL_WATCHERS_PATH) as f:
+                raw = json.load(f)
+            for _sym, _w in raw.items():
+                _w.pop("signal_ref", None)
+            _REVERSAL_WATCHERS = raw
+            log.info(f"[LiveRev] Restored {len(_REVERSAL_WATCHERS)} watchers")
+        except Exception as e:
+            log.warning(f"[LiveRev] load failed: {e}")
+            _REVERSAL_WATCHERS = {}
+    if os.path.exists(_REV_LEDGER_PATH):
+        try:
+            with open(_REV_LEDGER_PATH) as f:
+                _REV_LEDGER = {str(k): float(v)
+                               for k, v in json.load(f).items()}
+        except Exception as e:
+            log.warning(f"[LiveRev] ledger load failed: {e}")
+            _REV_LEDGER = {}
+    _rev_ledger_purge()
+    return _REVERSAL_WATCHERS
+
+
+def save_reversal_watchers() -> None:
+    if not _REVERSAL_WATCHERS_PATH:
+        return
+    try:
+        ser = {}
+        for sym, w in _REVERSAL_WATCHERS.items():
+            ser[sym] = {k: v for k, v in w.items() if k != "signal_ref"}
+        _rev_atomic_dump(_REVERSAL_WATCHERS_PATH, ser)
+    except Exception as e:
+        log.warning(f"[LiveRev] save failed: {e}")
+
+
+def _rev_ledger_purge() -> None:
+    ttl = float(_revc("REV_LEDGER_TTL_S", 172800.0))
+    now = _t_rev.time()
+    for k in [k for k, v in _REV_LEDGER.items() if now - v > ttl]:
+        _REV_LEDGER.pop(k, None)
+
+
+def _rev_ledger_save() -> None:
+    if not _REV_LEDGER_PATH:
+        return
+    try:
+        _rev_atomic_dump(_REV_LEDGER_PATH, _REV_LEDGER)
+    except Exception as e:
+        log.warning(f"[LiveRev] ledger save failed: {e}")
+
+
+# ───────────────────── exchange helpers (rate-aware) ─────────────────────
+def _rev_api(fn, *args, weight: float = 1.0, **kwargs):
+    """REST wrapper: records weight, arms exponential back-off on 429/418."""
+    global _REV_BACKOFF_UNTIL, _REV_BACKOFF_STEP
+    try:
+        _rate_record(float(weight))
+    except Exception:
+        pass
+    try:
+        out = fn(*args, **kwargs)
+        _REV_BACKOFF_STEP = 0.0
+        return out
+    except Exception as e:
+        s = str(e)
+        n = type(e).__name__
+        if ("429" in s or "418" in s or "RateLimit" in n
+                or "DDoS" in n or "Too many requests" in s):
+            step = min(120.0, max(2.0, _REV_BACKOFF_STEP * 2.0))
+            if "418" in s:
+                step = max(step, 60.0)
+            _REV_BACKOFF_STEP = step
+            _REV_BACKOFF_UNTIL = _t_rev.time() + step
+            log.warning(f"[LiveRev] rate-limit ({n}) — back-off {step:.0f}s")
+        raise
+
+
+def _rev_is_not_found(e: Exception) -> bool:
+    s = str(e)
+    return (type(e).__name__ == "OrderNotFound" or "-2013" in s
+            or "Unknown order" in s or "Order does not exist" in s)
+
+
+def _rev_tick(exchange, sym: str):
+    try:
+        import ccxt as _cc
+        p = (exchange.market(sym).get("precision") or {}).get("price")
+        if p is None:
+            return None
+        p = float(p)
+        mode = getattr(exchange, "precisionMode", None)
+        if mode == getattr(_cc, "TICK_SIZE", 4):
+            return p if p > 0 else None
+        if mode == getattr(_cc, "DECIMAL_PLACES", 2):
+            return 10.0 ** (-int(p))
+    except Exception:
+        pass
+    return None
+
+
+def _rev_snap_price(exchange, sym: str, px: float, side: str) -> float:
+    """Directional tick snap: BUY floors, SELL ceils (never crosses book)."""
+    tick = _rev_tick(exchange, sym)
+    if tick and tick > 0:
+        d = _Dec_rev(str(px))
+        t = _Dec_rev(str(tick))
+        mode = _RF_rev if side == "buy" else _RC_rev
+        return float((d / t).to_integral_value(rounding=mode) * t)
+    try:
+        return float(exchange.price_to_precision(sym, px))
+    except Exception:
+        return float(px)
+
+
+def _snap_qty(exchange, sym: str, qty: float) -> float:
+    """[REV-FIX] was referenced but never defined (NameError)."""
+    q = float(qty)
+    try:
+        q = float(exchange.amount_to_precision(sym, q))
+    except Exception:
+        pass
+    try:
+        mn = _lv_min_amount(exchange, sym)
+        if mn and q < mn:
+            return 0.0
+    except Exception:
+        pass
+    return q
+
+
+def _rev_cid(sym: str, sig_epoch: float, attempt: int) -> str:
+    h = _hl_rev.md5(sym.encode()).hexdigest()[:8]
+    return f"rev{int(sig_epoch)}x{h}x{int(attempt)}"[:36]
+
+
+def _rev_exch_position(exchange, sym: str):
+    """-> dict {'qty','entry','side'} | {} (flat) | None (API failure)."""
+    res = _lv_fetch_positions(exchange, [sym])
+    if res is None:
+        return None
+    return res.get(sym.split(":")[0]) or {}
+
+
+def _rev_find_order(exchange, sym: str, cid: str, order_id=None):
+    """Order dict | None (does not exist). Raises on transient API errors."""
+    if order_id:
+        try:
+            return _rev_api(exchange.fetch_order, order_id, sym)
+        except Exception as e:
+            if not _rev_is_not_found(e):
+                raise
+    try:
+        for o in _rev_api(exchange.fetch_open_orders, sym) or []:
+            oc = str(o.get("clientOrderId")
+                     or (o.get("info") or {}).get("clientOrderId") or "")
+            if oc == cid:
+                return o
+    except Exception as e:
+        if not _rev_is_not_found(e):
+            raise
+    try:
+        return _rev_api(exchange.fetch_order, None, sym,
+                        params={"origClientOrderId": cid})
+    except Exception as e:
+        if _rev_is_not_found(e):
+            return None
+        raise
+
+
+def _rev_cur_from_order(w: Dict, o: Dict) -> None:
+    f = float(o.get("filled") or 0.0)
+    a = o.get("average")
+    try:
+        a = float(a) if a else 0.0
+    except Exception:
+        a = 0.0
+    if a <= 0:
+        a = float(o.get("price") or w.get("order_px") or w.get("target") or 0.0)
+    w["cur_filled"] = f
+    w["cur_avg"] = a
+
+
+def _rev_bank(w: Dict) -> None:
+    f = float(w.get("cur_filled") or 0.0)
+    a = float(w.get("cur_avg") or 0.0)
+    if f > 0 and a > 0:
+        w["banked_qty"] = float(w.get("banked_qty", 0.0)) + f
+        w["banked_cost"] = float(w.get("banked_cost", 0.0)) + f * a
+    w["cur_filled"] = 0.0
+    w["cur_avg"] = 0.0
+
+
+def _rev_clear_order(w: Dict) -> None:
+    w["cid"] = None
+    w["order_id"] = None
+    w["cid_sent"] = False
+    w["order_px"] = 0.0
+    w["cancel_req"] = False
+
+
+def _rev_cancel_and_confirm(exchange, sym: str, w: Dict) -> bool:
+    """Cancel the live entry order; True only once it is TERMINAL."""
+    try:
+        if w.get("order_id"):
+            _rev_api(exchange.cancel_order, w["order_id"], sym)
+        else:
+            _rev_api(exchange.cancel_order, None, sym,
+                     params={"origClientOrderId": w["cid"]})
+    except Exception as e:
+        if not _rev_is_not_found(e):
+            log.debug(f"[LiveRev] {sym} cancel error: {e}")
+    try:
+        o = _rev_find_order(exchange, sym, w["cid"], w.get("order_id"))
+    except Exception as e:
+        log.debug(f"[LiveRev] {sym} cancel verify error: {e}")
+        return False
+    if o is None:
+        _rev_bank(w)
+        _rev_clear_order(w)
+        return True
+    _rev_cur_from_order(w, o)
+    if str(o.get("status") or "open") in _REV_TERMINAL:
+        _rev_bank(w)
+        _rev_clear_order(w)
+        return True
+    return False
+
+
+def _rev_best_px(exchange, sym: str, action: str):
+    ob = _rev_api(exchange.fetch_order_book, sym, 5, weight=2.0)
+    bids = ob.get("bids") or []
+    asks = ob.get("asks") or []
+    if action == "BUY":
+        if not bids:
+            return None
+        return _rev_snap_price(exchange, sym, float(bids[0][0]), "buy")
+    if not asks:
+        return None
+    return _rev_snap_price(exchange, sym, float(asks[0][0]), "sell")
+
+
+def _rev_beyond_chase(action: str, px: float, ref_px: float,
+                      chase: float) -> bool:
+    return (px > ref_px + chase) if action == "BUY" else (px < ref_px - chase)
+
+
+def _rev_expire(w: Dict, reason: str) -> None:
+    if w.get("status") not in ("EXPIRED", "FILLED"):
+        w["status"] = "EXPIRED"
+        w["reason"] = str(reason)
+        log.info(f"[LiveRev] {w.get('sym')} EXPIRED ({reason})")
+
+
+# ───────────────────────── bounce rule ─────────────────────────
+def _bar_confirms_bounce(w: Dict, close: float) -> bool:
+    action = w["action"]
+    target = float(w["target"])
+    mode = str(CFG.REVERSAL_CONFIRM_MODE)
+
+    if mode == "close_back":
+        return (action == "BUY" and close > target) or \
+               (action == "SELL" and close < target)
+
+    if mode == "sigma_bounce":
+        kappa = float(CFG.REVERSAL_CONFIRM_KAPPA)
+        sigma = float(w.get("sigma_bar", 0.01))
+        thr = kappa * sigma * target
+        if action == "BUY":
+            return (close - target) > thr
+        return (target - close) > thr
+
+    if mode == "bar_color":
+        # prev_close is maintained by the scanner for EVERY sub-bar
+        prev = w.get("prev_close")
+        if prev is None:
+            return False
+        return (action == "BUY" and close > float(prev)) or \
+               (action == "SELL" and close < float(prev))
+
+    if mode == "two_bar":
+        ok = (close > target) if action == "BUY" else (close < target)
+        w["two_bar_count"] = (int(w.get("two_bar_count", 0)) + 1) if ok else 0
+        return w["two_bar_count"] >= 2
+
+    return False
+
+
+# ───────────────────────── registration ─────────────────────────
+def _register_reversal_watcher(exchange, sym: str, side: str,
+                                qty: float, sig, leverage: int,
+                                ad=None, cap_ref=None) -> bool:
+    if sym in _REVERSAL_WATCHERS:
+        return False
+    if sym in _PENDING_ORDERS:
+        return False
+    if len(_REVERSAL_WATCHERS) >= int(_revc("REV_WATCHER_CAP", 50)):
+        return False
+
+    ts = pd.Timestamp(sig.timestamp)
+    if ts.tz is None:
+        ts = ts.tz_localize("UTC")
+    sig_epoch = float(ts.timestamp())            # bar OPEN time
+    key = f"{sym}|{int(sig_epoch)}|{sig.action}"
+    if key in _REV_LEDGER:
+        return False                             # once per signal
+
+    sub_tf, sub_sec = _rev_sub_info()
+    main_sec = _rev_main_sec()
+    tw = int(getattr(CFG, "REVERSAL_TOUCH_SUBBARS", 20))
+    bw = int(getattr(CFG, "REVERSAL_BOUNCE_SUBBARS", 4))
+    lat = int(_revc("REV_ENTRY_LATENCY_SUBBARS", 0))
+    start_ts = sig_epoch + main_sec              # first sub-bar of bar N+1
+    expire_ts = start_ts + (tw + bw + lat + 2) * sub_sec
+
+    _REV_LEDGER[key] = _t_rev.time()
+    _rev_ledger_save()
+    if _t_rev.time() >= expire_ts:
+        log.debug(f"[LiveRev] {sym} signal already outside window — skip")
+        return False
+
+    sigma_bar = 0.01
+    friction_v, accel_v, gauge_v = 0.2, 0.05, 0.1
+    if ad is not None:
+        try:
+            fi = int(sig.feat_idx)
+            if 0 <= fi < len(ad.E_therm):
+                _s = float(ad.E_therm[fi])
+                if np.isfinite(_s) and _s > 1e-9:
+                    sigma_bar = _s
+            if 0 <= fi < len(ad.friction):
+                friction_v = float(ad.friction[fi])
+            if 0 <= fi < len(ad.geodesic_accel):
+                accel_v = float(ad.geodesic_accel[fi])
+            if 0 <= fi < len(ad.gauge_force):
+                gauge_v = float(ad.gauge_force[fi])
+        except Exception:
+            pass
+
+    try:
+        _mmr = float(_get_mmr_for_symbol(exchange, sym))
+    except Exception:
+        _mmr = float(getattr(CFG, "LIQ_FALLBACK_MMR", 0.02))
+
+    try:
+        _bt_target = float(_backtest_entry_target(sig, ad))
+    except Exception:
+        _bt_target = float(sig.price)
+
+    # ════════════════════════════════════════════════════════════════
+    # [IMMEDIATE TOUCH BYPASS] فكرة المستخدم العبقرية
+    # إذا كان السعر الحالي قد تجاوز الهدف بالفعل، انتقل فوراً لانتظار الارتداد
+    # ════════════════════════════════════════════════════════════════
+    current_px = float(ad.closes[-1]) if ad is not None else float(sig.price)
+    already_touched = False
+    
+    if sig.action == "BUY" and current_px <= _bt_target:
+        already_touched = True
+    elif sig.action == "SELL" and current_px >= _bt_target:
+        already_touched = True
+        
+    initial_status = "WAITING_BOUNCE" if already_touched else "WAITING_TOUCH"
+    initial_touch_k = 0 if already_touched else -1
+
+    w = {
+        "sym": sym,
+        "side": side,
+        "side_ccxt": "buy" if sig.action == "BUY" else "sell",
+        "action": sig.action,
+        "target": _bt_target,
+        "qty": float(qty),
+        "cap_ref": (float(cap_ref) if cap_ref else None),
+        "leverage": int(leverage),
+        "mmr": _mmr,
+        "dyn_risk": float(sig.dynamic_risk),
+        "T_info": float(sig.T_info_val),
+        "score": float(getattr(sig, "score", 0.0) or 0.0),
+        "sigma_bar": float(sigma_bar),
+        "friction": float(friction_v),
+        "accel": float(accel_v),
+        "gauge_force": float(gauge_v),
+        "close_idx": int(sig.close_idx),
+        "sig_epoch": sig_epoch,
+        "start_ts": start_ts,
+        "expire_ts": expire_ts,
+        "created_at": _t_rev.time(),
+        "status": initial_status,
+        "touch_k": initial_touch_k,
+        "last_scan_ts": start_ts - 1.0,
+        "next_fetch_ts": start_ts + sub_sec + 2.0,
+        "sig_ts": str(sig.timestamp),
+        "sig_price": float(sig.price),
+        "sig_sl": float(sig.sl),
+        "sig_tp1": float(sig.tp1),
+        "orig_sl_dist": float(abs(sig.price - sig.sl)),
+        "orig_tp_dist": float(abs(sig.tp1 - sig.price)),
+        "two_bar_count": 0,
+        "prev_close": None,
+        "banked_qty": 0.0, "banked_cost": 0.0,
+        "cur_filled": 0.0, "cur_avg": 0.0,
+        "attempt": 0, "rejects": 0, "err": 0,
+        "cid": None, "order_id": None, "cid_sent": False,
+        "order_px": 0.0, "cancel_req": False,
+    }
+    _REVERSAL_WATCHERS[sym] = w
+    log.info(f"[LiveRev] {sig.action} {sym} registered — "
+             f"target={_bt_target:.6f} (curr={current_px:.6f}) "
+             f"status={initial_status} "
+             f"sl={sig.sl:.6f} tp={sig.tp1:.6f}")
+    return True
+
+
+# ───────────────────────── scanning ─────────────────────────
+def _rev_scan(exchange, sym: str, w: Dict, sub_tf: str, sub_sec: int,
+              now: float) -> None:
+    tw = int(getattr(CFG, "REVERSAL_TOUCH_SUBBARS", 20))
+    bw = int(getattr(CFG, "REVERSAL_BOUNCE_SUBBARS", 4))
+    start_ts = float(w["start_ts"])
+    last = float(w["last_scan_ts"])
+    need = int((now - last) / sub_sec) + 3
+    limit = int(min(max(need, 5), 300))
+    raw = _rev_api(exchange.fetch_ohlcv, sym, sub_tf,
+                   int((last + 1.0) * 1000), limit,
+                   weight=(1.0 if limit < 100 else 2.0))
+    bars = {}
+    for r in raw or []:
+        ts = float(r[0]) / 1000.0
+        if ts <= last or ts + sub_sec > now - 1.0:
+            continue                       # already seen / still forming
+        bars[ts] = (float(r[2]), float(r[3]), float(r[4]))   # H, L, C
+    action = w["action"]
+    target = float(w["target"])
+    for ts in sorted(bars):
+        h, l, c = bars[ts]
+        k = int(round((ts - start_ts) / sub_sec))
+        if k < 0:
+            w["last_scan_ts"] = ts
+            continue
+        st = w["status"]
+        if st == "WAITING_TOUCH":
+            if k >= tw:
+                _rev_expire(w, "touch_window")
+                w["last_scan_ts"] = ts
+                break
+            if np.isfinite(h) and np.isfinite(l):
+                if ((action == "BUY" and l <= target)
+                        or (action == "SELL" and h >= target)):
+                    w["status"] = "WAITING_BOUNCE"
+                    w["touch_k"] = k
+                    log.info(f"[LiveRev] {sym} TOUCH k={k} "
+                             f"@ {pd.Timestamp(ts, unit='s', tz='UTC')}")
+        # ── BOUNCE & FAST-FAIL ──
+        elif st == "WAITING_BOUNCE":
+            # 1. صمام الأمان السعري (Fast-Fail) - فكرتك العبقرية
+            # إذا ابتعد السعر عن الهدف في الاتجاه المعاكس بمقدار 1σ، لا تنتظر الزمن!
+            sigma_bar = float(w.get("sigma_bar", 0.01))
+            target_px = float(w["target"])
+            escape_dist = sigma_bar * target_px * float(getattr(CFG, 'REV_ABORT_KAPPA', 1.0))  # [REV-FIX v4]
+            
+            is_broken = ((action == "BUY" and c < target_px - escape_dist) or
+                         (action == "SELL" and c > target_px + escape_dist))
+            
+#            if is_broken:
+#                _rev_expire(w, "price_break_1sigma")
+#                w["last_scan_ts"] = ts
+#                break
+            
+            # 2. مؤقت الزمن (Backstop)
+            if k > int(w["touch_k"]) + bw:
+                _rev_expire(w, "bounce_timeout")
+                w["last_scan_ts"] = ts
+                break
+                
+            # 3. التأكيد (Bounce Confirm)
+            if np.isfinite(c) and _bar_confirms_bounce(w, c):
+                w["status"] = "READY_TO_FILL"
+                w["confirm_k"] = k
+                w["ref_px"] = float(c)
+                w["confirm_close_ts"] = ts + sub_sec
+                w["prev_close"] = c
+                w["last_scan_ts"] = ts
+                # ══ [SUB-BAR ENTRY] حفظ سعر إغلاق شمعة التأكيد ══
+                w["confirm_close_px"] = float(c)
+                w["confirm_bar_close_ts"] = float(ts + sub_sec)
+                log.info(f"[LiveRev] {sym} BOUNCE confirmed k={k} close={c:.6f}")
+                break
+        w["prev_close"] = c
+        w["last_scan_ts"] = ts
+    if w["status"] in ("WAITING_TOUCH", "WAITING_BOUNCE"):
+        nb_open = (int(float(w["last_scan_ts"]) // sub_sec) + 1) * sub_sec
+        w["next_fetch_ts"] = nb_open + sub_sec + 2.0
+
+
+# ───────────────────────── fill gate ─────────────────────────
+def _rev_handle_ready(exchange, sym: str, w: Dict, open_pos_live: Dict,
+                      now: float, sub_sec: int, cap_now, corr_cache) -> None:
+    if getattr(CFG, "REV_ROE_ENABLED", False):            # [REV-FIX v4] before the stale/slot gates:
+        if _rev_roe_on_ready(exchange, sym, w, open_pos_live, None, now) == "handled":
+            return                                         # a provisional position must never be dropped as stale
+    max_age = float(_revc("REV_MAX_CONFIRM_AGE_SUBBARS", 2)) * sub_sec
+    if now - float(w.get("confirm_close_ts", 0.0)) > max_age:
+        _rev_expire(w, "stale_confirm")
+        return
+    if sym in open_pos_live and not w.get("qp_pos"):     # [REV-FIX v3] QP-owned position is ours
+        _rev_expire(w, "pos_open")
+        return
+    n_infl = _rev_inflight_other(sym, open_pos_live)
+    if (len(open_pos_live) - (1 if w.get("qp_pos") else 0) + n_infl
+            >= int(CFG.MAX_CONCURRENT_ASSETS)):
+        _rev_expire(w, "slots_full")
+        return
+    if corr_cache is not None and open_pos_live:
+        try:
+            thr = CFG.CORRELATION_THRESHOLD * (
+                (0.85 ** len(open_pos_live))
+                if getattr(CFG, "LIVE_ADAPTIVE_CORR", False) else 1.0)
+            if any(abs(corr_cache.get((sym, s), 0.0)) > thr
+                   for s in open_pos_live):
+                _rev_expire(w, "corr_guard")
+                return
+        except Exception:
+            pass
+    qty = float(w["qty"])
+    if (_revc("REV_RESIZE_AT_FILL", True) and cap_now
+            and w.get("cap_ref")):
+        ratio = float(np.clip(float(cap_now) / float(w["cap_ref"]),
+                              0.25, 1.25))
+        qty *= ratio
+    w["qty_eff"] = qty
+    w["status"] = "FILLING"
+    w["fill_started"] = now
+    w["fill_deadline"] = now + float(_revc("REV_FILL_MAX_WAIT_S", 90.0))
+    w["last_reprice"] = 0.0
+    # ══ [SUB-BAR ENTRY] اختيار نمط التنفيذ ══
+    _subbar_mode = bool(getattr(CFG, 'REV_SUBBAR_ENTRY_ENABLED', True))
+    _confirm_px = w.get("confirm_close_px")
+    if _subbar_mode and _confirm_px:
+        w["entry_mode"] = "subbar_close"
+        w["target_entry_px"] = float(_confirm_px)
+        log.info(f"[LiveRev] {sym} FILLING qty={qty:.6f} "
+                 f"entry_mode=subbar_close target={_confirm_px:.6f}")
+    else:
+        w["entry_mode"] = "marketable"
+        log.info(f"[LiveRev] {sym} FILLING qty={qty:.6f} "
+                 f"entry_mode=marketable ref={w['ref_px']:.6f}")
+
+
+# ───────────────────────── fill engine (non-blocking) ─────────────────────────
+def _rev_advance_filling(exchange, sym: str, w: Dict, open_pos_live: Dict,
+                         assets, now: float) -> None:
+    action = w["action"]
+    side = w["side_ccxt"]
+    qty_target = float(w.get("qty_eff") or w["qty"])
+    ref_px = float(w.get("ref_px") or w["target"])
+    sigma = float(w.get("sigma_bar", 0.01))
+    chase = float(_revc("REV_MAX_CHASE_KAPPA", 0.15)) * sigma * ref_px
+
+    if not w.get("setup_done"):
+        try:
+            ensure_symbol_setup(exchange, sym, int(w["leverage"]),
+                                margin_mode="isolated")
+            w["setup_done"] = True
+        except Exception as e:
+            w["setup_fail"] = int(w.get("setup_fail", 0)) + 1
+            log.warning(f"[LiveRev] setup {sym}: {e}")
+            if w["setup_fail"] >= 3:
+                _rev_expire(w, "setup_failed")
+            return
+
+    if getattr(CFG, "REV_LADDER_ENABLED", False):        # [REV-FIX v3]
+        return _rev_ladder_advance(exchange, sym, w, open_pos_live, assets, now)
+
+    # ── 1) an entry order may exist (possibly after a restart) ──
+    if w.get("cid"):
+        try:
+            o = _rev_find_order(exchange, sym, w["cid"], w.get("order_id"))
+        except Exception as e:
+            log.debug(f"[LiveRev] {sym} order lookup failed: {e}")
+            return                      # unsure -> never place a new one
+        if o is None:
+            _rev_clear_order(w)         # create never reached the exchange
+        else:
+            w["order_id"] = str(o.get("id") or w.get("order_id") or "")
+            _rev_cur_from_order(w, o)
+            if str(o.get("status") or "open") in _REV_TERMINAL:
+                _rev_bank(w)
+                _rev_clear_order(w)
+            else:
+                if now >= float(w["fill_deadline"]) or w.get("cancel_req"):
+                    if not _rev_cancel_and_confirm(exchange, sym, w):
+                        return
+                elif now - float(w.get("last_reprice", 0.0)) >= float(
+                        _revc("REV_REPRICE_S", 5.0)):
+                    w["last_reprice"] = now
+                    try:
+                        px = _rev_best_px(exchange, sym, action)
+                    except Exception as e:
+                        log.debug(f"[LiveRev] {sym} book error: {e}")
+                        return
+                    if px is None:
+                        return
+                    if _rev_beyond_chase(action, px, ref_px, chase):
+                        w["stop_reason"] = "chase_cap"
+                        if not _rev_cancel_and_confirm(exchange, sym, w):
+                            w["cancel_req"] = True
+                            return
+                    elif abs(_rev_marketable_px(exchange, sym, w, action, side, px, ref_px)
+                             - float(w.get("order_px", 0.0))) > 0.0:   # [REV-FIX v3]
+                        if not _rev_cancel_and_confirm(exchange, sym, w):
+                            w["cancel_req"] = True
+                            return
+                    else:
+                        return
+                else:
+                    return
+    if w.get("cid"):
+        return                          # cancel not yet confirmed
+
+    # ── 2) decide: finish or (re)place ──
+    banked = float(w.get("banked_qty", 0.0))
+    remaining = qty_target - banked
+    min_notional = float(getattr(CFG, "MIN_NOTIONAL", 5.0))
+    stop = w.get("stop_reason")
+    if (stop or now >= float(w["fill_deadline"])
+            or remaining * ref_px < min_notional
+            or int(w.get("rejects", 0)) >= int(_revc("REV_MAX_REJECTS", 30))):
+        _rev_finish(exchange, sym, w, open_pos_live, assets,
+                    stop or ("filled" if remaining * ref_px < min_notional
+                             else "fill_timeout"))
+        return
+    try:
+        px = _rev_best_px(exchange, sym, action)
+    except Exception as e:
+        log.debug(f"[LiveRev] {sym} book error: {e}")
+        return
+    if px is None:
+        return
+    if _rev_beyond_chase(action, px, ref_px, chase):
+        w["stop_reason"] = "chase_cap"
+        return
+    q = _snap_qty(exchange, sym, remaining)
+    if q <= 0:
+        _rev_finish(exchange, sym, w, open_pos_live, assets, "qty_below_min")
+        return
+    if not _rate_can_place():
+        return
+        
+    w["attempt"] = int(w.get("attempt", 0)) + 1
+    cid = _rev_cid(sym, float(w["sig_epoch"]), int(w["attempt"]))
+    w["cid"] = cid
+    w["cid_sent"] = True
+    
+    # ════════════════════════════════════════════════════════════════
+    # [SUB-BAR ENTRY] مسار الدخول عند إغلاق شمعة التأكيد
+    # ════════════════════════════════════════════════════════════════
+    _entry_mode = w.get("entry_mode", "marketable")
+    if _entry_mode == "subbar_close" and w.get("target_entry_px"):
+        _subbar_px = float(w["target_entry_px"])
+        _pen_bps = float(getattr(CFG, 'REV_SUBBAR_ENTRY_PEN_BPS', 2.0))
+        _pen_frac = _pen_bps * 1e-4
+        _marketable_override = bool(getattr(CFG, 'REV_SUBBAR_ENTRY_MARKETABLE', False))
+        _max_drift = float(getattr(CFG, 'REV_SUBBAR_ENTRY_MAX_DRIFT_BPS', 15.0))
+        
+        # drift = |best_px - subbar_close| / subbar_close
+        _drift_bps = abs(px - _subbar_px) / max(_subbar_px, 1e-12) * 1e4
+        
+        if _drift_bps > _max_drift:
+            log.info(f"[LiveRev-SubBar] {sym} drifted "
+                     f"{_drift_bps:.1f}bps > {_max_drift:.1f}bps "
+                     f"-> falling back to marketable")
+            w["entry_mode"] = "marketable"
+        else:
+            # سعر الأمر: subbar_close ± pen
+            if action == "BUY":
+                entry_px = _subbar_px * (1.0 + _pen_frac)
+            else:
+                entry_px = _subbar_px * (1.0 - _pen_frac)
+            entry_px = _rev_snap_price(exchange, sym, entry_px, side)
+            
+            if _marketable_override:
+                # Limit crosses the spread (taker)
+                _ord_params = {"clientOrderId": cid}
+                _ord_desc = "Marketable-SubBar"
+            else:
+                # Post-Only GTX (maker)
+                _ord_params = {"clientOrderId": cid, "timeInForce": "GTX"}
+                _ord_desc = "PostOnly-SubBar"
+            
+            w["order_px"] = entry_px
+            w["last_reprice"] = now
+            save_reversal_watchers()
+            
+            try:
+                o = _rev_api(exchange.create_order, sym, "limit",
+                             side, q, entry_px, params=_ord_params)
+                w["order_id"] = str(o.get("id") or "")
+                w["cid_sent"] = False
+                log.info(f"[LiveRev-SubBar] {sym} {_ord_desc} {side} {q} "
+                         f"@ {entry_px:.6f} "
+                         f"(subbar_close={_subbar_px:.6f}, "
+                         f"drift={_drift_bps:.1f}bps, "
+                         f"best_px={px:.6f})")
+                return
+            except Exception as e:
+                msg = str(e)
+                if ("-5022" in msg or "Post Only" in msg
+                        or "post only" in msg
+                        or "immediately match" in msg):
+                    log.info(f"[LiveRev-SubBar] {sym} GTX rejected "
+                             f"(price moved) -> retry marketable: {msg[:100]}")
+                    w["entry_mode"] = "marketable"
+                    _rev_clear_order(w)
+                    save_reversal_watchers()
+                    return
+                elif any(c in msg for c in ("-2019", "-4164", "-1111", "-4003",
+                                            "-2027", "-4028")):
+                    _rev_clear_order(w)
+                    log.warning(f"[LiveRev-SubBar] {sym} order refused: {msg[:160]}")
+                    _rev_finish(exchange, sym, w, open_pos_live, assets,
+                                "order_refused")
+                    save_reversal_watchers()
+                    return
+                else:
+                    log.warning(f"[LiveRev-SubBar] {sym} ambiguous: {msg[:160]}")
+                    save_reversal_watchers()
+                    return
+    
+    # ════════════════════════════════════════════════════════════════
+    # [SMART EXECUTION v2] Marketable Limit (الأصلي — fallback)
+    # ════════════════════════════════════════════════════════════════
+    orig_sl_dist = float(w.get("orig_sl_dist", ref_px * 0.015))
+    max_slip_allowed = orig_sl_dist * 0.15 
+    
+    if action == "BUY":
+        marketable_px = px + max_slip_allowed
+    else:
+        marketable_px = px - max_slip_allowed
+        
+    marketable_px = _rev_snap_price(exchange, sym, marketable_px, side)
+    
+    w["order_px"] = marketable_px
+    w["last_reprice"] = now
+    save_reversal_watchers()
+    
+    try:
+        o = _rev_api(exchange.create_order, sym, "limit", side, q, marketable_px,
+                     params={"clientOrderId": cid})
+        w["order_id"] = str(o.get("id") or "")
+        w["cid_sent"] = False
+        log.info(f"[LiveRev-Smart] {sym} Marketable Limit {side} {q} @ {marketable_px:.6f} (Current Ask/Bid: {px:.6f})")
+    except Exception as e:
+        msg = str(e)
+        if ("-5022" in msg or "Post Only" in msg or "post only" in msg
+                or "immediately match" in msg):
+            w["rejects"] = int(w.get("rejects", 0)) + 1
+            _rev_clear_order(w)
+            log.info(f"[LiveRev] {sym} GTX rejected (retry): {msg[:120]}")
+        elif any(c in msg for c in ("-2019", "-4164", "-1111", "-4003",
+                                    "-2027", "-4028")):
+            _rev_clear_order(w)
+            log.warning(f"[LiveRev] {sym} order refused: {msg[:160]}")
+            _rev_finish(exchange, sym, w, open_pos_live, assets,
+                        "order_refused")
+        else:
+            log.warning(f"[LiveRev] {sym} create_order ambiguous: {msg[:160]}")
+    save_reversal_watchers()
+
+
+def _rev_finish(exchange, sym: str, w: Dict, open_pos_live: Dict, assets,
+                reason: str) -> None:
+    """No more orders: finalise a position if one exists, else expire."""
+    if float(w.get("banked_qty", 0.0)) > 0 or int(w.get("attempt", 0)) > 0:
+        _rev_finalize(exchange, sym, w, open_pos_live, assets, reason)
+    else:
+        _rev_expire(w, reason)
+
+
+def _rev_finalize(exchange, sym: str, w: Dict, open_pos_live: Dict, assets,
+                  reason: str) -> None:
+    action = w["action"]
+    filled = float(w.get("banked_qty", 0.0))
+    cost = float(w.get("banked_cost", 0.0))
+    entry_px = (cost / filled) if (filled > 0 and cost > 0) else 0.0
+
+    ex = None
+    try:
+        ex = _rev_exch_position(exchange, sym)
+    except Exception:
+        ex = None
+    if ex is not None:                      # exchange is the source of truth
+        if not ex or ex.get("side") != action:
+            if filled > 0:
+                log.warning(f"[LiveRev] {sym} fills={filled} but exchange "
+                            f"shows no {action} position")
+            _rev_expire(w, f"{reason}:no_position")
+            return
+        ex_qty = float(ex["qty"])
+        if filled <= 0 or abs(ex_qty - filled) > max(1e-9, 0.02 * filled):
+            log.warning(f"[LiveRev] {sym} qty mismatch local={filled} "
+                        f"exchange={ex_qty} — adopting exchange")
+            filled = ex_qty
+            if float(ex.get("entry") or 0.0) > 0:
+                entry_px = float(ex["entry"])
+    if filled <= 0 or entry_px <= 0:
+        _rev_expire(w, f"{reason}:no_fill")
+        return
+
+    min_ratio = float(_revc("REV_MIN_FILL_RATIO", 0.0))
+    qty_target = float(w.get("qty_eff") or w["qty"])
+    if min_ratio > 0 and filled / max(qty_target, 1e-12) < min_ratio:
+        try:
+            _rev_api(exchange.create_order, sym, "market",
+                     "sell" if action == "BUY" else "buy", filled, None,
+                     params={"reduceOnly": True})
+            log.warning(f"[LiveRev] {sym} fill ratio below "
+                        f"{min_ratio:.2f} — flattened")
+            _rev_expire(w, f"{reason}:fill_ratio_flatten")
+            return
+        except Exception as e:
+            log.error(f"[LiveRev] {sym} flatten failed: {e}")
+
+    orig_sl_dist = float(w["orig_sl_dist"])
+    orig_tp_dist = float(w["orig_tp_dist"])
+    if orig_sl_dist <= 1e-12:
+        orig_sl_dist = entry_px * 0.015
+        orig_tp_dist = orig_sl_dist * float(getattr(CFG, "TP_MULT", 2.0))
+    _max_sl_frac = float(getattr(CFG, 'MAX_SL_FRAC', 0.015)) * float(getattr(CFG, "SL_WIDEN_MULT", 1.0))
+    if orig_sl_dist > entry_px * _max_sl_frac:
+        _rr = orig_tp_dist / max(orig_sl_dist, 1e-12)
+        orig_sl_dist = entry_px * _max_sl_frac
+        orig_tp_dist = orig_sl_dist * _rr
+    if action == "BUY":
+        new_sl = entry_px - orig_sl_dist
+        new_tp = entry_px + orig_tp_dist
+    else:
+        new_sl = entry_px + orig_sl_dist
+        new_tp = entry_px - orig_tp_dist
+
+    _sb = float(w.get("sigma_bar", 0.01))
+    _td = float(np.clip(CFG.TRAIL_KAPPA * _sb,
+                        CFG.TRAIL_MIN_FRAC, CFG.TRAIL_MAX_FRAC))
+    _ta = float(np.clip(CFG.TRAIL_ACT_KAPPA * _sb,
+                        CFG.TRAIL_ACT_MIN_FRAC, CFG.TRAIL_ACT_MAX_FRAC))
+    if _ta <= _td:
+        _ta = _td * 1.2
+
+    _lev = int(w["leverage"])
+    _mmr = float(w.get("mmr", getattr(CFG, "LIQ_FALLBACK_MMR", 0.02)))
+    _liq = None
+    if getattr(CFG, "LIQ_ENABLED", True):
+        try:
+            _liq = compute_liquidation_price(entry_px, action, _lev, _mmr)
+        except Exception:
+            _liq = None
+
+    _ad = assets.get(sym) if isinstance(assets, dict) else None
+    _ci_now = (len(_ad.closes) - 2) if _ad is not None else 0
+    _entry_ci = int(max(int(w.get("close_idx", 0)), _ci_now))
+
+    open_pos_live[sym] = {
+        "action": action,
+        "entry": entry_px,
+        "qty": filled,
+        "sl": new_sl,
+        "tp1": new_tp,
+        "T_info": float(w.get("T_info", 0.0)),
+        "dyn_risk": float(w.get("dyn_risk", 0.01)),
+        "entry_ts": _t_rev.time(),
+        "fill_ratio": filled / max(qty_target, 1e-9),
+        "leverage": _lev,
+        "trail_dist_frac": _td,
+        "trail_activate_frac": _ta,
+        "liq_price_estimated": _liq,
+        "mmr": _mmr,
+        "sl_dist_initial": float(abs(entry_px - new_sl)),
+        "_entry_ci": _entry_ci,
+        "_trail_bars_held": 0,
+        "_trail_peak_R": 0.0,
+        "_trail_last_update_ts": 0.0,
+        "_sym": sym,
+        "_orig_score": float(w.get("score", 0.0)),
+        "stage": "REVERSAL",
+    }
+    if _REV_STATE_FILE:                      # persist IMMEDIATELY
+        _lv_save_state(_REV_STATE_FILE, open_pos_live)
+
+    if getattr(CFG, "PROTECTIVE_ORDERS_ENABLED", True):
+        ok = False
+        retries = int(_revc("REV_PROTECT_RETRIES", 3))
+        for k in range(max(1, retries)):
+            try:
+                ok = bool(_place_protective_orders(exchange, sym,
+                                                   open_pos_live[sym]))
+            except Exception as e:
+                log.warning(f"[LiveRev] prot {sym} try{k + 1}: {e}")
+                ok = False
+            if ok:
+                break
+            _t_rev.sleep(0.5 * (k + 1))
+        if ok:
+            open_pos_live[sym]["_prot_last_sl"] = float(new_sl)
+            open_pos_live[sym]["_prot_last_tp"] = float(new_tp)
+        elif _revc("REV_FLATTEN_ON_UNPROTECTED", True):
+            log.error(f"[LiveRev] {sym} UNPROTECTED after {retries} tries "
+                      f"— emergency flatten")
+            try:
+                _rev_api(exchange.create_order, sym, "market",
+                         "sell" if action == "BUY" else "buy",
+                         _snap_qty(exchange, sym, filled) or filled, None,
+                         params={"reduceOnly": True})
+                open_pos_live.pop(sym, None)
+                if _REV_STATE_FILE:
+                    _lv_save_state(_REV_STATE_FILE, open_pos_live)
+                _rev_expire(w, "unprotected_flatten")
+                return
+            except Exception as e:
+                log.error(f"[LiveRev] {sym} emergency flatten FAILED: {e}")
+        if _REV_STATE_FILE:
+            _lv_save_state(_REV_STATE_FILE, open_pos_live)
+
+    log.info(f"✅ [LiveRev] {action} {sym} @ {entry_px:.6f} "
+             f"qty={filled:.6f}/{qty_target:.6f} sl={new_sl:.6f} "
+             f"tp={new_tp:.6f} ({reason})")
+    w["status"] = "FILLED"
+    w["entry"] = entry_px
+
+
+# ───────────────────────── startup recovery ─────────────────────────
+def _rev_startup_recover(exchange, open_pos_live: Dict) -> None:
+    now = _t_rev.time()
+    dropped = 0
+    for sym in list(_REVERSAL_WATCHERS.keys()):
+        w = _REVERSAL_WATCHERS[sym]
+        st = w.get("status")
+        legacy = "start_ts" not in w
+        if legacy or (st in ("FILLED", "EXPIRED")
+                      and not (st == "EXPIRED" and w.get("qp"))):   # [REV-FIX v4] cleanup still owed
+            _REVERSAL_WATCHERS.pop(sym, None)
+            dropped += 1
+            continue
+        if st in ("WAITING_TOUCH", "WAITING_BOUNCE") \
+                and now > float(w.get("expire_ts", 0.0)):
+            if w.get("qp"):                                # [REV-FIX v4] resting order / provisional position
+                _rev_expire(w, "restart_window_over")      # -> monitor cleanup cancels / flattens
+            else:
+                _REVERSAL_WATCHERS.pop(sym, None)
+                dropped += 1
+            continue
+        if st == "FILLING" and sym in open_pos_live and not w.get("ladder"):
+            # crash between position persist and watcher save
+            try:
+                if w.get("cid"):
+                    _rev_cancel_and_confirm(exchange, sym, w)
+            except Exception:
+                pass
+            _REVERSAL_WATCHERS.pop(sym, None)
+            dropped += 1
+    # orphan 'rev*' entry orders with no owning watcher
+    _opt = getattr(exchange, "options", None)
+    _old_warn = None
+    try:
+        if isinstance(_opt, dict):
+            _old_warn = _opt.get("warnOnFetchOpenOrdersWithoutSymbol")
+            _opt["warnOnFetchOpenOrdersWithoutSymbol"] = False
+        known = _rev_known_cids()      # [REV-FIX v3] includes ladder / queue-priority cids
+        n_orph = 0
+        for o in _rev_api(exchange.fetch_open_orders, weight=40.0) or []:
+            cid = str(o.get("clientOrderId")
+                      or (o.get("info") or {}).get("clientOrderId") or "")
+            if not cid.startswith("rev") or cid in known:
+                continue
+            if o.get("reduceOnly"):
+                continue
+            try:
+                _rev_api(exchange.cancel_order, o.get("id"), o.get("symbol"))
+                n_orph += 1
+            except Exception as e:
+                log.warning(f"[LiveRev] orphan cancel failed {cid}: {e}")
+        if n_orph:
+            log.warning(f"[LiveRev] cancelled {n_orph} orphan entry orders")
+    except Exception as e:
+        log.warning(f"[LiveRev] orphan sweep skipped: {e}")
+    finally:
+        if isinstance(_opt, dict):
+            if _old_warn is None:
+                _opt.pop("warnOnFetchOpenOrdersWithoutSymbol", None)
+            else:
+                _opt["warnOnFetchOpenOrdersWithoutSymbol"] = _old_warn
+    if dropped:
+        log.info(f"[LiveRev] dropped {dropped} stale/legacy watchers on startup")
+    save_reversal_watchers()
+
+
+# ───────────────────────── main monitor ─────────────────────────
+def monitor_reversal_watchers(exchange, open_pos_live: Dict,
+                                assets: Optional[Dict] = None,
+                                cap_now=None, corr_cache=None) -> None:
+    if not getattr(CFG, "REVERSAL_CONFIRM_ENABLED", False):
+        return
+    if not _REVERSAL_WATCHERS:
+        return
+    now = _t_rev.time()
+    if now < _REV_BACKOFF_UNTIL:
+        return
+    sub_tf, sub_sec = _rev_sub_info()
+    tw = int(getattr(CFG, "REVERSAL_TOUCH_SUBBARS", 20))
+    bw = int(getattr(CFG, "REVERSAL_BOUNCE_SUBBARS", 4))
+    max_fetch = int(_revc("REV_MAX_FETCH_PER_CYCLE", 10))
+    dirty = False
+    starts = 0
+    fetched = 0
+    scan_syms = []
+
+    for sym in list(_REVERSAL_WATCHERS.keys()):
+        w = _REVERSAL_WATCHERS[sym]
+        st = w.get("status", "WAITING_TOUCH")
+        try:
+            if st in ("FILLED", "EXPIRED"):
+                if _rev_ladder_cleanup(exchange, sym, w, open_pos_live):   # [REV-FIX v3]
+                    _REVERSAL_WATCHERS.pop(sym, None)
+                dirty = True
+                continue
+            if st == "FILLING":
+                _rev_advance_filling(exchange, sym, w, open_pos_live,
+                                     assets, now)
+                dirty = True
+                continue
+            if st == "READY_TO_FILL":
+                if starts < _REV_MAX_PER_CYCLE:
+                    _rev_handle_ready(exchange, sym, w, open_pos_live, now,
+                                      sub_sec, cap_now, corr_cache)
+                    if w["status"] == "FILLING":
+                        starts += 1
+                        _rev_advance_filling(exchange, sym, w,
+                                             open_pos_live, assets, now)
+                    dirty = True
+                continue
+            if getattr(CFG, "REV_ROE_ENABLED", False):          # [REV-FIX v4]
+                _rev_roe_step(exchange, sym, w, open_pos_live, assets, now)
+                if w.get("status") == "EXPIRED":
+                    dirty = True
+                    continue
+            elif getattr(CFG, "REV_LADDER_ENABLED", False):     # [REV-FIX v3]
+                _rev_qp_step(exchange, sym, w, open_pos_live, assets, now)
+                if w.get("status") == "EXPIRED":
+                    dirty = True
+                    continue
+            # waiting states — time-based hard expiry (never stuck)
+            start_ts = float(w["start_ts"])
+            if now > float(w.get("expire_ts", 0.0)):
+                _rev_expire(w, "max_age")
+                dirty = True
+                continue
+            if st == "WAITING_TOUCH" and \
+                    now > start_ts + (tw + 3) * sub_sec:
+                _rev_expire(w, "touch_window_time")
+                dirty = True
+                continue
+            if st == "WAITING_BOUNCE" and \
+                    now > start_ts + (int(w["touch_k"]) + bw + 4) * sub_sec:
+                _rev_expire(w, "bounce_time")
+                dirty = True
+                continue
+            if now >= float(w.get("next_fetch_ts", 0.0)):
+                scan_syms.append(sym)
+        except Exception as e:
+            w["err"] = int(w.get("err", 0)) + 1
+            log.warning(f"[LiveRev] {sym} step error #{w['err']}: {e}")
+            if w["err"] >= 20 and w.get("status") not in ("FILLING",):
+                _rev_expire(w, "errors")
+                dirty = True
+
+    scan_syms.sort(key=lambda s: float(
+        _REVERSAL_WATCHERS[s].get("next_fetch_ts", 0.0)))
+    for sym in scan_syms:
+        if fetched >= max_fetch or _t_rev.time() < _REV_BACKOFF_UNTIL:
+            break
+        w = _REVERSAL_WATCHERS.get(sym)
+        if w is None or w.get("status") not in ("WAITING_TOUCH",
+                                                "WAITING_BOUNCE"):
+            continue
+        try:
+            fetched += 1
+            _rev_scan(exchange, sym, w, sub_tf, sub_sec, now)
+            dirty = True
+            if w["status"] == "READY_TO_FILL" and starts < _REV_MAX_PER_CYCLE:
+                _rev_handle_ready(exchange, sym, w, open_pos_live, now,
+                                  sub_sec, cap_now, corr_cache)
+                if w["status"] == "FILLING":
+                    starts += 1
+                    _rev_advance_filling(exchange, sym, w, open_pos_live,
+                                         assets, now)
+        except Exception as e:
+            w["next_fetch_ts"] = now + 5.0
+            w["err"] = int(w.get("err", 0)) + 1
+            log.debug(f"[LiveRev] {sym} scan error #{w['err']}: {e}")
+            if w["err"] >= 40:
+                _rev_expire(w, "errors")
+                dirty = True
+    if dirty:
+        save_reversal_watchers()
+
+
+# ═══════════════════════════════════════════════════════════════
+
+
+# ═══════════════════════════════════════════════════════════════
+# [REV-FIX v2] Long-run hardening
+#   1 loop-error escalation + heartbeat + alerts   5 degenerate-ban TTL
+#   2 periodic time sync (+ -1021 recovery)        6 rotating logs (module top)
+#   3 no multi-minute blackouts (keepalive +       7 write-only-if-changed JSON
+#     background universe refresh)                 8 gap-aware candle refresh
+#   4 periodic markets reload
+# ═══════════════════════════════════════════════════════════════
+import threading as _th2
+import traceback as _tb2
+import urllib.request as _ur2
+import hashlib as _hl2
+
+_LOOP_ERR: Dict = {"streak": 0, "total": 0, "last": "", "last_ts": 0.0,
+                   "alerted": False}
+_HK: Dict = {"tsync": time.time(), "mkts": time.time(), "hb": 0.0}
+_GAP_BUDGET: Dict = {"n": 0}
+_GAP_ATTEMPTED: set = set()
+_DEGENERATE_BAN_UNTIL: Dict[str, float] = {}
+_JSON_LAST: Dict[str, Tuple[str, float]] = {}
+_KEEPALIVE_LAST: Dict = {"t": 0.0}
+
+
+def _cfg2(name: str, default):
+    return getattr(CFG, name, default)
+
+
+# ───────────────────────── 7) JSON: write only if changed ─────────────────────────
+def _json_write_if_changed(path: str, obj, indent: int = 2,
+                           fsync: bool = False) -> bool:
+    """Atomic write that is skipped when the serialized content is unchanged
+    (a forced rewrite still happens every JSON_FORCE_WRITE_S seconds)."""
+    s = json.dumps(obj, indent=indent, default=str)
+    h = _hl2.md5(s.encode("utf-8")).hexdigest()
+    now = time.time()
+    force = float(_cfg2("JSON_FORCE_WRITE_S", 300.0))
+    last = _JSON_LAST.get(path)
+    if (last is not None and last[0] == h and now - last[1] < force
+            and os.path.exists(path)):
+        return False
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as f:
+        f.write(s)
+        f.flush()
+        if fsync:
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+    os.replace(tmp, path)
+    _JSON_LAST[path] = (h, now)
+    return True
+
+
+# ───────────────────────── 1) alerts / heartbeat / loop errors ─────────────────────────
+def _send_alert(level: str, msg: str) -> None:
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} [{level}] {msg}"
+    try:
+        with open(f"alerts_{CFG.mode}.log", "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+    url = os.environ.get("QTT_ALERT_WEBHOOK", "").strip()
+    if not url:
+        return
+
+    def _post():
+        try:
+            data = json.dumps({"text": line}).encode("utf-8")
+            req = _ur2.Request(url, data=data,
+                               headers={"Content-Type": "application/json"})
+            _ur2.urlopen(req, timeout=5).read()
+        except Exception as e:
+            log.debug(f"[Alert] webhook failed: {e}")
+    _th2.Thread(target=_post, daemon=True, name="alert-post").start()
+
+
+def _heartbeat(extra: Optional[Dict] = None, force: bool = False) -> None:
+    now = time.time()
+    if not force and now - _HK["hb"] < float(_cfg2("HEARTBEAT_EVERY_S", 10.0)):
+        return
+    _HK["hb"] = now
+    payload = {"ts": now, "iso": time.strftime("%Y-%m-%d %H:%M:%S"),
+               "pid": os.getpid(), "err_streak": _LOOP_ERR["streak"],
+               "err_total": _LOOP_ERR["total"], "last_error": _LOOP_ERR["last"]}
+    if extra:
+        payload.update(extra)
+    try:
+        path = f"heartbeat_{CFG.mode}.json"
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(payload, f, default=str)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _loop_ok(loop_iter: int, open_pos_live: Optional[Dict] = None) -> None:
+    recovered = _LOOP_ERR["streak"] > 0
+    _LOOP_ERR["streak"] = 0
+    _LOOP_ERR["alerted"] = False
+    if recovered:
+        log.info("[LoopError] recovered — loop cycle completed normally")
+    _heartbeat({"state": "ok", "loop_iter": int(loop_iter),
+                "open_positions": len(open_pos_live or {}),
+                "watchers": len(_REVERSAL_WATCHERS)}, force=recovered)
+
+
+def _loop_error_handler(exchange, e: Exception, open_pos_live=None,
+                        state_file=None) -> None:
+    """Called from the main-loop except block. Escalates persistent errors:
+    full traceback at ERROR, alert, then (optionally) exit non-zero so a
+    supervisor restarts the bot instead of it idling silently."""
+    st = _LOOP_ERR
+    now = time.time()
+    if now - st["last_ts"] > float(_cfg2("LOOP_ERR_RESET_AFTER_S", 900.0)):
+        st["streak"] = 0
+        st["alerted"] = False
+    st["streak"] += 1
+    st["total"] += 1
+    st["last"] = f"{type(e).__name__}: {e}"[:300]
+    st["last_ts"] = now
+    n = st["streak"]
+    msg = str(e)
+    if ("-1021" in msg or "recvWindow" in msg
+            or "Timestamp for this request" in msg):
+        _time_resync(exchange, "error -1021")
+    if n <= 3 or n % 10 == 0:
+        log.error(f"[LoopError #{n}] {st['last']}\n{_tb2.format_exc()}")
+    else:
+        log.error(f"[LoopError #{n}] {st['last']}")
+    warn_at = int(_cfg2("LOOP_WARN_ERRORS", 5))
+    max_n = int(_cfg2("LOOP_MAX_CONSEC_ERRORS", 30))
+    if n >= warn_at and not st["alerted"]:
+        st["alerted"] = True
+        _send_alert("WARN", f"{n} consecutive loop errors: {st['last']}")
+    _heartbeat({"state": "error"}, force=True)
+    if n >= max_n:
+        _send_alert("CRITICAL",
+                    f"{n} consecutive loop errors — giving up: {st['last']}")
+        try:
+            if state_file is not None and open_pos_live is not None:
+                _lv_save_state(state_file, open_pos_live)
+        except Exception:
+            pass
+        if _cfg2("LOOP_EXIT_ON_ERRORS", True):
+            log.critical("[LoopError] exiting (code 3) so the supervisor can "
+                         "restart; exchange-side SL/TP orders remain active")
+            raise SystemExit(3)
+
+
+# ───────────────────────── 2) time sync / 4) markets / housekeeping ─────────────────────────
+def _time_resync(exchange, reason: str = "periodic") -> None:
+    try:
+        if hasattr(exchange, "load_time_difference"):
+            exchange.load_time_difference()
+        td = (getattr(exchange, "options", None) or {}).get("timeDifference")
+        log.info(f"[TimeSync] resync ({reason}) timeDifference={td}ms")
+    except Exception as e:
+        log.warning(f"[TimeSync] resync failed ({reason}): {e}")
+    try:
+        _check_time_sync(exchange, float(_cfg2("TIMESYNC_WARN_DRIFT_S", 5.0)))
+    except Exception:
+        pass
+
+
+def _refresh_markets(exchange, open_pos_live=None) -> None:
+    try:
+        before = set((getattr(exchange, "markets", None) or {}).keys())
+        exchange.load_markets(True)
+        mk = exchange.markets or {}
+        after = set(mk.keys())
+        _TICK_SIZE_CACHE.clear()
+        _MMR_CACHE.clear()
+        _SYMBOL_LEV_TIERS.clear()
+        log.info(f"[Markets] reloaded: {len(after)} markets "
+                 f"(+{len(after - before)} / -{len(before - after)}); "
+                 f"tick/MMR/leverage caches cleared")
+        for s in list(open_pos_live or {}):
+            m = mk.get(s)
+            if m is None or m.get("active") is False:
+                log.error(f"[Markets] held symbol {s} is delisted/inactive")
+                _send_alert("CRITICAL", f"held symbol {s} delisted/inactive")
+    except Exception as e:
+        log.warning(f"[Markets] reload failed: {e}")
+
+
+def _live_housekeeping(exchange, open_pos_live=None) -> None:
+    now = time.time()
+    _GAP_BUDGET["n"] = 0
+    if now - _HK["tsync"] >= float(_cfg2("TIMESYNC_EVERY_S", 3600.0)):
+        _HK["tsync"] = now
+        _time_resync(exchange, "periodic")
+    if now - _HK["mkts"] >= float(_cfg2("MARKETS_REFRESH_S", 21600.0)):
+        _HK["mkts"] = now
+        _refresh_markets(exchange, open_pos_live)
+
+
+# ───────────────────────── 5) degenerate-symbol ban with TTL ─────────────────────────
+def _degenerate_banned(sym: str) -> bool:
+    until = _DEGENERATE_BAN_UNTIL.get(sym)
+    if until is not None:
+        if time.time() >= until:
+            _DEGENERATE_BAN_UNTIL.pop(sym, None)
+            _DEGENERATE_STREAK.pop(sym, None)
+            log.info(f"[Degenerate-Ban] {sym} ban expired — retrying")
+            return False
+        return True
+    if _DEGENERATE_STREAK.get(sym, 0) >= _DEGENERATE_BAN_THRESHOLD:
+        _DEGENERATE_BAN_UNTIL[sym] = time.time() + float(
+            _cfg2("DEGENERATE_BAN_TTL_S", 86400.0))
+        return True
+    return False
+
+
+# ───────────────────────── 8) gap-aware candle refresh ─────────────────────────
+_OHLCV_COLS = ["ts", "Open", "High", "Low", "Close", "Volume"]
+
+
+def _live_fetch_candles(exchange, sym: str, tf: str, df, tf_sec: int):
+    """Normally the last 3 candles (unchanged behaviour). If bars were missed
+    (outage / blocked loop) fetch everything since the last cached bar."""
+    now = time.time()
+    limit, since = 3, None
+    try:
+        if df is not None and len(df):
+            last_ts = float(df.index[-1].timestamp())
+            missing = int((now - last_ts) // max(int(tf_sec), 1)) + 2
+            if missing > 3:
+                limit = int(min(missing, int(_cfg2("LIVE_FETCH_MAX_BARS", 1000))))
+                since = int(last_ts * 1000)
+    except Exception:
+        limit, since = 3, None
+    try:
+        _rate_record(1.0 if limit < 100 else (2.0 if limit < 500 else 5.0))
+    except Exception:
+        pass
+    if since is None:
+        return exchange.fetch_ohlcv(sym, tf, limit=limit)
+    return exchange.fetch_ohlcv(sym, tf, since, limit)
+
+
+def _find_first_gap(df, tf_sec: int, lookback: int):
+    """Open-time (epoch s) of the last bar BEFORE the first gap, or None."""
+    if df is None or len(df) < 3:
+        return None
+    idx = df.index[-int(lookback):]
+    d = idx.to_series().diff().dt.total_seconds().to_numpy()[1:]
+    bad = np.nonzero(d > 1.5 * float(tf_sec))[0]
+    if len(bad) == 0:
+        return None
+    return float(idx[int(bad[0])].timestamp())
+
+
+def _live_heal_gaps(exchange, sym: str, tf: str, df, tf_sec: int):
+    if (not _cfg2("LIVE_GAP_HEAL_ENABLED", True) or df is None or len(df) < 3):
+        return df
+    if _GAP_BUDGET["n"] >= int(_cfg2("LIVE_GAP_HEAL_PER_CYCLE", 5)):
+        return df
+    g = _find_first_gap(df, tf_sec, int(_cfg2("LIVE_GAP_LOOKBACK_BARS", 600)))
+    if g is None:
+        return df
+    key = (sym, int(g))
+    if key in _GAP_ATTEMPTED:
+        return df                       # dead gap: tried once, never again
+    if len(_GAP_ATTEMPTED) > 5000:
+        _GAP_ATTEMPTED.clear()
+    _GAP_ATTEMPTED.add(key)
+    _GAP_BUDGET["n"] += 1
+    try:
+        now = time.time()
+        limit = int(min(1000, max(5, int((now - g) // max(int(tf_sec), 1)) + 2)))
+        _rate_record(2.0 if limit < 500 else 5.0)
+        raw = exchange.fetch_ohlcv(sym, tf, int(g * 1000), limit)
+        if not raw:
+            return df
+        dn = pd.DataFrame(raw, columns=_OHLCV_COLS)
+        dn["ts"] = pd.to_datetime(dn["ts"], unit="ms", utc=True)
+        dn = dn.set_index("ts").astype(float)
+        before = len(df)
+        keep = int(_cfg2("LIVE_TAIL_BARS", 8000))
+        m = pd.concat([df, dn])
+        m = m[~m.index.duplicated(keep="last")].sort_index().tail(keep)
+        log.warning(f"[GapHeal] {sym}: gap after "
+                    f"{pd.Timestamp(g, unit='s', tz='UTC')} -> "
+                    f"{len(m) - before:+d} bars")
+        return m
+    except Exception as e:
+        log.debug(f"[GapHeal] {sym} failed: {e}")
+        return df
+
+
+# ───────────────────────── 3) no blackouts ─────────────────────────
+
+
+def _ka_check_positions(exchange, open_pos_live: Dict) -> None:
+    """
+    [PERF-FIX] Minimal SL/TP check during retrain.
+    Fetches ticker for each open position, checks if SL or TP hit.
+    If hit, force-closes with a market order (safety net).
+    """
+    if not open_pos_live:
+        return
+    for sym in list(open_pos_live.keys()):
+        pos = open_pos_live.get(sym)
+        if pos is None:
+            continue
+        try:
+            _rate_record(float(getattr(CFG, 'LIVE_PRICE_RATE_WEIGHT', 2.0)))
+            _tk = exchange.fetch_ticker(sym)
+            _price = float(_tk.get('last') or 0)
+            if _price <= 0:
+                continue
+            _action = pos.get('action', 'BUY')
+            _sl = float(pos.get('sl') or 0)
+            _tp = float(pos.get('tp1') or 0)
+            _hit = None
+            if _action == 'BUY':
+                if _sl > 0 and _price <= _sl:
+                    _hit = 'Emergency SL (keepalive)'
+                elif _tp > 0 and _price >= _tp:
+                    _hit = 'Hard TP (keepalive)'
+            else:
+                if _sl > 0 and _price >= _sl:
+                    _hit = 'Emergency SL (keepalive)'
+                elif _tp > 0 and _price <= _tp:
+                    _hit = 'Hard TP (keepalive)'
+            if _hit:
+                log.critical(
+                    f"[KeepAlive] {sym} {_hit} @ {_price:.6f} — "
+                    f"forcing close during retrain"
+                )
+                try:
+                    _side = 'sell' if _action == 'BUY' else 'buy'
+                    _qty = float(pos.get('qty', 0))
+                    exchange.create_order(
+                        sym, 'market', _side, _qty, None,
+                        params={'reduceOnly': True}
+                    )
+                    try:
+                        _trade_log_from_live(pos, _price, _hit)
+                    except Exception:
+                        pass
+                    open_pos_live.pop(sym, None)
+                except Exception as _e:
+                    log.error(f"[KeepAlive] {sym} close failed: {_e}")
+        except Exception as e:
+            log.debug(f"[KeepAlive] {sym} ticker failed: {e}")
+
+
+def _live_keepalive(exchange, open_pos_live, assets, cap_live,
+                    corr_cache) -> None:
+    """Called between retrain items so watchers / heartbeat keep running."""
+    now = time.time()
+    if now - _KEEPALIVE_LAST["t"] < float(_cfg2("LIVE_KEEPALIVE_S", 5.0)):
+        return
+    _KEEPALIVE_LAST["t"] = now
+    try:
+        if getattr(CFG, "REVERSAL_CONFIRM_ENABLED", False):
+            monitor_reversal_watchers(exchange, open_pos_live, assets=assets,
+                                      cap_now=cap_live, corr_cache=corr_cache)
+    except Exception as e:
+        log.debug(f"[KeepAlive] monitor error: {e}")
+    # ══ [PERF-FIX] Monitor open positions during retrain ══
+    try:
+        _ka_check_positions(exchange, open_pos_live)
+    except Exception as e:
+        log.debug(f"[KeepAlive] position check error: {e}")
+    _heartbeat({"state": "retrain", "watchers": len(_REVERSAL_WATCHERS),
+                "positions": len(open_pos_live)})
+
+
+class _UniverseRefresher:
+    """4-hourly universe + deep-history refresh in a background thread; the
+    main loop swaps the result in atomically (no multi-minute blackout)."""
+
+    def __init__(self):
+        self.th = None
+        self.res = None
+        self.err = None
+        self.retry_at = 0.0
+        self.lock = _th2.Lock()
+
+    def maybe_start(self, exchange, cfg, open_pos_live, last_scan_time) -> bool:
+        now = time.time()
+        if self.th is not None:
+            return False
+        if (now - last_scan_time < float(_cfg2("UNIVERSE_REFRESH_S", 14400.0))
+                or now < self.retry_at):
+            return False
+        held = list(open_pos_live.keys())
+        days = int(_cfg2("LIVE_HISTORY_DAYS", 365))
+        tf = cfg.timeframe
+        self.res, self.err = None, None
+
+        def _job():
+            try:
+                syms = list(scan_top_assets(exchange))
+                syms += [s for s in held if s not in syms]
+                data = fetch_all(syms, exchange, tf, days=days, workers=5)
+                with self.lock:
+                    self.res, self.err = (syms, data), None
+            except Exception as e:
+                with self.lock:
+                    self.err = e
+
+        self.th = _th2.Thread(target=_job, daemon=True, name="universe-refresh")
+        self.th.start()
+        log.info("🔄 [Universe] background refresh started")
+        return True
+
+    def poll(self, open_pos_live, cached_data):
+        if self.th is None or self.th.is_alive():
+            return None
+        self.th = None
+        with self.lock:
+            res, err = self.res, self.err
+            self.res = None
+        if err is not None or not res:
+            self.retry_at = time.time() + float(_cfg2("UNIVERSE_RETRY_S", 600.0))
+            log.warning(f"[Universe] refresh failed ({err}); retry later")
+            return None
+        syms, data = res
+        keep = int(_cfg2("LIVE_TAIL_BARS", 8000))
+        merged: Dict = {}
+        for s, df in data.items():
+            if df is None or not len(df):
+                continue
+            old = cached_data.get(s)
+            if old is not None and len(old):
+                newer = old[old.index > df.index[-1]]   # bars appended meanwhile
+                if len(newer):
+                    df = pd.concat([df, newer])
+                    df = df[~df.index.duplicated(keep="last")].sort_index()
+            merged[s] = df.tail(keep)
+        top = [s for s in syms if s in merged]
+        for s in open_pos_live:                         # never drop held symbols
+            if s not in merged and s in cached_data:
+                merged[s] = cached_data[s]
+            if s in merged and s not in top:
+                top.append(s)
+        if not top:
+            self.retry_at = time.time() + float(_cfg2("UNIVERSE_RETRY_S", 600.0))
+            return None
+        log.info(f"[Universe] swapped in {len(top)} symbols")
+        return top, merged
+
+
+_UNIV = _UniverseRefresher()
+
+
+# ═══════════════════════════════════════════════════════════════
+
+
+# ═══════════════════════════════════════════════════════════════
+# [REV-FIX v3] Maker Ladder — Phase 1 (opt-in, default OFF)
+#   * post-bounce ladder: 3 post-only (GTX) levels  mu, mu-0.3s, mu-0.6s
+#     weights 40/35/25 (BUY; mirrored above mu for SELL), s = sigma_bar*target
+#   * optional "queue priority" order (default 5% of qty, taken out of L0)
+#     resting AT target from registration (pre-touch)
+#   * every level is its own GTX order (clientOrderId idempotent, crash-safe)
+#   * position is created at the FIRST fill and grown on every later fill
+#     (SL/TP re-anchored on the VWAP, protective legs refreshed)
+#   * a symbol with resting orders RESERVES one MAX_CONCURRENT slot, so the
+#     asynchronous fills can never exceed the open-position cap
+#   * hard deadline (REV_LADDER_MAX_WAIT_S): everything cancelled
+#   * ladder_stats_<mode>.csv: one row per ladder for the testnet evaluation
+# NOT possible on Binance USDT-M futures: icebergQty (spot only) -> not built.
+# ═══════════════════════════════════════════════════════════════
+import csv as _csv3
+
+
+def _cfg3(name: str, default):
+    return getattr(CFG, name, default)
+
+
+def _rev_marketable_px(exchange, sym: str, w: Dict, action: str, side: str,
+                       px: float, ref_px: float) -> float:
+    """Price the 'Smart Execution' marketable limit uses (best bid/ask +- 15%
+    of the original SL distance) - the reprice check must compare THIS value,
+    not the raw best bid/ask (it used to cancel/replace a resting order every
+    reprice tick)."""
+    sl_d = float(w.get("orig_sl_dist", ref_px * 0.015))
+    m = (px + sl_d * 0.15) if action == "BUY" else (px - sl_d * 0.15)
+    return _rev_snap_price(exchange, sym, m, side)
+
+
+# ───────────────────────── ladder primitives ─────────────────────────
+def _lad_levels():
+    offs = list(_cfg3("REV_LADDER_OFFSETS_SIGMA", (0.0, 0.3, 0.6)))
+    wts = list(_cfg3("REV_LADDER_WEIGHTS", (0.40, 0.35, 0.25)))
+    n = min(len(offs), len(wts))
+    offs, wts = offs[:n], wts[:n]
+    tot = float(sum(wts)) or 1.0
+    return [(float(o), float(x) / tot) for o, x in zip(offs, wts)]
+
+
+def _lad_px(exchange, sym: str, w: Dict, off_sigma: float) -> float:
+    tgt = float(w["target"])
+    sp = float(w.get("sigma_bar", 0.01)) * tgt
+    if w["action"] == "BUY":
+        return _rev_snap_price(exchange, sym, tgt - off_sigma * sp, "buy")
+    return _rev_snap_price(exchange, sym, tgt + off_sigma * sp, "sell")
+
+
+def _lad_cid(sym: str, w: Dict, tag: str, attempt: int) -> str:
+    h = _hl_rev.md5(sym.encode()).hexdigest()[:8]
+    return f"rev{int(w['sig_epoch'])}x{h}x{tag}{int(attempt)}"[:36]
+
+
+def _lad_new_rec(name: str, px: float, qty: float) -> Dict:
+    return {"name": name, "cid": None, "order_id": None, "cid_sent": False,
+            "px": float(px), "qty": float(qty), "filled": 0.0, "avg": 0.0,
+            "status": "new", "rejects": 0, "attempt": 0}
+
+
+def _lad_all_recs(w: Dict) -> List[Dict]:
+    return ([w["qp"]] if w.get("qp") else []) + list(w.get("ladder") or [])
+
+
+def _lad_totals(w: Dict):
+    q = c = 0.0
+    for r in _lad_all_recs(w):
+        f = float(r.get("filled") or 0.0)
+        q += f
+        c += f * float(r.get("avg") or 0.0)
+    return q, c
+
+
+def _rev_known_cids() -> set:
+    s = set()
+    for w in _REVERSAL_WATCHERS.values():
+        if w.get("cid"):
+            s.add(str(w["cid"]))
+        for r in _lad_all_recs(w):
+            if r.get("cid"):
+                s.add(str(r["cid"]))
+    return s
+
+
+def _rev_inflight_other(sym: str, open_pos_live: Dict) -> int:
+    """Symbols (other than `sym`) that hold or reserve a slot WITHOUT being in
+    open_pos_live yet: FILLING watchers and resting queue-priority orders."""
+    n = 0
+    for s2, w2 in _REVERSAL_WATCHERS.items():
+        if s2 == sym or s2 in open_pos_live:
+            continue
+        qp = w2.get("qp")
+        if w2.get("status") == "FILLING" or (qp and qp.get("status") == "open"):
+            n += 1
+    return n
+
+
+def _lad_book(exchange, sym: str):
+    try:
+        ob = _rev_api(exchange.fetch_order_book, sym, 5, weight=2.0)
+        bids, asks = ob.get("bids") or [], ob.get("asks") or []
+        if not bids or not asks:
+            return None, None
+        return float(bids[0][0]), float(asks[0][0])
+    except Exception as e:
+        log.debug(f"[Ladder] {sym} book error: {e}")
+        return None, None
+
+
+def _lad_apply(r: Dict, o: Dict) -> None:
+    r["filled"] = float(o.get("filled") or 0.0)
+    a = o.get("average")
+    try:
+        a = float(a) if a else 0.0
+    except Exception:
+        a = 0.0
+    r["avg"] = a if a > 0 else float(o.get("price") or r["px"])
+    r["order_id"] = str(o.get("id") or r.get("order_id") or "")
+    if str(o.get("status") or "open") in _REV_TERMINAL:
+        r["status"] = "done"
+
+
+def _lad_place(exchange, sym: str, w: Dict, rec: Dict, bid, ask,
+               clamp: bool = True) -> str:
+    side = w["side_ccxt"]
+    px = float(rec["px"])
+    if clamp:                       # never cross the book (post-only)
+        if side == "buy" and bid is not None:
+            px = min(px, bid)
+        if side == "sell" and ask is not None:
+            px = max(px, ask)
+        px = _rev_snap_price(exchange, sym, px, side)
+    rec["attempt"] = int(rec.get("attempt", 0)) + 1
+    cid = _lad_cid(sym, w, rec["name"], rec["attempt"])
+    rec.update(cid=cid, cid_sent=True, px=px, status="open")
+    save_reversal_watchers()        # persist BEFORE the order exists
+    try:
+        o = _rev_api(exchange.create_order, sym, "limit", side, rec["qty"], px,
+                     params={"timeInForce": "GTX", "clientOrderId": cid})
+        rec["order_id"] = str(o.get("id") or "")
+        rec["cid_sent"] = False
+        log.info(f"[Ladder] {sym} {rec['name']} GTX {side} {rec['qty']} @ {px} "
+                 f"cid={cid}")
+        return "placed"
+    except Exception as e:
+        msg = str(e)
+        if ("-5022" in msg or "Post Only" in msg or "post only" in msg
+                or "immediately match" in msg):
+            rec["rejects"] = int(rec.get("rejects", 0)) + 1
+            rec.update(cid=None, cid_sent=False, status="new")
+            if rec["rejects"] >= int(_revc("REV_MAX_REJECTS", 30)):
+                rec["status"] = "done"
+            return "reject"
+        if any(c in msg for c in ("-2019", "-4164", "-1111", "-4003",
+                                  "-2027", "-4028")):
+            rec.update(cid=None, cid_sent=False, status="done")
+            log.warning(f"[Ladder] {sym} {rec['name']} refused: {msg[:140]}")
+            return "fatal"
+        log.warning(f"[Ladder] {sym} {rec['name']} create ambiguous: {msg[:140]}")
+        return "ambiguous"          # stays 'open' with cid; poll resolves it
+
+
+def _lad_poll(exchange, sym: str, recs: List[Dict]) -> None:
+    live = [r for r in recs if r.get("status") == "open" and r.get("cid")]
+    if not live:
+        return
+    try:
+        open_list = _rev_api(exchange.fetch_open_orders, sym) or []
+    except Exception as e:
+        log.debug(f"[Ladder] {sym} open-orders error: {e}")
+        return
+    by_cid = {}
+    for o in open_list:
+        k = str(o.get("clientOrderId")
+                or (o.get("info") or {}).get("clientOrderId") or "")
+        by_cid[k] = o
+    for r in live:
+        o = by_cid.get(r["cid"])
+        if o is None:
+            try:
+                o = _rev_find_order(exchange, sym, r["cid"], r.get("order_id"))
+            except Exception as e:
+                log.debug(f"[Ladder] {sym} lookup error: {e}")
+                continue
+            if o is None:           # create never reached the exchange
+                r.update(cid=None, order_id=None, cid_sent=False, status="new")
+                continue
+        _lad_apply(r, o)
+
+
+def _lad_cancel(exchange, sym: str, rec: Dict) -> bool:
+    """True once the record is TERMINAL (no live order left)."""
+    if rec.get("status") == "new":
+        rec["status"] = "done"
+        return True
+    if rec.get("status") != "open" or not rec.get("cid"):
+        return True
+    try:
+        if rec.get("order_id"):
+            _rev_api(exchange.cancel_order, rec["order_id"], sym)
+        else:
+            _rev_api(exchange.cancel_order, None, sym,
+                     params={"origClientOrderId": rec["cid"]})
+    except Exception as e:
+        if not _rev_is_not_found(e):
+            log.debug(f"[Ladder] {sym} cancel error: {e}")
+    try:
+        o = _rev_find_order(exchange, sym, rec["cid"], rec.get("order_id"))
+    except Exception:
+        return False
+    if o is None:
+        rec["status"] = "done"
+        return True
+    _lad_apply(rec, o)
+    return rec["status"] == "done"
+
+
+# ───────────────────────── position creation / growth ─────────────────────────
+def _lad_sl_tp(w: Dict, entry_px: float):
+    osd = float(w["orig_sl_dist"])
+    otd = float(w["orig_tp_dist"])
+    if osd <= 1e-12:
+        osd = entry_px * 0.015
+        otd = osd * float(getattr(CFG, "TP_MULT", 2.0))
+    mx = 0.015 * float(getattr(CFG, "SL_WIDEN_MULT", 1.0))
+    if osd > entry_px * mx:
+        rr = otd / max(osd, 1e-12)
+        osd = entry_px * mx
+        otd = osd * rr
+    if w["action"] == "BUY":
+        return entry_px - osd, entry_px + otd, osd
+    return entry_px + osd, entry_px - otd, osd
+
+
+def _lad_liq(w: Dict, entry_px: float):
+    if not getattr(CFG, "LIQ_ENABLED", True):
+        return None
+    try:
+        return compute_liquidation_price(entry_px, w["action"],
+                                         int(w["leverage"]),
+                                         float(w.get("mmr", 0.02)))
+    except Exception:
+        return None
+
+
+def _lad_new_pos(sym: str, w: Dict, entry_px: float, qty: float, assets) -> Dict:
+    sl, tp, osd = _lad_sl_tp(w, entry_px)
+    sb = float(w.get("sigma_bar", 0.01))
+    td = float(np.clip(CFG.TRAIL_KAPPA * sb, CFG.TRAIL_MIN_FRAC, CFG.TRAIL_MAX_FRAC))
+    ta = float(np.clip(CFG.TRAIL_ACT_KAPPA * sb, CFG.TRAIL_ACT_MIN_FRAC,
+                       CFG.TRAIL_ACT_MAX_FRAC))
+    if ta <= td:
+        ta = td * 1.2
+    _ad = assets.get(sym) if isinstance(assets, dict) else None
+    ci_now = (len(_ad.closes) - 2) if _ad is not None else 0
+    qt = float(w.get("qty_eff") or w["qty"])
+    return {
+        "action": w["action"], "entry": entry_px, "qty": qty, "sl": sl,
+        "tp1": tp, "T_info": float(w.get("T_info", 0.0)),
+        "dyn_risk": float(w.get("dyn_risk", 0.01)), "entry_ts": _t_rev.time(),
+        "fill_ratio": qty / max(qt, 1e-9), "leverage": int(w["leverage"]),
+        "trail_dist_frac": td, "trail_activate_frac": ta,
+        "liq_price_estimated": _lad_liq(w, entry_px),
+        "mmr": float(w.get("mmr", 0.02)), "sl_dist_initial": float(osd),
+        "_entry_ci": int(max(int(w.get("close_idx", 0)), ci_now)),
+        "_trail_bars_held": 0, "_trail_peak_R": 0.0,
+        "_trail_last_update_ts": 0.0, "_sym": sym,
+        "_orig_score": float(w.get("score", 0.0)), "stage": "REVERSAL",
+    }
+
+
+def _lad_flatten(exchange, sym: str, action: str, qty: float) -> bool:
+    try:
+        ex = _rev_exch_position(exchange, sym)
+        if ex:
+            qty = float(ex.get("qty") or qty)
+    except Exception:
+        pass
+    try:
+        _fo = _rev_api(exchange.create_order, sym, "market",
+                       "sell" if action == "BUY" else "buy",
+                       _snap_qty(exchange, sym, qty) or qty, None,
+                       params={"reduceOnly": True})
+        try:                                               # [REV-FIX v4] exit price for the stats
+            _fp = float((_fo or {}).get("average") or (_fo or {}).get("price") or 0.0)
+            if _fp > 0:
+                _LAST_FLATTEN[sym] = _fp
+        except Exception:
+            pass
+    except Exception as e:
+        log.error(f"[Ladder] {sym} flatten FAILED: {e}")
+        return False
+    try:
+        _cancel_all_protective_orders(exchange, sym)
+    except Exception:
+        pass
+    return True
+
+
+def _lad_protect(exchange, sym: str, pos: Dict, grown: bool) -> bool:
+    if not getattr(CFG, "PROTECTIVE_ORDERS_ENABLED", True):
+        return True
+    if grown:                       # leg quantities changed -> rebuild the legs
+        try:
+            _cancel_all_protective_orders(exchange, sym)
+        except Exception as e:
+            log.debug(f"[Ladder] {sym} protective cancel error: {e}")
+    retries = int(_revc("REV_PROTECT_RETRIES", 3))
+    for k in range(max(1, retries)):
+        try:
+            if _place_protective_orders(exchange, sym, pos):
+                pos["_prot_last_sl"] = float(pos["sl"])
+                pos["_prot_last_tp"] = float(pos["tp1"])
+                return True
+        except Exception as e:
+            log.warning(f"[Ladder] prot {sym} try{k + 1}: {e}")
+        _t_rev.sleep(0.5 * (k + 1))
+    return False
+
+
+def _lad_sync_position(exchange, sym: str, w: Dict, open_pos_live: Dict,
+                       assets, filled: float, cost: float) -> str:
+    """Create the position at the first fill, grow it on later fills.
+    Returns noop | created | grown | flattened."""
+    sq = float(w.get("pos_synced_qty", 0.0))
+    sc = float(w.get("pos_synced_cost", 0.0))
+    dq = filled - sq
+    if dq <= 1e-12:
+        return "noop"
+    dc = cost - sc
+    pos = open_pos_live.get(sym)
+    grown = pos is not None
+    if pos is None:
+        pos = _lad_new_pos(sym, w, dc / dq, dq, assets)
+        open_pos_live[sym] = pos
+    else:
+        nq = float(pos["qty"]) + dq
+        ne = (float(pos["entry"]) * float(pos["qty"]) + dc) / nq
+        sl, tp, osd = _lad_sl_tp(w, ne)
+        pos.update(qty=nq, entry=ne, sl=sl, tp1=tp, sl_dist_initial=float(osd),
+                   liq_price_estimated=_lad_liq(w, ne))
+        pos["fill_ratio"] = nq / max(float(w.get("qty_eff") or w["qty"]), 1e-9)
+    w["pos_synced_qty"], w["pos_synced_cost"] = filled, cost
+    if _REV_STATE_FILE:
+        _lv_save_state(_REV_STATE_FILE, open_pos_live)
+    if not _lad_protect(exchange, sym, pos, grown):
+        if _revc("REV_FLATTEN_ON_UNPROTECTED", True):
+            log.error(f"[Ladder] {sym} UNPROTECTED — emergency flatten")
+            if _lad_flatten(exchange, sym, w["action"], float(pos["qty"])):
+                open_pos_live.pop(sym, None)
+                if _REV_STATE_FILE:
+                    _lv_save_state(_REV_STATE_FILE, open_pos_live)
+                return "flattened"
+    elif _REV_STATE_FILE:
+        _lv_save_state(_REV_STATE_FILE, open_pos_live)
+    log.info(f"[Ladder] {sym} position {'grown' if grown else 'created'}: "
+             f"qty={pos['qty']:.6f} entry={pos['entry']:.6f} "
+             f"sl={pos['sl']:.6f} tp={pos['tp1']:.6f}")
+    return "grown" if grown else "created"
+
+
+# ───────────────────────── queue-priority order (pre-touch) ─────────────────────────
+def _rev_qp_step(exchange, sym: str, w: Dict, open_pos_live: Dict, assets,
+                 now: float) -> None:
+    if not _cfg3("REV_LADDER_ENABLED", False):
+        return
+    qp = w.get("qp")
+    if qp is None:
+        if w.get("qp_tried") or w.get("status") != "WAITING_TOUCH":
+            return
+        w["qp_tried"] = True
+        pct = float(_cfg3("REV_LADDER_QP_PCT", 0.05))
+        if pct <= 0:
+            return
+        if len(open_pos_live) + _rev_inflight_other(sym, open_pos_live) \
+                >= int(CFG.MAX_CONCURRENT_ASSETS):
+            log.debug(f"[Ladder] {sym} no free slot for queue-priority order")
+            return
+        if not _rate_can_place():
+            w["qp_tried"] = False
+            return
+        bid, ask = _lad_book(exchange, sym)
+        if bid is None:
+            w["qp_tried"] = False
+            return
+        tgt = float(w["target"])
+        side = w["side_ccxt"]
+        if (side == "buy" and tgt >= ask) or (side == "sell" and tgt <= bid):
+            log.debug(f"[Ladder] {sym} target not resting-side of the book "
+                      f"— no queue-priority order")
+            return
+        q = _snap_qty(exchange, sym, float(w["qty"]) * pct)
+        if q <= 0:
+            return
+        rec = _lad_new_rec("Q", _rev_snap_price(exchange, sym, tgt, side), q)
+        w["qp"] = rec
+        if _lad_place(exchange, sym, w, rec, bid, ask, clamp=False) in (
+                "reject", "fatal"):
+            w["qp"] = None
+        return
+    if qp.get("status") != "open":
+        return
+    if now - float(w.get("qp_last_poll", 0.0)) < float(
+            _cfg3("REV_LADDER_POLL_S", 10.0)):
+        return
+    w["qp_last_poll"] = now
+    _lad_poll(exchange, sym, [qp])
+    f, c = _lad_totals(w)
+    if f > 0:
+        res = _lad_sync_position(exchange, sym, w, open_pos_live, assets, f, c)
+        if res in ("created", "grown"):
+            w["qp_pos"] = True
+        elif res == "flattened":
+            w["qp_pos"] = False
+            _rev_expire(w, "qp_unprotected")
+
+
+# ───────────────────────── the ladder (post-bounce) ─────────────────────────
+def _lad_stats(w: Dict, reason: str) -> None:
+    try:
+        f, c = _lad_totals(w)
+        qt = float(w.get("qty_eff") or w["qty"])
+        vwap = (c / f) if f > 0 else 0.0
+        tgt = float(w["target"])
+        sign = 1.0 if w["action"] == "BUY" else -1.0
+        slip = ((vwap - tgt) / tgt * 1e4 * sign) if f > 0 else 0.0
+        lv = ";".join(f"{r['name']}:{r.get('filled', 0.0):.6g}/{r['qty']:.6g}"
+                      for r in _lad_all_recs(w))
+        path = f"ladder_stats_{CFG.mode}.csv"
+        new = not os.path.exists(path)
+        with open(path, "a", newline="", encoding="utf-8") as fh:
+            wr = _csv3.writer(fh)
+            if new:
+                wr.writerow(["iso", "sym", "action", "target", "ref_px",
+                             "qty_target", "filled", "fill_ratio", "vwap",
+                             "slip_bps_vs_target(+worse)", "levels", "qp_pos",
+                             "duration_s", "reason"])
+            wr.writerow([time.strftime("%Y-%m-%d %H:%M:%S"), w["sym"],
+                         w["action"], tgt, w.get("ref_px"), qt, f,
+                         round(f / max(qt, 1e-12), 4), vwap, round(slip, 2),
+                         lv, bool(w.get("qp_pos")),
+                         round(time.time() - float(w.get("ladder_t0", time.time())), 1),
+                         reason])
+    except Exception as e:
+        log.debug(f"[Ladder] stats write failed: {e}")
+
+
+def _lad_finish(exchange, sym: str, w: Dict, open_pos_live: Dict,
+                reason: str) -> None:
+    f, c = _lad_totals(w)
+    qt = float(w.get("qty_eff") or w["qty"])
+    _lad_stats(w, reason)
+    if f <= 0:
+        _rev_expire(w, f"ladder:{reason}")
+        return
+    min_ratio = float(_cfg3("REV_LADDER_MIN_FILL_RATIO", 0.0))
+    if min_ratio > 0 and f / max(qt, 1e-12) < min_ratio:
+        pos = open_pos_live.get(sym)
+        if pos is not None and _lad_flatten(exchange, sym, w["action"],
+                                            float(pos["qty"])):
+            open_pos_live.pop(sym, None)
+            if _REV_STATE_FILE:
+                _lv_save_state(_REV_STATE_FILE, open_pos_live)
+            _rev_expire(w, "ladder:min_fill_flatten")
+            return
+    w["status"] = "FILLED"
+    w["entry"] = c / f
+    log.info(f"✅ [Ladder] {sym} done ({reason}): fill {f:.6f}/{qt:.6f} "
+             f"vwap={c / f:.6f}")
+
+
+def _rev_ladder_advance(exchange, sym: str, w: Dict, open_pos_live: Dict,
+                        assets, now: float) -> None:
+    qty_target = float(w.get("qty_eff") or w["qty"])
+    side = w["side_ccxt"]
+    min_notional = float(getattr(CFG, "MIN_NOTIONAL", 5.0))
+
+    if w.get("ladder") is None:                     # build once
+        qp_qty = float(w["qp"]["qty"]) if w.get("qp") else 0.0
+        recs: List[Dict] = []
+        for i, (off, wt) in enumerate(_lad_levels()):
+            q = max(qty_target * wt - (qp_qty if i == 0 else 0.0), 0.0)
+            q = _snap_qty(exchange, sym, q) if q > 0 else 0.0
+            px = _lad_px(exchange, sym, w, off)
+            if q <= 0:
+                continue
+            if q * px < min_notional and recs:      # too small -> merge into prev
+                recs[-1]["qty"] = _snap_qty(exchange, sym, recs[-1]["qty"] + q)
+                continue
+            recs.append(_lad_new_rec(f"L{i}", px, q))
+        w["ladder"] = recs
+        w["ladder_started"] = True
+        w["ladder_t0"] = now
+        w["ladder_deadline"] = now + float(_cfg3("REV_LADDER_MAX_WAIT_S", 21600.0))
+        log.info(f"[Ladder] {sym} built {len(recs)} levels "
+                 f"{[(r['name'], r['px'], r['qty']) for r in recs]} "
+                 f"qp={qp_qty}")
+        save_reversal_watchers()
+        if not recs and not w.get("qp"):
+            _rev_expire(w, "ladder:no_levels")
+            return
+
+    recs = w["ladder"]
+    pending = [r for r in recs if r["status"] == "new"]
+    if pending and _rate_can_place():
+        bid, ask = _lad_book(exchange, sym)
+        if bid is not None:
+            for r in pending[:3]:
+                _lad_place(exchange, sym, w, r, bid, ask, clamp=True)
+
+    _lad_poll(exchange, sym, _lad_all_recs(w))
+
+    f, c = _lad_totals(w)
+    res = _lad_sync_position(exchange, sym, w, open_pos_live, assets, f, c)
+    if res == "flattened":
+        for r in _lad_all_recs(w):
+            _lad_cancel(exchange, sym, r)
+        _lad_stats(w, "unprotected_flatten")
+        _rev_expire(w, "ladder:unprotected_flatten")
+        return
+
+    allrecs = _lad_all_recs(w)
+    all_done = all(r["status"] == "done" for r in allrecs)
+    if all_done or now >= float(w["ladder_deadline"]):
+        if not all_done:
+            ok = True
+            for r in allrecs:
+                if r["status"] in ("open", "new") and not _lad_cancel(
+                        exchange, sym, r):
+                    ok = False
+            if not ok:
+                return                       # retry next cycle
+            f, c = _lad_totals(w)            # late fills while cancelling
+            _lad_sync_position(exchange, sym, w, open_pos_live, assets, f, c)
+        _lad_finish(exchange, sym, w, open_pos_live,
+                    "complete" if all_done else "deadline")
+
+
+def _rev_ladder_cleanup(exchange, sym: str, w: Dict,
+                        open_pos_live: Dict) -> bool:
+    """Called before a FILLED/EXPIRED watcher is dropped: no resting order may
+    survive, and an UNCONFIRMED queue-priority fill is flattened."""
+    recs = _lad_all_recs(w)
+    if not recs and not w.get("qp_pos"):
+        return True
+    _roe_cleanup_hook(w)                                  # [REV-FIX v4] stats for never-filled expiries
+    ok = True
+    for r in recs:
+        if r.get("status") in ("open", "new") and not _lad_cancel(exchange, sym, r):
+            ok = False
+    if not ok:
+        w["cleanup_tries"] = int(w.get("cleanup_tries", 0)) + 1
+        if w["cleanup_tries"] >= 30:
+            log.error(f"[Ladder] {sym} cleanup gave up — resting order may remain")
+            _send_alert("CRITICAL", f"{sym}: ladder cleanup failed, check open orders")
+            return True
+        return False
+    if (w.get("status") == "EXPIRED" and sym in open_pos_live
+            and w.get("qp_pos") and not w.get("ladder_started")):   # [REV-FIX v4] only OUR provisional fill
+        pos = open_pos_live.get(sym)
+        log.warning(f"[Ladder] {sym} bounce never confirmed — flattening the "
+                    f"queue-priority fill ({w.get('reason')})")
+        if _lad_flatten(exchange, sym, w["action"], float((pos or {}).get("qty", 0.0))):
+            open_pos_live.pop(sym, None)
+            _roe_stats_abort(w, pos)                       # [REV-FIX v4] what the abort cost
+            if _REV_STATE_FILE:
+                _lv_save_state(_REV_STATE_FILE, open_pos_live)
+        else:
+            w["cleanup_tries"] = int(w.get("cleanup_tries", 0)) + 1
+            return w["cleanup_tries"] >= 30
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
+
+
+# ═══════════════════════════════════════════════════════════════
+# [REV-FIX v4] Resting-Option Execution (ROE) + option-cost estimator
+#
+# WHY: backtest REVERSAL_FILL_AT="target" fills at the TOUCH price but only for
+# touches that later CONFIRM. A live order can only get that price by already
+# resting at target when price touches - i.e. BEFORE the bounce is known.
+# ROE therefore does exactly that, and pays for it explicitly:
+#   register  -> rest a post-only bid at target (front of queue, maker fee)
+#   fill      -> PROVISIONAL position (SL/TP anchored at target, as backtest)
+#   confirm   -> promote to a normal position  (== the backtest trade)
+#   no confirm-> ABORT: flatten at once (== the cost the backtest never pays)
+# roe_stats_<mode>.csv records every outcome; the backtest side prints the
+# expected option cost (R per confirmed trade) with the same rules.
+# ═══════════════════════════════════════════════════════════════
+import atexit as _atexit4
+
+_LAST_FLATTEN: Dict[str, float] = {}
+
+
+def _cfg4(name: str, default):
+    return getattr(CFG, name, default)
+
+
+def _roe_limit_syms() -> int:
+    n = int(_cfg4("REV_ROE_MAX_SYMBOLS", 0))
+    return n if n > 0 else int(CFG.MAX_CONCURRENT_ASSETS)
+
+
+# ───────────────────────── live: statistics ─────────────────────────
+def _roe_stats_row(w: Dict, outcome: str, exit_px=None) -> None:
+    try:
+        f, c = _lad_totals(w)
+        entry = (c / f) if f > 0 else None
+        qt = float(w.get("qty_eff") or w["qty"])
+        osd = float(w.get("orig_sl_dist") or 0.0)
+        sign = 1.0 if w["action"] == "BUY" else -1.0
+        loss_r = loss_bps = ""
+        if entry and exit_px and osd > 0:
+            loss_r = round((entry - float(exit_px)) * sign / osd, 4)
+            loss_bps = round((entry - float(exit_px)) * sign / entry * 1e4, 2)
+        t_prov = ""
+        if w.get("roe_fill_ts"):
+            t_prov = round(_t_rev.time() - float(w["roe_fill_ts"]), 1)
+        path = f"roe_stats_{CFG.mode}.csv"
+        new = not os.path.exists(path)
+        with open(path, "a", newline="", encoding="utf-8") as fh:
+            wr = _csv3.writer(fh)
+            if new:
+                wr.writerow(["iso", "sym", "action", "target", "qty_target",
+                             "filled", "fill_ratio", "entry", "exit", "outcome",
+                             "loss_R(+=loss)", "loss_bps(+=loss)",
+                             "t_provisional_s", "sig_ts"])
+            wr.writerow([time.strftime("%Y-%m-%d %H:%M:%S"), w["sym"],
+                         w["action"], w["target"], qt, f,
+                         round(f / max(qt, 1e-12), 4),
+                         entry if entry else "", exit_px if exit_px else "",
+                         outcome, loss_r, loss_bps, t_prov, w.get("sig_ts", "")])
+    except Exception as e:
+        log.debug(f"[ROE] stats write failed: {e}")
+
+
+def _roe_stats_abort(w: Dict, pos: Optional[Dict]) -> None:
+    px = _LAST_FLATTEN.pop(w.get("sym", ""), None)
+    _roe_stats_row(w, f"aborted:{w.get('reason')}", exit_px=px)
+    w["roe_stat_done"] = True
+
+
+def _roe_cleanup_hook(w: Dict) -> None:
+    """Cleanup start: a watcher that EXPIRED without ever filling."""
+    if (_cfg4("REV_ROE_ENABLED", False) and w.get("qp")
+            and w.get("status") == "EXPIRED" and not w.get("roe_stat_done")):
+        f, _ = _lad_totals(w)
+        if f <= 0:
+            _roe_stats_row(w, f"expired_no_fill:{w.get('reason')}")
+            w["roe_stat_done"] = True
+
+
+# ───────────────────────── live: resting order + provisional position ─────────────────────────
+def _rev_roe_step(exchange, sym: str, w: Dict, open_pos_live: Dict, assets,
+                  now: float) -> None:
+    if not _cfg4("REV_ROE_ENABLED", False):
+        return
+    qp = w.get("qp")
+    if qp is None:
+        if w.get("qp_tried") or w.get("status") not in ("WAITING_TOUCH",
+                                                       "WAITING_BOUNCE"):
+            return
+        w["qp_tried"] = True
+        frac = float(_cfg4("REV_ROE_FRAC", 1.0))
+        if frac <= 0:
+            return
+        if len(open_pos_live) + _rev_inflight_other(sym, open_pos_live) \
+                >= _roe_limit_syms():
+            log.debug(f"[ROE] {sym} no free slot for the resting order")
+            return
+        if not _rate_can_place():
+            w["qp_tried"] = False
+            return
+        bid, ask = _lad_book(exchange, sym)
+        if bid is None:
+            w["qp_tried"] = False
+            return
+        tgt = float(w["target"])
+        side = w["side_ccxt"]
+        tick = _rev_tick(exchange, sym) or 0.0
+        off = int(_cfg4("REV_ROE_OFFSET_TICKS", 0)) * tick
+        if side == "buy":
+            px = tgt + off
+            if px >= ask:           # market already at/below target: rest at the bid
+                px = bid
+        else:
+            px = tgt - off
+            if px <= bid:
+                px = ask
+        px = _rev_snap_price(exchange, sym, px, side)
+        q = _snap_qty(exchange, sym, float(w["qty"]) * frac)
+        if q <= 0:
+            return
+        rec = _lad_new_rec("Q", px, q)
+        w["qp"] = rec
+        w["roe_t0"] = now
+        if _lad_place(exchange, sym, w, rec, bid, ask, clamp=False) in (
+                "reject", "fatal"):
+            w["qp"] = None
+        return
+    if qp.get("status") != "open":
+        return
+    _lad_poll(exchange, sym, [qp])                 # every cycle: short naked window
+    f, c = _lad_totals(w)
+    if f <= float(w.get("pos_synced_qty", 0.0)) + 1e-12:
+        return
+    if (sym not in open_pos_live
+            and len(open_pos_live) >= int(CFG.MAX_CONCURRENT_ASSETS)):
+        log.warning(f"[ROE] {sym} filled but all slots are taken — flattening")
+        for r in _lad_all_recs(w):
+            _lad_cancel(exchange, sym, r)
+        f2, _ = _lad_totals(w)
+        _lad_flatten(exchange, sym, w["action"], f2 or f)
+        _roe_stats_row(w, "slot_overflow", exit_px=_LAST_FLATTEN.pop(sym, None))
+        w["roe_stat_done"] = True
+        _rev_expire(w, "roe:slot_overflow")
+        return
+    res = _lad_sync_position(exchange, sym, w, open_pos_live, assets, f, c)
+    if res in ("created", "grown"):
+        w["qp_pos"] = True
+        w.setdefault("roe_fill_ts", now)
+        pos = open_pos_live.get(sym)
+        if pos is not None and not w.get("roe_confirmed"):
+            pos["_provisional"] = True
+            if _REV_STATE_FILE:
+                _lv_save_state(_REV_STATE_FILE, open_pos_live)
+        log.info(f"[ROE] {sym} PROVISIONAL position @ {c / f:.6f} "
+                 f"(target {w['target']:.6f}) — awaiting bounce")
+    elif res == "flattened":
+        w["qp_pos"] = False
+        w["roe_stat_done"] = True
+        _rev_expire(w, "roe:unprotected")
+
+
+def _rev_roe_on_ready(exchange, sym: str, w: Dict, open_pos_live: Dict, assets,
+                      now: float) -> str:
+    """Bounce confirmed. Returns 'handled' | 'pass' (fall through to the
+    normal marketable fill)."""
+    if not _cfg4("REV_ROE_ENABLED", False):
+        return "pass"
+    for r in _lad_all_recs(w):                       # remainder can no longer fill at target
+        if r.get("status") in ("open", "new") and not _lad_cancel(exchange, sym, r):
+            return "handled"                         # retry next cycle (stay READY)
+    f, c = _lad_totals(w)
+    if f > 0:
+        res = _lad_sync_position(exchange, sym, w, open_pos_live, assets, f, c)
+        if res == "flattened":
+            w["roe_stat_done"] = True
+            _rev_expire(w, "roe:unprotected")
+            return "handled"
+        pos = open_pos_live.get(sym)
+        if pos is not None:
+            pos["_provisional"] = False
+            if _REV_STATE_FILE:
+                _lv_save_state(_REV_STATE_FILE, open_pos_live)
+        w["roe_confirmed"] = True
+        w["entry"] = c / f
+        _roe_stats_row(w, "confirmed")
+        w["roe_stat_done"] = True
+        w["status"] = "FILLED"
+        log.info(f"✅ [ROE] {sym} CONFIRMED @ {c / f:.6f} "
+                 f"(target {w['target']:.6f}) qty={f:.6f}")
+        return "handled"
+    _roe_stats_row(w, "confirmed_no_fill")
+    w["roe_stat_done"] = True
+    if str(_cfg4("REV_ROE_FALLBACK", "skip")) == "marketable":
+        w["qp"] = None                               # normal marketable path takes over
+        return "pass"
+    _rev_expire(w, "roe:no_fill_skip")
+    return "handled"
+
+
+# ───────────────────────── backtest: option-cost estimator ─────────────────────────
+_ROE_BT: Dict = {"n": 0, "no_touch": 0, "touched": 0, "confirmed": 0,
+                 "aborted": 0, "ab_window": 0, "ab_fastfail": 0, "ab_sl": 0,
+                 "loss_R": 0.0, "fee_R": 0.0, "lost_by_fastfail": 0,
+                 "prov_dd_R": 0.0, "prov_dd_n": 0, "prov_dd_ge1": 0}
+
+
+def _roe_bt_account(ad, sig, target0, cfg, first_main_ci, deadline_main_ci,
+                    res) -> None:
+    """Pure bookkeeping (never changes a backtest decision): for every touch
+    that does NOT confirm, what would the ROE abort have cost - same rules
+    the live ROE uses."""
+    if ad.sub_highs is None or ad.sub_closes is None or ad.sub_per_main < 2:
+        return
+    action = sig.action
+    sub_pm = int(ad.sub_per_main)
+    start_main = sig.close_idx + 1
+    end_main = min(deadline_main_ci, ad.sub_highs.shape[0])
+    if end_main <= start_main:
+        return
+    sh = ad.sub_highs[start_main:end_main].reshape(-1)
+    sl = ad.sub_lows[start_main:end_main].reshape(-1)
+    sc = ad.sub_closes[start_main:end_main].reshape(-1)
+    n = sh.size
+    if n == 0:
+        return
+    tw = max(1, int(getattr(cfg, "REVERSAL_TOUCH_SUBBARS", 20)))
+    bw = max(1, int(getattr(cfg, "REVERSAL_BOUNCE_SUBBARS", 4)))
+    S = _ROE_BT
+    S["n"] += 1
+    tk = -1
+    for k in range(min(tw, n)):
+        if not np.isfinite(sl[k]) or not np.isfinite(sh[k]):
+            continue
+        if (action == "BUY" and sl[k] <= target0) or (
+                action == "SELL" and sh[k] >= target0):
+            tk = k
+            break
+    if tk < 0:
+        S["no_touch"] += 1
+        return
+    sl_dist = abs(float(sig.price) - float(sig.sl))
+    if sl_dist <= 0 or tk + 1 >= n:
+        return
+    S["touched"] += 1
+    sign = 1.0 if action == "BUY" else -1.0
+    sigma_bar = 0.01
+    try:
+        fi = int(sig.feat_idx)
+        if 0 <= fi < len(ad.E_therm):
+            _s = float(ad.E_therm[fi])
+            if np.isfinite(_s) and _s > 1e-9:
+                sigma_bar = _s
+    except Exception:
+        pass
+    kappa = float(getattr(cfg, "REV_ABORT_KAPPA", 1.0))
+    brk = target0 - sign * kappa * sigma_bar * target0     # fast-fail level
+
+    def _broken(c):
+        return (c < brk) if action == "BUY" else (c > brk)
+
+    if res is not None:                                    # CONFIRMED trade
+        S["confirmed"] += 1
+        try:
+            ek = (int(res[0]) - start_main) * sub_pm + int(
+                _REV_ENTRY_SUB.get((str(sig.symbol), int(sig.close_idx)), 0))
+        except Exception:
+            ek = tk + 1
+        ek = max(min(ek, n - 1), tk + 1)
+        seg_low = sl[tk:ek + 1] if action == "BUY" else sh[tk:ek + 1]
+        seg_low = seg_low[np.isfinite(seg_low)]
+        if seg_low.size:
+            exc = ((target0 - float(seg_low.min())) if action == "BUY"
+                   else (float(seg_low.max()) - target0)) / sl_dist
+            exc = max(exc, 0.0)
+            S["prov_dd_R"] += exc
+            S["prov_dd_n"] += 1
+            S["prov_dd_ge1"] += 1 if exc >= 1.0 else 0
+        for k in range(tk + 1, ek + 1):                    # winners the fast-fail would kill
+            if np.isfinite(sc[k]) and _broken(sc[k]):
+                S["lost_by_fastfail"] += 1
+                break
+        return
+    k_end = min(tk + bw, n - 1)                            # window ends after bar tk+bw
+    if k_end <= tk:
+        return
+    exit_k, why = k_end, "window"
+    for k in range(tk + 1, k_end + 1):
+        if np.isfinite(sc[k]) and _broken(sc[k]):
+            exit_k, why = k, "fastfail"
+            break
+    sl_px = target0 - sign * sl_dist
+    exit_px = float(sc[exit_k])
+    for k in range(tk, exit_k + 1):
+        lo = sl[k] if action == "BUY" else sh[k]
+        if np.isfinite(lo) and ((action == "BUY" and lo <= sl_px)
+                                or (action == "SELL" and lo >= sl_px)):
+            exit_px, why = sl_px, "sl"
+            break
+    if not np.isfinite(exit_px):
+        return
+    loss = (target0 - exit_px) * sign                      # >0 = loss
+    S["aborted"] += 1
+    S["ab_" + ("fastfail" if why == "fastfail" else "sl" if why == "sl" else "window")] += 1
+    S["loss_R"] += loss / sl_dist
+    fee = (abs(float(getattr(CFG, "MAKER_FEE", 0.0002)))
+           + float(getattr(CFG, "TAKER_FEE", 0.0005))) * target0
+    S["fee_R"] += fee / sl_dist
+
+
+def _roe_bt_report() -> None:
+    S = _ROE_BT
+    if S["n"] <= 0 or not getattr(CFG, "REV_OPT_REPORT", True):
+        return
+    t, cf, ab = S["touched"], S["confirmed"], S["aborted"]
+    pc = cf / t * 100 if t else 0.0
+    cost = S["loss_R"] + S["fee_R"]
+    per_conf = cost / cf if cf else float("nan")
+    pdn = max(S["prov_dd_n"], 1)
+    print("\n" + "═" * 70)
+    print("[ROE-Estimator] cost of obtaining the TARGET price live "
+          "(resting order + abort)")
+    print(f"  signals={S['n']}  touched={t} ({t / S['n'] * 100:.1f}%)  "
+          f"confirmed={cf} (p_confirm={pc:.1f}%)  aborted={ab}")
+    print(f"  aborts: window={S['ab_window']}  fast-fail={S['ab_fastfail']}  "
+          f"sl={S['ab_sl']}")
+    print(f"  abort loss = {S['loss_R']:.2f}R  fees = {S['fee_R']:.2f}R  "
+          f"=> option cost = {cost:.2f}R  = {per_conf:.3f}R per CONFIRMED trade")
+    print(f"  => the backtest's average R per trade must EXCEED "
+          f"{per_conf:.3f}R for the target-fill result to survive live")
+    print(f"  winners the fast-fail would have killed: {S['lost_by_fastfail']}  |  "
+          f"provisional adverse excursion before confirm: "
+          f"avg {S['prov_dd_R'] / pdn:.2f}R, >=1R in {S['prov_dd_ge1']} trades")
+    print("═" * 70 + "\n")
+
+
+_atexit4.register(_roe_bt_report)
+
+
+# ═══════════════════════════════════════════════════════════════
+
+
 def run_live(cfg, exchange):
     """
     محرك التداول الحي والـ Testnet عالي التردد (HFT):
@@ -13403,6 +19357,11 @@ def run_live(cfg, exchange):
     - يطبق قانون القوة لـ بئر دريخليه (10$ لحماية رأس المال المجهري).
     """
     log.info(f"🔴 [{cfg.mode.upper()}] بدء التشغيل (State Machine v2)")
+    
+    # ══ [Analytics] init before live ══
+    _analytics_init(cfg.mode, cfg)
+    _analytics_write_manifest(cfg.mode, cfg)
+    
     state_file = f"live_state_{cfg.mode}.json"
     open_pos_live: Dict[str, Dict] = {}
 
@@ -13427,14 +19386,90 @@ def run_live(cfg, exchange):
         except Exception as e:
             log.warning(f"  [State] load failed: {e}")
 
+    # ═══════════════════════════════════════════════════════════════
+    # [BEEsc-MIGRATION] ترحيل آمن للصفقات القديمة التي أُغلقت BEEsc
+    # خاطئ. يعيد TP الأصلي فقط إذا:
+    #   1. MFE > guard (كانت رابحة سابقاً)
+    #   2. السعر الحالي لم يصل إلى TP الأصلي بعد (آمن)
+    # ═══════════════════════════════════════════════════════════════
+    _besc_migrated = 0
+    for _sym_mig, _pos_mig in list(open_pos_live.items()):
+        if not _pos_mig.get('_be_esc_done', False):
+            continue
+        _orig_tp = _pos_mig.get('_be_orig_tp1')
+        if _orig_tp is None or float(_orig_tp) <= 0:
+            continue
+        _entry_mig = float(_pos_mig.get('entry', 0) or 0)
+        _sd0_mig = float(_pos_mig.get('sl_dist_initial', 0) or 0)
+        if _entry_mig <= 0 or _sd0_mig <= 0:
+            continue
+        _hi_mig = float(_pos_mig.get('_hi', _entry_mig) or _entry_mig)
+        _lo_mig = float(_pos_mig.get('_lo', _entry_mig) or _entry_mig)
+        if _pos_mig.get('action') == 'BUY':
+            _mfe_r_mig = (_hi_mig - _entry_mig) / _sd0_mig
+        else:
+            _mfe_r_mig = (_entry_mig - _lo_mig) / _sd0_mig
+        _guard_mig = float(getattr(CFG, 'BREAKEVEN_ESCAPE_MFE_GUARD_R', 0.50))
+        if _mfe_r_mig <= _guard_mig:
+            continue  # BEEsc شرعي، احتفظ به
+        # فحص أمان: السعر الحالي لم يصل TP الأصلي
+        try:
+            _tk_mig = exchange.fetch_ticker(_sym_mig)
+            _p_mig = float(_tk_mig.get('last') or 0)
+        except Exception:
+            _p_mig = 0.0
+        if _p_mig <= 0:
+            log.debug(f"[BEEsc-Migration] {_sym_mig} skipped (no price)")
+            continue
+        if (_pos_mig.get('action') == 'BUY' and _p_mig >= float(_orig_tp)):
+            log.info(f"[BEEsc-Migration] {_sym_mig} skipped "
+                     f"(price {_p_mig:.6f} >= orig TP {_orig_tp:.6f})")
+            continue
+        if (_pos_mig.get('action') == 'SELL' and _p_mig <= float(_orig_tp)):
+            log.info(f"[BEEsc-Migration] {_sym_mig} skipped "
+                     f"(price {_p_mig:.6f} <= orig TP {_orig_tp:.6f})")
+            continue
+        _old_tp_mig = _pos_mig.get('tp1')
+        _pos_mig['tp1'] = float(_orig_tp)
+        _pos_mig['_be_esc_done'] = False
+        _pos_mig.pop('_be_orig_tp1', None)
+        _besc_migrated += 1
+        log.info(
+            f"[BEEsc-Migration] {_sym_mig} {_pos_mig.get('action')} "
+            f"TP {_old_tp_mig} -> {_orig_tp} "
+            f"(MFE={_mfe_r_mig:.2f}R>{_guard_mig}R, price={_p_mig:.6f})"
+        )
+        try:
+            if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
+                _sync_protective_orders(exchange, _sym_mig, _pos_mig)
+        except Exception as _e:
+            log.warning(f"[BEEsc-Migration] {_sym_mig} sync: {_e}")
+    if _besc_migrated > 0:
+        log.info(f"[BEEsc-Migration] Migrated {_besc_migrated} positions")
+        try:
+            _lv_save_state(state_file, open_pos_live)
+        except Exception:
+            pass
+
     # ══ [State] Load persistent symbol metadata (leverage/margin/setup) ══
     load_symbol_meta(cfg.mode)
     # ══ [Pending] Load persisted pending orders ══
     load_pending_orders(cfg.mode)
+    # ══ [LiveRev] Load persisted reversal watchers ══
+    load_reversal_watchers(cfg.mode)
+    log.info(f"  [LiveRev] Active watchers: "
+             f"{len(_REVERSAL_WATCHERS)}")
 
     # ══ [Watch] Load persisted watched signals ══
     load_watched_signals(cfg.mode)
     log.info(f"  [Watch] Active watched signals: {len(_WATCHED_SIGNALS)}")
+
+    # ══ [LiveRev] [REV-FIX v1] startup recovery: stale/legacy watchers, orphan entry orders ══
+    if getattr(CFG, "REVERSAL_CONFIRM_ENABLED", False):
+        try:
+            _rev_startup_recover(exchange, open_pos_live)
+        except Exception as _e:
+            log.warning(f"[LiveRev] startup recovery failed: {_e}")
 
     _stale = _lv_pending_drop_stale(exchange, max_age_s=float(getattr(CFG, 'LIVE_PENDING_GRACE_S', 600.0)))
     if _stale > 0:
@@ -13552,6 +19587,11 @@ def run_live(cfg, exchange):
     while True:
         try:
             t0 = time.time()
+            # ══ [REV-FIX v2] hourly time sync / 6-hourly markets reload ══
+            try:
+                _live_housekeeping(exchange, open_pos_live)
+            except Exception as _e:
+                log.warning(f"[Housekeeping] failed: {_e}")
             # ══ [RateLimit] periodic report ══
             _rate_report()
             # ══ [MFAL] periodic stats ══
@@ -13600,6 +19640,15 @@ def run_live(cfg, exchange):
                 )
             except Exception as _e:
                 log.warning(f"[Pending] monitor error: {_e}")
+            try:
+                monitor_reversal_watchers(
+                    exchange, open_pos_live,
+                    assets=assets if 'assets' in dir() else None,
+                    cap_now=(cap_live if 'cap_live' in dir() else None),
+                    corr_cache=(corr_cache if 'corr_cache' in dir() else None)
+                )
+            except Exception as _e:
+                log.warning(f"[LiveRev] monitor error: {_e}")
             
             # ══ [ReconcileMeta] verify symbol metadata rarely ══
             # [PERF-FIX] 1) Init to NOW (was 0.0 → ran immediately on first loop
@@ -13619,7 +19668,15 @@ def run_live(cfg, exchange):
                 run_live._last_meta_reconcile = time.time()
 
             # تحديث دوري لقائمة الأزواج لتجنب جمود السيولة
-            if time.time() - last_scan_time > 4 * 3600:
+            # [REV-FIX v2] background refresh + atomic swap (no multi-minute blackout)
+            if getattr(CFG, 'REV_UNIV_BACKGROUND', True):
+                _UNIV.maybe_start(exchange, cfg, open_pos_live, last_scan_time)
+                _uswap = _UNIV.poll(open_pos_live, cached_data)
+                if _uswap is not None:
+                    top_syms, cached_data = _uswap
+                    last_scan_time = time.time()
+                    corr_cache.clear()
+            elif time.time() - last_scan_time > 4 * 3600:
                 log.info("🔄 تحديث قائمة الأصول ومزامنة التاريخ العميق...")
                 _new_syms = scan_top_assets(exchange)
                 # Preserve held symbols
@@ -13708,7 +19765,7 @@ def run_live(cfg, exchange):
                             continue
                         if _degenerate_get(sym, cfg.timeframe, _lc_ts):
                             continue
-                        if _DEGENERATE_STREAK.get(sym, 0) >= _DEGENERATE_BAN_THRESHOLD:
+                        if _degenerate_banned(sym):
                             continue
                         _min_bars = int(getattr(CFG, 'LIVE_MIN_BARS_FOR_PROCESS', 2000))
                         if len(cached_data[sym]) < _min_bars:
@@ -13720,8 +19777,9 @@ def run_live(cfg, exchange):
                         continue
 
                     # ── Slow path: new bar → fetch OHLCV (serial, rate-limited) ──
-                    new_candles = exchange.fetch_ohlcv(sym, cfg.timeframe, limit=3)
-                    _rate_record(1.0)
+                    # [REV-FIX v2] catches up after missed bars (was: always last 3)
+                    new_candles = _live_fetch_candles(
+                        exchange, sym, cfg.timeframe, cached_data[sym], _tf_sec_local)
                     _ohlcv_fetched += 1
                     df_new = pd.DataFrame(new_candles, columns=['ts','Open','High','Low','Close','Volume'])
                     df_new['ts'] = pd.to_datetime(df_new['ts'], unit='ms', utc=True)
@@ -13731,6 +19789,8 @@ def run_live(cfg, exchange):
                     cached_data[sym] = (df_combined[
                         ~df_combined.index.duplicated(keep='last')
                     ].sort_index().tail(_keep))
+                    cached_data[sym] = _live_heal_gaps(
+                        exchange, sym, cfg.timeframe, cached_data[sym], _tf_sec_local)
 
                     _tf_sec = CFG.TF_SECONDS if CFG.TF_SECONDS > 0 else 3600
                     _lc_ts = _last_closed_bar_ts(cached_data[sym], _tf_sec)
@@ -13742,7 +19802,7 @@ def run_live(cfg, exchange):
                         continue
                     if _degenerate_get(sym, cfg.timeframe, _lc_ts):
                         continue
-                    if _DEGENERATE_STREAK.get(sym, 0) >= _DEGENERATE_BAN_THRESHOLD:
+                    if _degenerate_banned(sym):
                         log.debug(f"[Degenerate-Ban] {sym} skipped "
                                   f"(streak={_DEGENERATE_STREAK.get(sym, 0)})")
                         continue
@@ -13782,6 +19842,8 @@ def run_live(cfg, exchange):
                         _futs = [_ex.submit(_do_retrain, s, lc)
                                  for s, lc in _to_retrain]
                         for _f in as_completed(_futs):
+                            _live_keepalive(exchange, open_pos_live, assets,
+                                            cap_live, corr_cache)
                             try:
                                 _sym, _lc_ts, _ad, _err = _f.result()
                             except Exception as _e:
@@ -13804,6 +19866,8 @@ def run_live(cfg, exchange):
                              f"({_el/max(len(_to_retrain),1):.2f}s/sym)")
                 else:
                     for _sym, _lc_ts in _to_retrain:
+                        _live_keepalive(exchange, open_pos_live, assets,
+                                        cap_live, corr_cache)
                         try:
                             _ad = process_asset(
                                 _sym, cached_data[_sym],
@@ -13855,6 +19919,23 @@ def run_live(cfg, exchange):
 
             _LV_ASSETS.clear()
             _LV_ASSETS.update(assets)
+            # ══ [BEAR-SHIELD] Current cycle bear state ══
+            _bear_live = False
+            _bias_live = 0.0
+            if getattr(CFG, 'BEAR_SHIELD_ENABLED', True):
+                _btc_live = (assets.get('BTC/USDT')
+                             or assets.get('BTC/USDT:USDT'))
+                if _btc_live is not None:
+                    try:
+                        _bias_live = _asset_bias_at_index(
+                            _btc_live, len(_btc_live.closes) - 1)
+                        _bear_live = (_bias_live < 0)
+                    except Exception:
+                        pass
+            if _bear_live:
+                log.info(f"[BearShield] BEAR MODE (bias={_bias_live:+.1f}) "
+                         f"— risk×{getattr(CFG, 'BEAR_RISK_MULT', 0.30):.0%}, "
+                         f"max_concurrent={getattr(CFG, 'BEAR_MAX_CONCURRENT', 3)}")
             # 1. مراقبة وإغلاق المراكز الحية
             for sym in list(open_pos_live.keys()):
                 pos = open_pos_live[sym]
@@ -13897,22 +19978,189 @@ def run_live(cfg, exchange):
                     continue
 
                 # fi is only needed for physics-based checks
-                fi = (len(ad.score) - 1) if ad is not None else -1
+                # [APEX-PARITY] Use last CLOSED bar, not the forming bar.
+                # Backtest uses ad.closes[cidx] (a closed bar), so live
+                # must match. len(ad.score)-1 = forming bar; -2 = last closed.
+                fi = (len(ad.score) - 2) if ad is not None else -1
                 entry_ts = pos.get('entry_ts', 0)      # [LV05/N2] always defined before use
                 if _lv_manage_position(exchange, sym, pos, price, ad, state_file,
                                        open_pos_live, last_exit_time) == 'closed':
                     continue
 
+                # ══ [BREAKEVEN ESCAPE — Price Trigger — Live] ══
+                if (getattr(CFG, 'BREAKEVEN_ESCAPE_ENABLED', False)
+                        and not pos.get('_be_esc_done', False)
+                        and float(pos.get('sl_dist_initial', 0)) > 0):
+                    _sl_d0_be = float(pos['sl_dist_initial'])
+                    _ci_now_be = (max(0, len(ad.closes) - 2)
+                                  if ad is not None else 0)
+                    # [PARITY] use last CLOSED bar close to match backtest.
+                    # Ticker would trigger BEEsc more often than backtest.
+                    _be_price = (float(ad.closes[_ci_now_be])
+                                 if ad is not None
+                                 and 0 <= _ci_now_be < len(ad.closes)
+                                 else float(price))
+                    _be_trig, _be_rsn = _should_breakeven_escape(
+                        ad, _ci_now_be, _be_price,
+                        pos['action'], float(pos['entry']),
+                        _sl_d0_be, sig_opp=None,
+                        pos=pos,   # ← يُمكّن MFE-guard من _hi/_lo
+                    )
+                    if _be_trig:
+                        _tp_new_be = _apply_breakeven_escape(
+                            pos['action'], float(pos['entry']), _sl_d0_be,
+                            float(pos['tp1']),
+                            bool(pos.get('_partial_taken', False))
+                        )
+                        if _tp_new_be is not None:
+                            _old_tp_be = float(pos['tp1'])
+                            pos['tp1'] = _tp_new_be
+                            pos['_be_esc_done'] = True
+                            pos['_be_orig_tp1'] = _old_tp_be
+                            if pos['action'] == "BUY":
+                                pos['_be_low'] = float(price)
+                            else:
+                                pos['_be_high'] = float(price)
+                            log.info(
+                                f"[BEEsc-LV] {sym} {pos['action']} "
+                                f"TP {_old_tp_be:.6f} → {_tp_new_be:.6f} "
+                                f"({_be_rsn})"
+                            )
+                            try:
+                                if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
+                                    _sync_protective_orders(exchange, sym, pos)
+                            except Exception as _e:
+                                log.debug(f"[BEEsc-LV] {sym} prot sync: {_e}")
+                            try:
+                                _lv_save_state(state_file, open_pos_live)
+                            except Exception:
+                                pass
+
+                # ══ [BEEsc-CANCEL-Live] track extremes + cancel ══
+                # [BEEsc-Cancel-Close] Optional close-only (no ticker)
+                # [BEEsc-Cancel-SR] Optional S/R intact check
+                if (pos.get('_be_esc_done', False)
+                        and not pos.get('_be_cancelled', False)
+                        and float(getattr(CFG, 'BREAKEVEN_ESCAPE_CANCEL_KAPPA', 0.0)) > 0
+                        and '_be_orig_tp1' in pos):
+                    try:
+                        _be_use_close = bool(getattr(
+                            CFG, 'BREAKEVEN_ESCAPE_CANCEL_CLOSE_ONLY', False))
+                        _be_sr_check = bool(getattr(
+                            CFG, 'BREAKEVEN_ESCAPE_CANCEL_SR_CHECK', False))
+                        _be_sr_ok = True
+                        _be_ci = (len(ad.closes) - 2) if ad is not None else -1
+                        if _be_sr_check and ad is not None and _be_ci > 0:
+                            _be_lb = int(getattr(
+                                CFG, 'BREAKEVEN_ESCAPE_CANCEL_SR_LOOKBACK', 60))
+                            _be_swing = _find_recent_swing(
+                                ad, max(0, _be_ci - _be_lb), _be_ci, pos['action'])
+                            if _be_swing is not None:
+                                _be_close_now = float(ad.closes[_be_ci])
+                                if (pos['action'] == 'BUY'
+                                        and _be_close_now < _be_swing):
+                                    _be_sr_ok = False
+                                    log.debug(
+                                        f"[BEEsc-Cancel-SR] {sym} "
+                                        f"BUY skip: support broken "
+                                        f"close={_be_close_now:.6f}<"
+                                        f"swing={_be_swing:.6f}")
+                                elif (pos['action'] == 'SELL'
+                                        and _be_close_now > _be_swing):
+                                    _be_sr_ok = False
+                                    log.debug(
+                                        f"[BEEsc-Cancel-SR] {sym} "
+                                        f"SELL skip: resistance broken "
+                                        f"close={_be_close_now:.6f}>"
+                                        f"swing={_be_swing:.6f}")
+                        if _be_sr_ok:
+                            _sigma_c = 0.01
+                            if ad is not None:
+                                _fi_c = (len(ad.closes) - 2 - ad.feat_start)
+                                if 0 <= _fi_c < len(ad.E_therm):
+                                    _sigma_c = float(ad.E_therm[_fi_c])
+                            if not np.isfinite(_sigma_c) or _sigma_c <= 1e-9:
+                                _sigma_c = 0.01
+                            _kappa_c = float(CFG.BREAKEVEN_ESCAPE_CANCEL_KAPPA)
+                            _thr_c = _kappa_c * _sigma_c * float(pos['entry'])
+                            if _be_use_close and ad is not None and _be_ci > 0:
+                                _be_price_c = float(ad.closes[_be_ci])
+                            else:
+                                _be_price_c = float(price)
+                            if pos['action'] == "BUY":
+                                _low_c = min(
+                                    float(pos.get('_be_low', float(pos['entry']))),
+                                    _be_price_c,
+                                )
+                                pos['_be_low'] = _low_c
+                                _bounce_c = _be_price_c - _low_c
+                                if _bounce_c >= _thr_c:
+                                    _restore_c = float(pos['_be_orig_tp1'])
+                                    pos['tp1'] = _restore_c
+                                    pos['_be_cancelled'] = True
+                                    log.info(
+                                        f"[BEEsc-Cancel-LV] {sym} BUY "
+                                        f"bounce={_bounce_c:.6f} ≥ "
+                                        f"{_thr_c:.6f} → TP restored to "
+                                        f"{_restore_c:.6f} "
+                                        f"(mode={'close' if _be_use_close else 'ticker'})"
+                                    )
+                                    try:
+                                        if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
+                                            _sync_protective_orders(exchange, sym, pos)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        _lv_save_state(state_file, open_pos_live)
+                                    except Exception:
+                                        pass
+                            else:
+                                _high_c = max(
+                                    float(pos.get('_be_high', float(pos['entry']))),
+                                    _be_price_c,
+                                )
+                                pos['_be_high'] = _high_c
+                                _bounce_c = _high_c - _be_price_c
+                                if _bounce_c >= _thr_c:
+                                    _restore_c = float(pos['_be_orig_tp1'])
+                                    pos['tp1'] = _restore_c
+                                    pos['_be_cancelled'] = True
+                                    log.info(
+                                        f"[BEEsc-Cancel-LV] {sym} SELL "
+                                        f"bounce={_bounce_c:.6f} ≥ "
+                                        f"{_thr_c:.6f} → TP restored to "
+                                        f"{_restore_c:.6f} "
+                                        f"(mode={'close' if _be_use_close else 'ticker'})"
+                                    )
+                                    try:
+                                        if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
+                                            _sync_protective_orders(exchange, sym, pos)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        _lv_save_state(state_file, open_pos_live)
+                                    except Exception:
+                                        pass
+                    except Exception as _e_c:
+                        log.debug(f"[BEEsc-Cancel-LV] {sym}: {_e_c}")
+
                 ex = False
                 rsn = ""
 
                 # ── Physics-based exits (require ad) ──
+                # [APEX-PARITY] Physics checks use the CLOSED bar's price
+                # to match the backtest exactly. SL/TP/Liq still use the
+                # live ticker (price) — only Apex/TopoDiv need parity.
                 if ad is not None:
+                    _apex_ci = fi + ad.feat_start
+                    _apex_price = (float(ad.closes[_apex_ci])
+                                   if 0 <= _apex_ci < len(ad.closes)
+                                   else float(price))
                     # Apex
                     is_apex, apex_rsn = False, ""
                     if getattr(CFG, 'APEX_ENABLED', True):
                         is_apex, apex_rsn = check_thermodynamic_apex(
-                            pos['action'], pos['entry'], price, ad, fi
+                            pos['action'], pos['entry'], _apex_price, ad, fi
                         )
                     if is_apex:
                         ex = True; rsn = apex_rsn
@@ -13963,51 +20211,84 @@ def run_live(cfg, exchange):
 
                 # ── Trailing SL (dynamic σ-scaled) ──
                 # [GATE] يُشغّل Trailing فقط إذا كان TRAIL_ENABLED=True.
-                # إذا كان False، لا يتحرك SL أبداً بعد الدخول (يبقى كما
-                # وُضع عند الدخول). هذا مطابق لسلوك الباكتيست.
+                # [SUB-BAR-GATE] عند TRAIL_USE_SUBBARS_ONLY=True:
+                #   • SL يُحدَّث فقط عند إغلاق sub-bar جديد
+                #   • peak يُحسب من _hi/_lo (sub-bar) فقط، بلا ticker
+                #   • مطابق تماماً لسلوك الـ backtest
                 if not ex and getattr(CFG, 'TRAIL_ENABLED', True):
-                    entry_px = float(pos['entry'])
-                    _sl_before = float(pos['sl'])
-                    _td = float(pos.get('trail_dist_frac', CFG.TRAIL_DISTANCE))
-                    # ══ [FIX 1] Activation at R-multiple of initial SL ══
-                    _sl_dist_init = float(pos.get('sl_dist_initial', 0) or 0)
-                    _sl_frac_init = (_sl_dist_init / entry_px
-                                     if entry_px > 0 and _sl_dist_init > 0
-                                     else 0.01)
-                    _act_at_r = float(getattr(CFG, 'TRAIL_ACTIVATE_AT_R', 1.0))
-                    _ta = _sl_frac_init * _act_at_r
-
-                    # Update peak from live price and compute MFE
-                    if pos['action'] == "BUY":
-                        cur_peak = float(pos.get('peak_price', entry_px))
-                        if price > cur_peak:
-                            pos['peak_price'] = price
-                            cur_peak = price
-                        _mfe = (cur_peak - entry_px) / entry_px
-                    else:
-                        cur_peak = float(pos.get('peak_price', entry_px))
-                        if price < cur_peak or cur_peak == entry_px:
-                            pos['peak_price'] = price
-                            cur_peak = price
-                        _mfe = (entry_px - cur_peak) / entry_px
-
-                    if _mfe >= _ta:
+                    _use_subbars_trail = bool(getattr(
+                        CFG, 'TRAIL_USE_SUBBARS_ONLY', False))
+                    _allow_trail_update = True
+                    _cur_sub_ts_t = 0
+                    if _use_subbars_trail:
+                        _cur_sub_ts_t = int(pos.get('_last_sub_ts', 0))
+                        _last_upd_ts_t = int(
+                            pos.get('_trail_last_update_sub_ts', -1))
+                        if _cur_sub_ts_t == 0 or _cur_sub_ts_t <= _last_upd_ts_t:
+                            _allow_trail_update = False
+                    
+                    if _allow_trail_update:
+                        entry_px = float(pos['entry'])
+                        _sl_before = float(pos['sl'])
+                        _td = float(pos.get('trail_dist_frac',
+                                            CFG.TRAIL_DISTANCE))
+                        _sl_dist_init = float(
+                            pos.get('sl_dist_initial', 0) or 0)
+                        _sl_frac_init = (_sl_dist_init / entry_px
+                                         if entry_px > 0 and _sl_dist_init > 0
+                                         else 0.01)
+                        _act_at_r = float(getattr(
+                            CFG, 'TRAIL_ACTIVATE_AT_R', 1.0))
+                        _ta = _sl_frac_init * _act_at_r
+                        
                         if pos['action'] == "BUY":
-                            new_sl = cur_peak * (1.0 - _td)
-                            if new_sl > pos['sl']:
-                                pos['sl'] = new_sl
+                            cur_peak = float(pos.get('peak_price', entry_px))
+                            if _use_subbars_trail:
+                                _cand_peak = float(
+                                    pos.get('_hi', entry_px) or entry_px)
+                            else:
+                                _cand_peak = max(
+                                    float(price),
+                                    float(pos.get('_hi', entry_px)),
+                                )
+                            if _cand_peak > cur_peak:
+                                pos['peak_price'] = _cand_peak
+                                cur_peak = _cand_peak
+                            _mfe = (cur_peak - entry_px) / entry_px
                         else:
-                            new_sl = cur_peak * (1.0 + _td)
-                            if new_sl < pos['sl']:
-                                pos['sl'] = new_sl
-
-                    # ══ [LAYER 7] If SL moved, sync protective orders ══
-                    if (getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True)
-                            and abs(float(pos['sl']) - _sl_before) > 1e-12):
-                        try:
-                            _sync_protective_orders(exchange, sym, pos)
-                        except Exception as _e:
-                            log.debug(f"[Prot] {sym} sync error: {_e}")
+                            cur_peak = float(pos.get('peak_price', entry_px))
+                            if _use_subbars_trail:
+                                _cand_peak = float(
+                                    pos.get('_lo', entry_px) or entry_px)
+                            else:
+                                _cand_peak = min(
+                                    float(price),
+                                    float(pos.get('_lo', entry_px) or price),
+                                )
+                            if _cand_peak < cur_peak or cur_peak == entry_px:
+                                pos['peak_price'] = _cand_peak
+                                cur_peak = _cand_peak
+                            _mfe = (entry_px - cur_peak) / entry_px
+                        
+                        if _mfe >= _ta:
+                            if pos['action'] == "BUY":
+                                new_sl = cur_peak * (1.0 - _td)
+                                if new_sl > pos['sl']:
+                                    pos['sl'] = new_sl
+                            else:
+                                new_sl = cur_peak * (1.0 + _td)
+                                if new_sl < pos['sl']:
+                                    pos['sl'] = new_sl
+                        
+                        if (getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True)
+                                and abs(float(pos['sl']) - _sl_before) > 1e-12):
+                            try:
+                                _sync_protective_orders(exchange, sym, pos)
+                            except Exception as _e:
+                                log.debug(f"[Prot] {sym} sync error: {_e}")
+                        
+                        if _use_subbars_trail:
+                            pos['_trail_last_update_sub_ts'] = _cur_sub_ts_t
 
                 # ── [FIX 4] Partial TP ──
                 if (not ex
@@ -14057,14 +20338,61 @@ def run_live(cfg, exchange):
                             except Exception as _e:
                                 log.warning(f"[PartialTP] {sym} failed: {_e}")
 
+                # ══ [RESCUE EXIT — Live] ══
+                if (not ex
+                        and getattr(CFG, 'RESCUE_EXIT_ENABLED', False)
+                        and ad is not None
+                        and fi is not None and fi >= 3):
+                    try:
+                        _cur_fi_resc = fi
+                        _be_done_resc = bool(pos.get('_be_esc_done', False))
+                        _entry_ci_resc = int(pos.get('_entry_ci', 0) or 0)
+                        _bars_held_resc = max(0, _cur_fi_resc
+                                              - max(0, _entry_ci_resc - ad.feat_start))
+                        _resc_exit, _resc_rsn, _resc_info = _rescue_check(
+                            {'entry': float(pos.get('entry') or 0),
+                             'sl': float(pos.get('sl') or 0),
+                             'action': str(pos.get('action') or 'BUY'),
+                             'tp1': float(pos.get('tp1') or 0)},
+                            ad, len(ad.closes) - 2, _cur_fi_resc,
+                            _bars_held_resc, _be_done_resc, CFG
+                        )
+                        if (getattr(CFG, 'RESCUE_LOG_VERBOSE', False)
+                                and _resc_info):
+                            log.debug(
+                                f"[Rescue-LV] {sym} {pos.get('action')} "
+                                f"P={_resc_info.get('P', 0):.3f} "
+                                f"th={_resc_info.get('threshold', 0):.3f} "
+                                f"L={_resc_info.get('L_now_frac', 0)*100:.2f}% "
+                                f"bars={_bars_held_resc} "
+                                f"be={_be_done_resc}"
+                            )
+                        if _resc_exit:
+                            ex = True
+                            rsn = _resc_rsn
+                            log.info(
+                                f"[Rescue-LV] {sym} {pos.get('action')} "
+                                f"triggered: {_resc_rsn}"
+                            )
+                    except Exception as _resc_e:
+                        log.debug(f"[Rescue-LV] {sym} error: {_resc_e}")
+
                 # ── SL / TP ──
                 if not ex:
+                    # [BEEsc-LABEL] التمييز بين BEEsc-exit و TP الأصلي
+                    _tp_label_lv = ("BEEsc-breakeven"
+                                    if pos.get('_be_esc_done')
+                                    else "Hard TP")
                     if pos['action'] == "BUY":
-                        if price <= pos['sl']: ex = True; rsn = "Emergency SL"
-                        elif price >= pos.get('tp1', 1e18): ex = True; rsn = "Hard TP"
+                        if price <= pos['sl']:
+                            ex = True; rsn = "Emergency SL"
+                        elif price >= pos.get('tp1', 1e18):
+                            ex = True; rsn = _tp_label_lv
                     else:
-                        if price >= pos['sl']: ex = True; rsn = "Emergency SL"
-                        elif price <= pos.get('tp1', 0.): ex = True; rsn = "Hard TP"
+                        if price >= pos['sl']:
+                            ex = True; rsn = "Emergency SL"
+                        elif price <= pos.get('tp1', 0.):
+                            ex = True; rsn = _tp_label_lv
 
                 # ── [LAYER 5] LiqProximity with exchange-verified Liq ──
                 if not ex and getattr(CFG, 'LIQ_EMERGENCY_ENABLED', True):
@@ -14169,10 +20497,16 @@ def run_live(cfg, exchange):
                 try:
                     s = 'sell' if pos['action'] == 'BUY' else 'buy'
 
+                    # [APEX-PARITY] Apex/Topo-Div urgent when enabled
+                    _apex_urgent_lv = bool(getattr(
+                        CFG, 'PO_EXIT_APEX_URGENT', True))
                     _urgent = (
                         'Emergency' in rsn
                         or 'Hard TP' in rsn
+                        or 'BEEsc-breakeven' in rsn   # ← NEW
                         or 'LiqProximity' in rsn
+                        or (_apex_urgent_lv and (
+                            ('Apex' in rsn) or ('Topo-Div' in rsn)))
                     )
 
                     _exit_ok = False
@@ -14201,12 +20535,18 @@ def run_live(cfg, exchange):
                             if _urgent
                             else int(CFG.PO_EXIT_MAX_WAIT_S)
                         )
+                        # [APEX-PARITY] Market fallback for Apex/Topo-Div
+                        _apex_fallback = (
+                            bool(getattr(CFG,
+                                'PO_EXIT_APEX_MARKET_FALLBACK', True))
+                            and (('Apex' in rsn) or ('Topo-Div' in rsn))
+                        )
                         result = execute_post_only(
                             exchange, sym, s, pos['qty'],
                             max_wait_s=_wait,
-                            fallback_market=False,
+                            fallback_market=_apex_fallback,
                             cross_spread=_cross,
-                            reduce_only=True,   # ← NEW param
+                            reduce_only=True,
                         )
 
                         if not result['filled_qty'] or result['filled_qty'] <= 0:
@@ -14339,6 +20679,10 @@ def run_live(cfg, exchange):
                 cfg.MAX_CONCURRENT_ASSETS,
                 max(_soft_cap, _n_open + 1)
             )
+            # [REV-FIX v1] parity: the backtest gates on the flat MAX_CONCURRENT_ASSETS
+            if (getattr(CFG, 'REVERSAL_CONFIRM_ENABLED', False)
+                    and getattr(CFG, 'REV_PARITY_NO_SOFTCAP', True)):
+                effective_max = int(cfg.MAX_CONCURRENT_ASSETS)
 
             # سجل تشخيص كل 5 دقائق (لمعرفة السبب فوراً في المرة القادمة)
             _now_ts_eff = time.time()
@@ -14351,7 +20695,10 @@ def run_live(cfg, exchange):
                     f"effective_max={effective_max}"
                 )
 
-            if len(open_pos_live) < effective_max:
+            # [REV-FIX v1] reversal mode: keep scanning/registering even when all slots
+            # are taken - slots are enforced at FILL time (like the backtest)
+            if (len(open_pos_live) < effective_max
+                    or getattr(CFG, 'REVERSAL_CONFIRM_ENABLED', False)):
                 # توليد الإشارة يمرر وضعية التداول اللحظية لكسر وهم الزمن
                 # [Filter] إعادة التعيين في كل دورة live (عدّاد دوري)
                 _filter_reset_stats()
@@ -14384,6 +20731,120 @@ def run_live(cfg, exchange):
                             continue
                         _maybe_adapt_tp_live(_pos_o, _sig_o, _ad_o, exchange)
 
+                # ══ [BREAKEVEN ESCAPE — Signal Trigger — Live] ══
+                if (getattr(CFG, 'BREAKEVEN_ESCAPE_ENABLED', False)
+                        and open_pos_live):
+                    for _sig_be in sigs:
+                        if _sig_be.symbol not in open_pos_live:
+                            continue
+                        _pos_be = open_pos_live[_sig_be.symbol]
+                        if _pos_be.get('action') == _sig_be.action:
+                            continue
+                        if _pos_be.get('_be_esc_done'):
+                            continue
+                        _sl_d0_be = float(_pos_be.get('sl_dist_initial', 0))
+                        if _sl_d0_be <= 0:
+                            continue
+                        _ad_be = assets.get(_sig_be.symbol)
+                        _ci_be = (max(0, len(_ad_be.closes) - 2)
+                                  if _ad_be is not None
+                                  else int(_sig_be.close_idx))
+                        _p_be = (float(_ad_be.closes[_ci_be])
+                                 if _ad_be is not None
+                                 and 0 <= _ci_be < len(_ad_be.closes)
+                                 else float(_sig_be.price))
+                        _be_trig, _be_rsn = _should_breakeven_escape(
+                            _ad_be, _ci_be, _p_be,
+                            _pos_be['action'], float(_pos_be['entry']),
+                            _sl_d0_be, sig_opp=_sig_be,
+                            pos=_pos_be,   # ← MFE-guard
+                        )
+                        if _be_trig:
+                            _tp_new_be = _apply_breakeven_escape(
+                                _pos_be['action'], float(_pos_be['entry']),
+                                _sl_d0_be, float(_pos_be['tp1']),
+                                bool(_pos_be.get('_partial_taken', False))
+                            )
+                            if _tp_new_be is not None:
+                                _old_be = float(_pos_be['tp1'])
+                                _pos_be['tp1'] = _tp_new_be
+                                _pos_be['_be_esc_done'] = True
+                                _pos_be['_be_orig_tp1'] = _old_be
+                                if _pos_be['action'] == "BUY":
+                                    _pos_be['_be_low'] = float(_p_be)
+                                else:
+                                    _pos_be['_be_high'] = float(_p_be)
+                                log.info(
+                                    f"[BEEsc-LV-Sig] {_sig_be.symbol} "
+                                    f"{_pos_be['action']} "
+                                    f"TP {_old_be:.6f} → {_tp_new_be:.6f} "
+                                    f"({_be_rsn})"
+                                )
+                                try:
+                                    if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
+                                        _sync_protective_orders(
+                                            exchange, _sig_be.symbol, _pos_be)
+                                except Exception:
+                                    pass
+                                try:
+                                    _lv_save_state(state_file, open_pos_live)
+                                except Exception:
+                                    pass
+
+                # ══ [SIGNAL-SL] رفع SL من إشارة جديدة (نفس الاتجاه) ══
+                if (getattr(CFG, 'SIGNAL_BASED_SL_ENABLED', False)
+                        and 'assets' in dir() and assets):
+                    for _ssl_sig in sigs:
+                        _ssl_sym = _ssl_sig.symbol
+                        if _ssl_sym not in open_pos_live:
+                            continue
+                        _ssl_key = int(_ssl_sig.close_idx)
+                        if _ssl_key <= _SIGNAL_SL_LAST_PROCESSED.get(_ssl_sym, -1):
+                            continue
+                        _ssl_pos = open_pos_live[_ssl_sym]
+                        _ssl_ad = assets.get(_ssl_sym)
+                        if _ssl_ad is None:
+                            continue
+                        _SIGNAL_SL_LAST_PROCESSED[_ssl_sym] = _ssl_key
+                        try:
+                            _ssl_ci_now = max(0, len(_ssl_ad.closes) - 2)
+                            _ssl_price = (
+                                float(_ssl_ad.closes[_ssl_ci_now])
+                                if 0 <= _ssl_ci_now < len(_ssl_ad.closes)
+                                else float(_ssl_sig.price))
+                            _ssl_ok, _ssl_new, _ssl_rsn = _maybe_update_sl_from_signal(
+                                _ssl_pos, _ssl_sig, _ssl_price, _ssl_ad
+                            )
+                            if _ssl_ok:
+                                _ssl_old = float(_ssl_pos.get('sl', 0))
+                                _ssl_pos['sl'] = _ssl_new
+                                _ssl_pos['_signal_sl_last_reason'] = _ssl_rsn
+                                log.info(
+                                    f"[Signal-SL-LV] {_ssl_sym} "
+                                    f"{_ssl_sig.action} SL "
+                                    f"{_ssl_old:.6f}->{_ssl_new:.6f} "
+                                    f"({_ssl_rsn})"
+                                )
+                                try:
+                                    if getattr(CFG, 'PROTECTIVE_ORDERS_ENABLED', True):
+                                        _sync_protective_orders(
+                                            exchange, _ssl_sym, _ssl_pos)
+                                except Exception as _ssl_e:
+                                    log.debug(
+                                        f"[Signal-SL-LV] {_ssl_sym} "
+                                        f"prot sync: {_ssl_e}")
+                                try:
+                                    _lv_save_state(state_file, open_pos_live)
+                                except Exception:
+                                    pass
+                            elif VERBOSE:
+                                log.debug(
+                                    f"[Signal-SL-LV] {_ssl_sym} "
+                                    f"{_ssl_sig.action} rejected: {_ssl_rsn}")
+                        except Exception as _ssl_e:
+                            log.debug(
+                                f"[Signal-SL-LV] {_ssl_sym} error: {_ssl_e}")
+
                 for sig in reversed(sigs):
                     sym = sig.symbol
                     if sym in open_pos_live: continue
@@ -14404,7 +20865,8 @@ def run_live(cfg, exchange):
                     _total_exposure = (len(open_pos_live)
                                        + len(_PENDING_ORDERS)
                                        + len(_WATCHED_SIGNALS))
-                    if _total_exposure >= int(cfg.MAX_CONCURRENT_ASSETS):
+                    if (_total_exposure >= int(cfg.MAX_CONCURRENT_ASSETS)
+                            and not getattr(CFG, 'REVERSAL_CONFIRM_ENABLED', False)):
                         log.debug(f"[Watch] exposure cap reached "
                                   f"({_total_exposure}≥"
                                   f"{cfg.MAX_CONCURRENT_ASSETS}) — "
@@ -14473,10 +20935,19 @@ def run_live(cfg, exchange):
                         except Exception:
                             pass
 
+                    # ══ [BEAR-SHIELD] Live risk reduction ══
+                    if _bear_live:
+                        _risk_mult_live = float(getattr(
+                            CFG, 'BEAR_RISK_MULT', 0.30))
+                    else:
+                        _risk_mult_live = 1.0
                     risk_frac = compute_portfolio_risk_frac(sig, cap_live, _open_for_budget, CFG)
                     if risk_frac <= 0.0:
                         log.debug(f"[Budget] {sym} skipped: no heat budget")
                         continue
+                    # ══ [BEAR-SHIELD] Risk reduction ══
+                    if _bear_live:
+                        risk_frac *= _risk_mult_live
 
                     # ══ [SING-TIMING Layer 3B] Resonance Risk Boost ══
                     # الغرض: رفع المخاطرة × N عندما تكون الإشارة في
@@ -14544,7 +21015,7 @@ def run_live(cfg, exchange):
                         _mmr_sig = _get_mmr_for_symbol(exchange, sym)
                         # Keep this in sync with SL_WIDEN_MULT so LevCap
                         # accounts for the wider actual SL.
-                        _sl_frac_max = 0.015 * float(
+                        _sl_frac_max = float(getattr(CFG, 'MAX_SL_FRAC', 0.015)) * float(
                             getattr(CFG, 'SL_WIDEN_MULT', 1.0)
                         )
                         _lev_by_liq = compute_max_leverage_by_liq(
@@ -14711,7 +21182,7 @@ def run_live(cfg, exchange):
                         # الباكتيست يقصّ SL إلى max_sl_frac قبل LiqGate.
                         # اللايف يفعل نفس الشيء. فحص LiqGate يتم في STEP 3
                         # بعد هذا القص (الترتيب مقصود: قصّ أولاً، ثم فحص).
-                        _max_sl_frac_live = 0.015 * float(
+                        _max_sl_frac_live = float(getattr(CFG, 'MAX_SL_FRAC', 0.015)) * float(
                             getattr(CFG, 'SL_WIDEN_MULT', 1.0)
                         )
                         _sl_dist_now = abs(float(sig.price) - float(sig.sl))
@@ -14734,14 +21205,23 @@ def run_live(cfg, exchange):
 
                         # ══ 3. Entry — Watch mode (or legacy pending) ══
                         if getattr(CFG, 'PENDING_ENABLED', True):
-                            _total_exposure = (len(_PENDING_ORDERS)
-                                               + len(open_pos_live)
-                                               + len(_WATCHED_SIGNALS))
-                            if _total_exposure >= int(CFG.MAX_CONCURRENT_ASSETS):
+                            if getattr(CFG, "REVERSAL_CONFIRM_ENABLED", False):
+                                # [REV-FIX v1] watchers NEVER consume position slots
+                                _total_exposure = len(_REVERSAL_WATCHERS)
+                                _exp_cap = int(getattr(CFG, 'REV_WATCHER_CAP', 50))
+                            else:
+                                _total_exposure = (len(_PENDING_ORDERS)
+                                                   + len(open_pos_live)
+                                                   + len(_WATCHED_SIGNALS))
+                                _exp_cap = int(CFG.MAX_CONCURRENT_ASSETS)
+                                # ══ [BEAR-SHIELD] Lower cap in bear ══
+                                if _bear_live:
+                                    _exp_cap = min(_exp_cap,
+                                        int(getattr(CFG, 'BEAR_MAX_CONCURRENT', 3)))
+                            if _total_exposure >= _exp_cap:
                                 log.debug(
                                     f"[Watch] exposure cap "
-                                    f"({_total_exposure}≥"
-                                    f"{CFG.MAX_CONCURRENT_ASSETS}) "
+                                    f"({_total_exposure}≥{_exp_cap}) "
                                     f"— skip {sym}"
                                 )
                                 continue
@@ -14759,6 +21239,20 @@ def run_live(cfg, exchange):
                                         getattr(CFG, 'LIQ_FALLBACK_MMR', 0.02)
                                     )
                                     save_watched_signals()
+                                continue
+
+                            # ══ [LiveRev] register watcher instead ══
+                            if getattr(CFG, "REVERSAL_CONFIRM_ENABLED", False):
+                                _ok = _register_reversal_watcher(
+                                    exchange, sym, sd, qty, sig,
+                                    int(dynamic_leverage), assets[sym],
+                                    cap_ref=(cap_live if 'cap_live' in dir() else None)
+                                )
+                                if _ok:
+                                    try:
+                                        save_reversal_watchers()
+                                    except Exception:
+                                        pass
                                 continue
 
                             # ── Legacy immediate placement ──
@@ -14842,7 +21336,7 @@ def run_live(cfg, exchange):
                         rr_ratio = orig_tp_dist / orig_sl_dist
                         # [SL-CLIP-CONSISTENCY] Scale with SL_WIDEN_MULT
                         # so the widened SL isn't re-clipped back to 1.5%.
-                        max_sl_frac = 0.015 * float(
+                        max_sl_frac = float(getattr(CFG, 'MAX_SL_FRAC', 0.015)) * float(
                             getattr(CFG, 'SL_WIDEN_MULT', 1.0)
                         )
                         if orig_sl_dist > entry_price * max_sl_frac:
@@ -14939,16 +21433,35 @@ def run_live(cfg, exchange):
                 )
                 _LIQ_EMERGENCY_STATS['last_warned_at'] = time.time()
 
+            # ══ [Analytics] live portfolio snapshot ══
+            if _ANALYTICS.get('enabled'):
+                try:
+                    _an_heat = sum(float(p.get('dyn_risk', 0))
+                                    for p in open_pos_live.values())
+                    _analytics_portfolio_snapshot(
+                        time.time(), cap_live, peak_cap_live,
+                        len(open_pos_live), _an_heat,
+                    )
+                    _analytics_market_snapshot(
+                        time.time(),
+                        assets if 'assets' in dir() else {},
+                        open_pos_live,
+                    )
+                except Exception:
+                    pass
+            
             # ══ Persist state ══
             try:
                 _lv_save_state(state_file, open_pos_live)
             except Exception as e:
                 log.warning(f"[State] end-of-cycle save failed: {e}")
             save_pending_orders()
+            save_reversal_watchers()
             save_watched_signals()
             save_symbol_meta()
             
             # استرخاء المحرك للمزامنة الزمنية
+            _loop_ok(loop_iter, open_pos_live)   # [REV-FIX v2] resets error streak + heartbeat
             sleep_time = max(0, cfg.LIVE_POLL_SECS - (time.time() - t0))
             time.sleep(sleep_time)
             
@@ -14956,9 +21469,11 @@ def run_live(cfg, exchange):
             log.info("تم إيقاف الروبوت يدوياً.")
             break
         except Exception as e: 
-            import traceback
-            log.error(f"خطأ غير متوقع في حلقة التداول: {e}")
-            log.debug(traceback.format_exc())
+            # [REV-FIX v2] escalate persistent failures (traceback at ERROR, alert, exit)
+            _loop_error_handler(
+                exchange, e,
+                open_pos_live if 'open_pos_live' in dir() else None,
+                state_file if 'state_file' in dir() else None)
             time.sleep(10)
 
 # ════════════════════════════════════════════════════════════════
@@ -14992,7 +21507,7 @@ def _check_time_sync(exchange, warn_threshold_s: float = 30.0) -> bool:
 
 def main():
     p = argparse.ArgumentParser(description="Quantum Thermo Trader v6.0 – Singularity Engine")
-    p.add_argument("--mode",        default="backtest", choices=["backtest","testnet","live"])
+    p.add_argument("--mode",        default=os.environ.get("MODE", "backtest"), choices=["backtest","testnet","live"])
     p.add_argument("--api-key",     default=os.environ.get("BINANCE_API_KEY",""))
     p.add_argument("--api-secret",  default=os.environ.get("BINANCE_API_SECRET",""))
     p.add_argument("--capital",     type=float, default=None)
@@ -15013,13 +21528,13 @@ def main():
     p.add_argument("--timeframe",
                    choices=["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
                    default="4h")
-    p.add_argument("--history-days",       type=int,   default=90)
+    p.add_argument("--history-days",       type=int,   default=None)
     p.add_argument("--end-date", type=str, default=None,
                    help="Backtest end date YYYY-MM-DD for reproducibility")
     p.add_argument("--no-numba", action="store_true",
                    help="Disable Numba kernels and use pure-Python fallback")
-    p.add_argument("--nassets",       type=int,   default=20)
-    p.add_argument("--maxcon",       type=int,   default=5)
+    p.add_argument("--nassets",       type=int,   default=15)
+    p.add_argument("--maxcon",       type=int,   default=2)
     p.add_argument("--fill-mode",   choices=["maker", "taker", "hybrid"], default=None,
                    help="Entry execution mode (default: hybrid)")
     p.add_argument("--fill-target", type=float, default=None,
@@ -15061,6 +21576,9 @@ def main():
                    help="Disable Trailing Stop Loss entirely (SL stays fixed)")
     p.add_argument("--trailing", action="store_true",
                    help="Force-enable Trailing Stop Loss (overrides config)")
+    p.add_argument("--trail-sync-to-subbars", action="store_true",
+                   help="Update peak/SL ONLY on sub-bar close (e.g., 15m) "
+                        "— matches backtest exactly. No ticker, no 1m forming bar.")
     p.add_argument("--trail-kappa", type=float, default=None,
                    help="Trail multiplier on σ (default 1.5)")
     p.add_argument("--reentry-cooldown", type=int, default=None,
@@ -15073,6 +21591,65 @@ def main():
                    help="Max Live cache entries (default 40)")
     p.add_argument("--no-fixed-price", action="store_true",
                    help="Disable fixed-price entry (allow reprice chasing)")
+    # ══ [REVERSAL-CONFIRM] Touch-and-Bounce on sub-bars ══
+    p.add_argument("--reversal-confirm", action="store_true",
+                   help="Enable Touch-and-Bounce entry on sub-bars")
+    p.add_argument("--reversal-touch-subbars", type=int, default=None,
+                   help="Max sub-bars to wait for target touch (default 20)")
+    p.add_argument("--reversal-bounce-subbars", type=int, default=None,
+                   help="Max sub-bars after touch to confirm (default 4)")
+    p.add_argument("--reversal-max-hours", type=float, default=None,
+                   help="Signal validity window in hours (default 24)")
+    p.add_argument("--reversal-mode", type=str, default=None,
+                   choices=["close_back","two_bar",
+                            "sigma_bounce","bar_color"],
+                   help="Confirmation mode (default close_back)")
+    p.add_argument("--reversal-kappa", type=float, default=None,
+                   help="sigma multiplier for sigma_bounce (default 0.20)")
+    p.add_argument("--reversal-fill", type=str, default=None,
+                   choices=["target","close","best"],
+                   help="Fill price source (default target)")
+    # ══ [SUB-BAR ENTRY] ══
+    p.add_argument("--rev-subbar-entry", action="store_true", default=None,
+                   help="[SubBar Entry] الدخول عند إغلاق شمعة التأكيد "
+                        "(Limit maker بدل marketable). مطابق للـ backtest.")
+    p.add_argument("--no-rev-subbar-entry", action="store_true",
+                   help="[SubBar Entry] تعطيل الدخول عند إغلاق شمعة التأكيد")
+    p.add_argument("--rev-subbar-entry-pen-bps", type=float, default=None,
+                   help="[SubBar Entry] انزلاق نحو السوق (default 2.0 bps)")
+    p.add_argument("--rev-subbar-entry-max-drift-bps", type=float, default=None,
+                   help="[SubBar Entry] أقصى drift قبل التحول لـ marketable "
+                        "(default 15.0 bps)")
+    p.add_argument("--rev-subbar-entry-marketable", action="store_true",
+                   help="[SubBar Entry] استخدم Limit عند subbar_close مع "
+                        "تقاطع السبريد (taker) بدل Post-Only GTX (maker)")
+    # ══ [REV-FIX v3] Maker Ladder (Phase 1) ══
+    p.add_argument("--rev-ladder", action="store_true",
+                   help="Post-bounce 3-level maker ladder (40/35/25 at mu, mu-0.3s, mu-0.6s) instead of the single marketable limit")
+    p.add_argument("--rev-ladder-qp", type=float, default=None,
+                   help="Queue-priority share resting at target from registration (default 0.05, 0=off)")
+    p.add_argument("--rev-ladder-wait-h", type=float, default=None,
+                   help="Hours the ladder may rest after the bounce confirms (default 6)")
+    # ══ [REV-FIX v4] Resting-Option Execution ══
+    p.add_argument("--rev-roe", action="store_true",
+                   help="Rest a post-only bid AT target before the touch; provisional position; abort if the bounce never confirms")
+    p.add_argument("--rev-roe-frac", type=float, default=None,
+                   help="Share of the size resting at target pre-touch (default 1.0)")
+    p.add_argument("--rev-roe-offset-ticks", type=int, default=None,
+                   help="Rest N ticks above target (BUY) for a higher fill probability (default 0)")
+    p.add_argument("--rev-roe-fallback", type=str, default=None, choices=["skip", "marketable"],
+                   help="Bounce confirmed but the resting order never filled (default skip)")
+    p.add_argument("--rev-roe-max-symbols", type=int, default=None,
+                   help="Symbols allowed to rest/hold provisional exposure (default = --maxcon)")
+    p.add_argument("--rev-abort-kappa", type=float, default=None,
+                   help="Abort level in sigma_bar*target beyond target (default 1.0; also used by the estimator)")
+    p.add_argument("--confirm-entry", action="store_true",
+                   help="[NEW] Enable 1-bar confirmation filter: "
+                        "skip signal unless bar N+1 moves in our "
+                        "direction by ≥ κ × σ_bar")
+    p.add_argument("--confirm-kappa", type=float, default=None,
+                   help="[NEW] Confirmation threshold (× σ_bar). "
+                        "Default 0.20. Try 0.1 / 0.2 / 0.3 / 0.5.")
     p.add_argument("--po-max-attempts", type=int, default=None,
                    help="Max cancel/replace cycles (default 3)")
     p.add_argument("--po-max-drift-bps", type=float, default=None,
@@ -15095,6 +21672,24 @@ def main():
     p.add_argument("--trade-log", type=str, default=None,
                    help="Path to trade log file (JSONL). "
                         "Default: trades_log_{mode}.jsonl")
+    p.add_argument("--analytics", action="store_true",
+                   help="[Analytics] Enable comprehensive output system "
+                        "(manifest, extended trades, portfolio ts, market context, "
+                        "24-panel PNG, HTML report)")
+    p.add_argument("--analytics-dir", type=str, default=None,
+                   help="[Analytics] Output directory (default: analytics)")
+    p.add_argument("--analytics-no-signals", action="store_true",
+                   help="[Analytics] Disable signals_candidates logging")
+    p.add_argument("--analytics-no-portfolio-ts", action="store_true",
+                   help="[Analytics] Disable portfolio timeseries")
+    p.add_argument("--analytics-no-market-context", action="store_true",
+                   help="[Analytics] Disable market context")
+    p.add_argument("--analytics-no-events", action="store_true",
+                   help="[Analytics] Disable position events")
+    p.add_argument("--analytics-no-html", action="store_true",
+                   help="[Analytics] Disable HTML report")
+    p.add_argument("--analytics-no-png-v2", action="store_true",
+                   help="[Analytics] Use old PNG instead of 24-panel v2")
     # ══ [SINGULARITY TIMING] ══
     p.add_argument("--sing-timing", action="store_true",
                    help="Enable Singularity timing layer (Layer 1: "
@@ -15151,6 +21746,39 @@ def main():
                    help="Disable Partial TP")
     p.add_argument("--no-breakeven", action="store_true",
                    help="Disable Breakeven SL")
+    # ══ [BREAKEVEN ESCAPE] ══
+    p.add_argument("--be-escape", action="store_true",
+                   help="Force-enable breakeven-escape (reversal-"
+                        "confirmed exit at entry price)")
+    p.add_argument("--no-be-escape", action="store_true",
+                   help="Disable breakeven-escape")
+    p.add_argument("--be-escape-move-r", type=float, default=None,
+                   help="Adverse move in R units to trigger escape "
+                        "(default 0.30)")
+    p.add_argument("--be-escape-min-profit-r", type=float, default=None,
+                   help="Small profit at exit in R units (default 0.0 "
+                        "= pure breakeven)")
+    p.add_argument("--be-escape-ema-lookback", type=int, default=None,
+                   help="EMA-200 slope lookback for confirmation "
+                        "(default 50)")
+    p.add_argument("--no-be-escape-ema", action="store_true",
+                   help="Disable EMA-flip requirement (pure price as "
+                        "trigger — RISKIER)")
+    p.add_argument("--no-apex-parity", action="store_true",
+                   help="Disable Apex/Topo-Div parity fix (reverts "
+                        "to post-only GTX exits — NOT recommended: "
+                        "live may fail to exit Apex signals)")
+    p.add_argument("--be-escape-cancel-kappa", type=float, default=None,
+                   help="Cancel BEEsc when bounce from extreme ≥ "
+                        "κ × σ_bar × entry BEFORE touching entry. "
+                        "TP is restored to its original target. "
+                        "0.0 = disabled (default)")
+    p.add_argument("--be-cancel-close-only", action="store_true",
+                   help="BEEsc-Cancel uses CLOSED bar close for "
+                        "extreme tracking + bounce (no wick, no ticker)")
+    p.add_argument("--be-cancel-sr-check", action="store_true",
+                   help="BEEsc-Cancel skipped if nearest swing "
+                        "support/resistance was BROKEN by close")
     p.add_argument("--tp-mult", type=float, default=None,
                    help="Override TP_MULT")
     p.add_argument("--partial-tp-r", type=float, default=None,
@@ -15183,6 +21811,42 @@ def main():
                         "(default 0.3)")
     p.add_argument("--opp-tp-max-age-bars", type=int, default=None,
                    help="Max age of opposite signal in bars (default 4)")
+    p.add_argument("--signal-based-sl", action="store_true",
+                   help="[Signal-SL] Raise SL when a same-direction new signal "
+                        "appears on an open position (ratchet-only, never widens)")
+    p.add_argument("--signal-sl-score-ratio", type=float, default=None,
+                   help="[Signal-SL] New signal score must be >= this × original "
+                        "score (default 1.5)")
+    p.add_argument("--signal-sl-min-improvement", type=float, default=None,
+                   help="[Signal-SL] Minimum SL improvement ratio "
+                        "(default 0.005 = 0.5%%)")
+    p.add_argument("--signal-sl-protect-profit", action="store_true",
+                   help="[Signal-SL] Only accept SL updates that move above "
+                        "entry (BUY) / below entry (SELL)")
+    p.add_argument("--signal-sl-clamp-beesc", action="store_true",
+                   help="[Signal-SL] Clamp SL below BEEsc level (default: "
+                        "allow crossing — BEEsc disabled when crossed)")
+    p.add_argument("--rescue-exit", type=str, nargs="?", const="conservative",
+                   default=None,
+                   choices=["conservative", "moderate", "aggressive"],
+                   help="[Rescue] Enable state-based rescue exit in loss zone "
+                        "(default: conservative)")
+    p.add_argument("--rescue-margin", type=float, default=None,
+                   help="[Rescue] Safety margin (default: 0.05)")
+    p.add_argument("--rescue-floor", type=float, default=None,
+                   help="[Rescue] Absolute P_floor (default: 0.15)")
+    p.add_argument("--rescue-accel-kappa", type=float, default=None,
+                   help="[Rescue] Accel drift coefficient (default: 0.5)")
+    p.add_argument("--rescue-gauge-kappa", type=float, default=None,
+                   help="[Rescue] Gauge drift coefficient (default: 0.3)")
+    p.add_argument("--rescue-log-verbose", action="store_true",
+                   help="[Rescue] Log every rescue check at DEBUG level")
+    p.add_argument("--kmeans-n-init", type=int, default=None,
+                   help="[PERF] KMeans n_init (default: 1 for speed, "
+                        "use 3 for quality)")
+    p.add_argument("--kmeans-max-iter", type=int, default=None,
+                   help="[PERF] KMeans max_iter (default: 50 for speed, "
+                        "use 100 for quality)")
     # ══ [MFAL] CLI args ══
     p.add_argument("--mfal", action="store_true",
                    help="Enable Multi-Factor Adaptive Leverage")
@@ -15194,6 +21858,19 @@ def main():
                    help="Disable online learning")
     p.add_argument("--mfal-weights", type=str, default=None,
                    help="Path to MFAL weights JSON")
+
+    # ══ [BEAR-SHIELD] CLI ══
+    p.add_argument("--no-bear-shield", action="store_true",
+                   help="Disable bear market protection")
+    p.add_argument("--bear-min-z", type=float, default=None,
+                   help="Min |z_dev| for BUY in bear (default 2.5)")
+    p.add_argument("--bear-risk-mult", type=float, default=None,
+                   help="Risk multiplier in bear (default 0.30)")
+    p.add_argument("--bear-max-concurrent", type=int, default=None,
+                   help="Max concurrent positions in bear (default 3)")
+    p.add_argument("--bear-min-score", type=int, default=None,
+                   help="Min score in bear (default 0)")
+
     args = p.parse_args()
 
     # ══ [MFAL] CLI wiring ══
@@ -15223,6 +21900,19 @@ def main():
     CFG.mode = args.mode
     CFG.api_key = args.api_key
     CFG.api_secret = args.api_secret
+    # ══ [DOTENV] startup info (no secrets logged) ══
+    try:
+        if _DOTENV_LOADED > 0:
+            log.info(f"[Env] Loaded {_DOTENV_LOADED} variable(s) from .env")
+        else:
+            log.info("[Env] No .env file found (using CLI args or shell env)")
+        log.info(
+            f"[Env] mode={CFG.mode}  "
+            f"api_key={'SET' if CFG.api_key else 'EMPTY'}  "
+            f"api_secret={'SET' if CFG.api_secret else 'EMPTY'}"
+        )
+    except Exception:
+        pass
     if args.capital   is not None: CFG.INITIAL_CAPITAL = args.capital
     if args.live_capital is not None: CFG.LIVE_TRADING_CAPITAL = float(args.live_capital)
     if args.base_risk is not None: CFG.BASE_RISK = args.base_risk; CFG.MIN_RISK_PER_TRADE = args.base_risk
@@ -15246,6 +21936,72 @@ def main():
     if args.po_wait_s is not None:   CFG.PO_MAX_WAIT_S = args.po_wait_s
     if args.heat_max is not None: CFG.PORTFOLIO_HEAT_MAX = args.heat_max
     if args.no_numba: CFG.NUMBA_ENABLED = False
+
+    # ══ [BEAR-SHIELD] Process CLI flags ══
+    if getattr(args, "no_bear_shield", False):
+        CFG.BEAR_SHIELD_ENABLED = False
+    if getattr(args, "bear_min_z", None) is not None:
+        CFG.BEAR_MIN_Z = float(args.bear_min_z)
+    if getattr(args, "bear_risk_mult", None) is not None:
+        CFG.BEAR_RISK_MULT = float(args.bear_risk_mult)
+    if getattr(args, "bear_max_concurrent", None) is not None:
+        CFG.BEAR_MAX_CONCURRENT = int(args.bear_max_concurrent)
+    if getattr(args, "bear_min_score", None) is not None:
+        CFG.BEAR_MIN_SCORE = int(args.bear_min_score)
+    if CFG.BEAR_SHIELD_ENABLED:
+        log.info(
+            f"[BearShield] ENABLED: min_z={CFG.BEAR_MIN_Z}, "
+            f"min_score={CFG.BEAR_MIN_SCORE}, "
+            f"risk_mult={CFG.BEAR_RISK_MULT:.0%}, "
+            f"max_concurrent={CFG.BEAR_MAX_CONCURRENT}")
+    else:
+        log.info("[BearShield] DISABLED")
+
+
+    # ══ [RESCUE EXIT] ══
+    if getattr(args, "rescue_exit", None) is not None:
+        CFG.RESCUE_EXIT_ENABLED = True
+        CFG.RESCUE_EXIT_MODE = str(args.rescue_exit)
+        _mode = CFG.RESCUE_EXIT_MODE
+        if _mode == "conservative":
+            CFG.RESCUE_MARGIN = 0.05
+            CFG.RESCUE_FLOOR = 0.15
+            CFG.RESCUE_MIN_BARS_AFTER_BEESC = 2
+        elif _mode == "moderate":
+            CFG.RESCUE_MARGIN = 0.03
+            CFG.RESCUE_FLOOR = 0.12
+            CFG.RESCUE_MIN_BARS_AFTER_BEESC = 2
+        elif _mode == "aggressive":
+            CFG.RESCUE_MARGIN = 0.02
+            CFG.RESCUE_FLOOR = 0.10
+            CFG.RESCUE_MIN_BARS_AFTER_BEESC = 1
+        log.info(
+            f"[Rescue] ENABLED mode={_mode} "
+            f"margin={CFG.RESCUE_MARGIN} "
+            f"floor={CFG.RESCUE_FLOOR} "
+            f"min_bars={CFG.RESCUE_MIN_BARS_AFTER_BEESC}"
+        )
+    # Per-parameter overrides
+    if getattr(args, "rescue_margin", None) is not None:
+        CFG.RESCUE_MARGIN = float(args.rescue_margin)
+    if getattr(args, "rescue_floor", None) is not None:
+        CFG.RESCUE_FLOOR = float(args.rescue_floor)
+    if getattr(args, "rescue_accel_kappa", None) is not None:
+        CFG.RESCUE_ACCEL_KAPPA = float(args.rescue_accel_kappa)
+    if getattr(args, "rescue_gauge_kappa", None) is not None:
+        CFG.RESCUE_GAUGE_KAPPA = float(args.rescue_gauge_kappa)
+    if getattr(args, "rescue_log_verbose", False):
+        CFG.RESCUE_LOG_VERBOSE = True
+    if not getattr(args, "rescue_exit", None):
+        log.info("[Rescue] DISABLED (use --rescue-exit to enable)")
+
+    # ══ [PERF] KMeans parameter overrides ══
+    if getattr(args, "kmeans_n_init", None) is not None:
+        CFG.KMEANS_N_INIT = int(args.kmeans_n_init)
+        log.info(f"[Perf] KMEANS_N_INIT = {CFG.KMEANS_N_INIT}")
+    if getattr(args, "kmeans_max_iter", None) is not None:
+        CFG.KMEANS_MAX_ITER = int(args.kmeans_max_iter)
+        log.info(f"[Perf] KMEANS_MAX_ITER = {CFG.KMEANS_MAX_ITER}")
 
     # ══ [Level-2] Compile Numba kernels before starting ══
     _warmup_numba_kernels()
@@ -15278,6 +22034,11 @@ def main():
             "live_state_live.json", "live_state_testnet.json",
             "pending_orders_live.json", "pending_orders_testnet.json",
             "symbol_meta_live.json", "symbol_meta_testnet.json",
+            "reversal_watchers_live.json",
+            "reversal_watchers_testnet.json",
+            "reversal_ledger_live.json",
+            "reversal_ledger_testnet.json",
+            "cache_dead_gaps.json",
             "kill_switch.json",
         ]
         for _f in _state_files:
@@ -15407,12 +22168,29 @@ def main():
         CFG.MAX_ABS_NOTIONAL = float(args.max_notional)
     if args.no_dynamic_trail:
         CFG.TRAIL_DYNAMIC = False
+        # [SUB-BAR-GATE] Auto-enable sub-bar-only trailing in live/testnet
+        # so live matches backtest (SL updates once per sub-bar close).
+        if CFG.mode in ('live', 'testnet') and not CFG.TRAIL_USE_SUBBARS_ONLY:
+            #CFG.TRAIL_USE_SUBBARS_ONLY = True
+            log.info(
+                "[Trail] --no-dynamic-trail in live → "
+                "TRAIL_USE_SUBBARS_ONLY=True (SL updates only on "
+                "sub-bar close, parity with backtest)"
+            )
     if args.no_trailing:
         CFG.TRAIL_ENABLED = False
         log.info("[Trail] Trailing Stop Loss DISABLED — SL is fixed")
     elif args.trailing:
         CFG.TRAIL_ENABLED = True
         log.info("[Trail] Trailing Stop Loss FORCED ON")
+    if getattr(args, "trail_sync_to_subbars", False):
+        CFG.TRAIL_USE_SUBBARS_ONLY = True
+        _sub_tf_for_log = _get_subbars_tf(CFG.timeframe) or CFG.timeframe
+        log.info(
+            f"[Trail] SUB-BAR PARITY ON: peak/SL update only on "
+            f"sub-bar close ({_sub_tf_for_log}). "
+            f"No ticker, no 1m forming bar. Matches backtest exactly."
+        )
     if args.trail_kappa is not None:
         CFG.TRAIL_KAPPA = float(args.trail_kappa)
     if args.reentry_cooldown is not None:
@@ -15427,6 +22205,97 @@ def main():
         CFG.PO_FIXED_PRICE = False
         log.info("[Backtest] --no-fixed-price: entry target will be derived "
                  "from close[sig.close_idx] × (1 ± PO_PENETRATION_BPS)")
+    # ══ [REVERSAL-CONFIRM] wiring ══
+    if getattr(args, "reversal_confirm", False):
+        CFG.REVERSAL_CONFIRM_ENABLED = True
+    if getattr(args, "reversal_touch_subbars", None) is not None:
+        CFG.REVERSAL_TOUCH_SUBBARS = int(args.reversal_touch_subbars)
+    if getattr(args, "reversal_bounce_subbars", None) is not None:
+        CFG.REVERSAL_BOUNCE_SUBBARS = int(args.reversal_bounce_subbars)
+    if getattr(args, "reversal_max_hours", None) is not None:
+        CFG.REVERSAL_MAX_HOURS = float(args.reversal_max_hours)
+    if getattr(args, "reversal_mode", None) is not None:
+        CFG.REVERSAL_CONFIRM_MODE = str(args.reversal_mode)
+    if getattr(args, "reversal_kappa", None) is not None:
+        CFG.REVERSAL_CONFIRM_KAPPA = float(args.reversal_kappa)
+    if getattr(args, "reversal_fill", None) is not None:
+        CFG.REVERSAL_FILL_AT = str(args.reversal_fill)
+    # ══ [SUB-BAR ENTRY] wiring ══
+    if getattr(args, "no_rev_subbar_entry", False):
+        CFG.REV_SUBBAR_ENTRY_ENABLED = False
+        log.info("[SubBar-Entry] DISABLED (using marketable)")
+    elif getattr(args, "rev_subbar_entry", None):
+        CFG.REV_SUBBAR_ENTRY_ENABLED = True
+        log.info("[SubBar-Entry] ENABLED (limit at confirm bar close)")
+    if getattr(args, "rev_subbar_entry_pen_bps", None) is not None:
+        CFG.REV_SUBBAR_ENTRY_PEN_BPS = float(args.rev_subbar_entry_pen_bps)
+    if getattr(args, "rev_subbar_entry_max_drift_bps", None) is not None:
+        CFG.REV_SUBBAR_ENTRY_MAX_DRIFT_BPS = float(
+            args.rev_subbar_entry_max_drift_bps
+        )
+    if getattr(args, "rev_subbar_entry_marketable", False):
+        CFG.REV_SUBBAR_ENTRY_MARKETABLE = True
+    if CFG.REV_SUBBAR_ENTRY_ENABLED:
+        _mkt = 'marketable (taker)' if CFG.REV_SUBBAR_ENTRY_MARKETABLE else 'Post-Only (maker)'
+        log.info(f"[SubBar-Entry] pen={CFG.REV_SUBBAR_ENTRY_PEN_BPS:.1f}bps "
+                 f"max_drift={CFG.REV_SUBBAR_ENTRY_MAX_DRIFT_BPS:.1f}bps "
+                 f"mode={_mkt}")
+    # ══ [REV-FIX v3] Maker Ladder wiring ══
+    if getattr(args, "rev_ladder", False):
+        CFG.REV_LADDER_ENABLED = True
+    if getattr(args, "rev_ladder_qp", None) is not None:
+        CFG.REV_LADDER_QP_PCT = float(args.rev_ladder_qp)
+    if getattr(args, "rev_ladder_wait_h", None) is not None:
+        CFG.REV_LADDER_MAX_WAIT_S = float(args.rev_ladder_wait_h) * 3600.0
+    if CFG.REV_LADDER_ENABLED:
+        if not CFG.REVERSAL_CONFIRM_ENABLED:
+            log.warning("[Ladder] --rev-ladder needs --reversal-confirm; ladder disabled")
+            CFG.REV_LADDER_ENABLED = False
+        else:
+            log.info(f"[Ladder] ENABLED levels={CFG.REV_LADDER_OFFSETS_SIGMA} "
+                     f"weights={CFG.REV_LADDER_WEIGHTS} qp={CFG.REV_LADDER_QP_PCT} "
+                     f"wait={CFG.REV_LADDER_MAX_WAIT_S/3600:.1f}h  "
+                     f"NOTE: backtest does not model the ladder; evaluate ladder_stats_<mode>.csv")
+    # ══ [REV-FIX v4] ROE wiring ══
+    if getattr(args, "rev_roe", False):
+        CFG.REV_ROE_ENABLED = True
+    if getattr(args, "rev_roe_frac", None) is not None:
+        CFG.REV_ROE_FRAC = float(args.rev_roe_frac)
+    if getattr(args, "rev_roe_offset_ticks", None) is not None:
+        CFG.REV_ROE_OFFSET_TICKS = int(args.rev_roe_offset_ticks)
+    if getattr(args, "rev_roe_fallback", None) is not None:
+        CFG.REV_ROE_FALLBACK = str(args.rev_roe_fallback)
+    if getattr(args, "rev_roe_max_symbols", None) is not None:
+        CFG.REV_ROE_MAX_SYMBOLS = int(args.rev_roe_max_symbols)
+    if getattr(args, "rev_abort_kappa", None) is not None:
+        CFG.REV_ABORT_KAPPA = float(args.rev_abort_kappa)
+    if CFG.REV_ROE_ENABLED:
+        if not CFG.REVERSAL_CONFIRM_ENABLED:
+            log.warning("[ROE] --rev-roe needs --reversal-confirm; ROE disabled")
+            CFG.REV_ROE_ENABLED = False
+        else:
+            if CFG.REV_LADDER_ENABLED:
+                log.warning("[ROE] ROE and the ladder are mutually exclusive: ladder disabled")
+                CFG.REV_LADDER_ENABLED = False
+            log.info(f"[ROE] ENABLED frac={CFG.REV_ROE_FRAC} offset={CFG.REV_ROE_OFFSET_TICKS}tk "
+                     f"fallback={CFG.REV_ROE_FALLBACK} abort_kappa={CFG.REV_ABORT_KAPPA} "
+                     f"max_symbols={CFG.REV_ROE_MAX_SYMBOLS or CFG.MAX_CONCURRENT_ASSETS}  "
+                     f"NOTE: unconfirmed touches are flattened - see roe_stats_<mode>.csv")
+    if CFG.REVERSAL_CONFIRM_ENABLED:
+        log.info(f"[Reversal] ENABLED "
+                 f"touch={CFG.REVERSAL_TOUCH_SUBBARS}sb "
+                 f"bounce={CFG.REVERSAL_BOUNCE_SUBBARS}sb "
+                 f"max={CFG.REVERSAL_MAX_HOURS}h "
+                 f"mode={CFG.REVERSAL_CONFIRM_MODE} "
+                 f"fill={CFG.REVERSAL_FILL_AT}")
+
+    if getattr(args, "confirm_entry", False):
+        CFG.CONFIRM_ENTRY_ENABLED = True
+        log.info("[Confirm] 1-bar confirmation entry ENABLED")
+    if getattr(args, "confirm_kappa", None) is not None:
+        CFG.CONFIRM_KAPPA = float(args.confirm_kappa)
+        log.info(f"[Confirm] CONFIRM_KAPPA = {CFG.CONFIRM_KAPPA}")
+
     if args.po_max_attempts is not None:
         CFG.PO_MAX_ATTEMPTS = int(args.po_max_attempts)
     if args.po_max_drift_bps is not None:
@@ -15490,8 +22359,9 @@ def main():
         CFG.SL_WIDEN_MULT = float(args.sl_widen_mult)
         log.info(f"[Ablation] SL_WIDEN_MULT = {CFG.SL_WIDEN_MULT}")
     if getattr(args, "sell_only", False):
+        CFG.SELL_ONLY = True
         CFG.GAUGE_DISABLE_BUY = True
-        log.info("[Ablation] BUY DISABLED — SELL-only mode")
+        log.info("[Ablation] SELL_ONLY — BUY signals rejected")
     # ═══ [ABLATION-FLAGS] ═══
     if getattr(args, "no_apex", False):
         CFG.APEX_ENABLED = False
@@ -15506,7 +22376,7 @@ def main():
         CFG.TP_MULT = float(args.tp_mult)
         log.info(f"[Ablation] TP_MULT = {CFG.TP_MULT}")
     if getattr(args, "partial_tp_r", None) is not None:
-        CFG.partial_tp_r = float(args.partial_tp_r)
+        CFG.PARTIAL_TP_R = float(args.partial_tp_r)
         log.info(f"[Ablation] PARTIAL_TP_R = {CFG.PARTIAL_TP_R}")
     if getattr(args, "sl_widen_mult", None) is not None:
         CFG.SL_WIDEN_MULT = float(args.sl_widen_mult)
@@ -15532,6 +22402,68 @@ def main():
     if args.sell_min_atr_frac is not None:
         CFG.SELL_MIN_ATR_FRAC = float(args.sell_min_atr_frac)
 
+    # ══ [BREAKEVEN ESCAPE] ══
+    if getattr(args, "no_be_escape", False):
+        CFG.BREAKEVEN_ESCAPE_ENABLED = False
+        log.info("[BEEsc] DISABLED via --no-be-escape")
+    elif getattr(args, "be_escape", False):
+        CFG.BREAKEVEN_ESCAPE_ENABLED = True
+        log.info("[BEEsc] ENABLED via --be-escape")
+    if getattr(args, "be_escape_move_r", None) is not None:
+        CFG.BREAKEVEN_ESCAPE_PRICE_MOVE_R = float(args.be_escape_move_r)
+    if getattr(args, "be_escape_min_profit_r", None) is not None:
+        CFG.BREAKEVEN_ESCAPE_MIN_PROFIT_R = float(
+            args.be_escape_min_profit_r)
+    if getattr(args, "be_escape_ema_lookback", None) is not None:
+        CFG.BREAKEVEN_ESCAPE_EMA_LOOKBACK = int(
+            args.be_escape_ema_lookback)
+    if getattr(args, "no_be_escape_ema", False):
+        CFG.BREAKEVEN_ESCAPE_REQUIRE_EMA_FLIP = False
+        log.warning("[BEEsc] EMA-flip requirement DISABLED — "
+                    "HIGHER risk of premature exit")
+    if getattr(args, "be_escape_cancel_kappa", None) is not None:
+        CFG.BREAKEVEN_ESCAPE_CANCEL_KAPPA = float(
+            args.be_escape_cancel_kappa)
+    if getattr(args, "be_cancel_close_only", False):
+        CFG.BREAKEVEN_ESCAPE_CANCEL_CLOSE_ONLY = True
+    if getattr(args, "be_cancel_sr_check", False):
+        CFG.BREAKEVEN_ESCAPE_CANCEL_SR_CHECK = True
+    if CFG.BREAKEVEN_ESCAPE_CANCEL_KAPPA > 0:
+        log.info(
+            f"[BEEsc] CANCEL enabled: κ="
+            f"{CFG.BREAKEVEN_ESCAPE_CANCEL_KAPPA} × σ_bar — "
+            f"BEEsc will be undone if bounce from extreme exceeds "
+            f"this threshold before touching entry"
+        )
+        log.info(
+            f"[BEEsc] CANCEL mode: close_only="
+            f"{CFG.BREAKEVEN_ESCAPE_CANCEL_CLOSE_ONLY} "
+            f"sr_check={CFG.BREAKEVEN_ESCAPE_CANCEL_SR_CHECK} "
+            f"sr_lookback={CFG.BREAKEVEN_ESCAPE_CANCEL_SR_LOOKBACK}"
+        )
+    if CFG.BREAKEVEN_ESCAPE_ENABLED:
+        log.info(
+            f"[BEEsc] ENABLED | move_R="
+            f"{CFG.BREAKEVEN_ESCAPE_PRICE_MOVE_R} "
+            f"min_profit_R={CFG.BREAKEVEN_ESCAPE_MIN_PROFIT_R} "
+            f"require_ema={CFG.BREAKEVEN_ESCAPE_REQUIRE_EMA_FLIP} "
+            f"ema_lookback={CFG.BREAKEVEN_ESCAPE_EMA_LOOKBACK}"
+        )
+    # ══ [APEX-PARITY] wiring ══
+    if getattr(args, "no_apex_parity", False):
+        CFG.PO_EXIT_APEX_URGENT = False
+        CFG.PO_EXIT_APEX_MARKET_FALLBACK = False
+        log.warning("[Apex-Parity] DISABLED via --no-apex-parity "
+                    "(NOT recommended: live may fail to exit Apex)")
+    else:
+        log.info(
+            f"[Apex-Parity] ENABLED | urgent="
+            f"{CFG.PO_EXIT_APEX_URGENT} "
+            f"market_fallback={CFG.PO_EXIT_APEX_MARKET_FALLBACK} "
+            f"(Apex/Topo-Div → taker exits in backtest, "
+            f"marketable+fallback in live)"
+        )
+
     # ══ [OppTP] Opposite-Signal Adaptive TP ══
     if args.opp_tp:
         CFG.OPP_TP_ENABLED = True
@@ -15550,6 +22482,29 @@ def main():
                  f"max_age={CFG.OPP_TP_MAX_AGE_BARS}")
     else:
         log.info("[OppTP] Opposite-Signal Adaptive TP DISABLED")
+
+    if getattr(args, "signal_based_sl", False):
+        CFG.SIGNAL_BASED_SL_ENABLED = True
+        log.info("[Signal-SL] ENABLED — same-direction signals may raise SL "
+                 "(ratchet-only, event-driven)")
+        if args.signal_sl_score_ratio is not None:
+            CFG.SIGNAL_SL_MIN_SCORE_RATIO = float(args.signal_sl_score_ratio)
+            log.info(f"[Signal-SL] score_ratio = {CFG.SIGNAL_SL_MIN_SCORE_RATIO}")
+        if args.signal_sl_min_improvement is not None:
+            CFG.SIGNAL_SL_MIN_IMPROVEMENT = float(args.signal_sl_min_improvement)
+            log.info(f"[Signal-SL] min_improvement = "
+                     f"{CFG.SIGNAL_SL_MIN_IMPROVEMENT*100:.2f}%")
+        if args.signal_sl_protect_profit:
+            CFG.SIGNAL_SL_PROTECT_PROFIT_ONLY = True
+            log.info("[Signal-SL] protect_profit = ON")
+        if args.signal_sl_clamp_beesc:
+            CFG.SIGNAL_SL_ALLOW_ABOVE_BEESC = False
+            log.info("[Signal-SL] BEEsc clamp = ON (SL cannot cross BEEsc)")
+        else:
+            log.info("[Signal-SL] BEEsc clamp = OFF "
+                     "(SL may cross BEEsc → BEEsc disabled for that trade)")
+    else:
+        log.info("[Signal-SL] Disabled (use --signal-based-sl to enable)")
     # ══ [TRADE FILTER] ══
     if args.filter:
         CFG.FILTER_ENABLED = True
@@ -15653,6 +22608,27 @@ def main():
 
     # ══ [TradeLog] تهيئة تسجيل الصفقات ══
     _trade_log_init(CFG.mode, args.trade_log)
+    
+    # ══ [Analytics] CLI wiring ══
+    if getattr(args, "analytics", False):
+        CFG.ANALYTICS_ENABLED = True
+        if args.analytics_dir:
+            CFG.ANALYTICS_OUTPUT_DIR = str(args.analytics_dir)
+        if getattr(args, "analytics_no_signals", False):
+            CFG.ANALYTICS_LOG_SIGNALS = False
+        if getattr(args, "analytics_no_portfolio_ts", False):
+            CFG.ANALYTICS_LOG_PORTFOLIO_TS = False
+        if getattr(args, "analytics_no_market_context", False):
+            CFG.ANALYTICS_LOG_MARKET_CONTEXT = False
+        if getattr(args, "analytics_no_events", False):
+            CFG.ANALYTICS_LOG_POSITION_EVENTS = False
+        if getattr(args, "analytics_no_html", False):
+            CFG.ANALYTICS_HTML_REPORT = False
+        if getattr(args, "analytics_no_png_v2", False):
+            CFG.ANALYTICS_EXPANDED_PNG = False
+        log.info(f"[Analytics] ENABLED — output: {CFG.ANALYTICS_OUTPUT_DIR}/<run_id>/")
+    else:
+        log.info("[Analytics] Disabled (use --analytics to enable)")
 
     # 1. وضع الباك-تيست
     if CFG.mode == "backtest":
@@ -15674,7 +22650,9 @@ def main():
         'apiKey': CFG.api_key,
         'secret': CFG.api_secret,
         'enableRateLimit': True,
-        'options': {'defaultType': 'future'}
+        'options': {'defaultType': 'future',
+                    'adjustForTimeDifference': True,   # [REV-FIX v2]
+                    'recvWindow': 20000}
     })
     # ══ [TimeSync] verify before run ══
     _check_time_sync(exchange)
@@ -15685,17 +22663,10 @@ def main():
 
     run_live(CFG, exchange)
 
-# ═══════════════════════════════════════════════════════════════
-# [730d VERIFIED] Global rebind — SL/TP/MaxHold ONLY
-# ═══════════════════════════════════════════════════════════════
-_advance = _advance_raw
-log.info("[730d] LOCKED: SL/TP/MaxHold only | TP=0.8 | "
-         "MaxHold=30/20 | Trail/Apex/BE/Partial OFF")
-
-
 if __name__=="__main__":
     main()
 
 # to run the project use the command 
-# python trading.py --mode backtest --api-key  --api-secret  --capital 100 --nassets 10 --maxcon 1 --timeframe 4h --no-fixed-price  --no-trailing --history-days 30
+# python3 trading_2_live4_claude2_v4.py --mode backtest --api-key ${BINANCE_TESTNET_KEY} --api-secret ${BINANCE_TESTNET_SECRET} --nassets 100 --timeframe 4h --enable-sell --sell-gauge-pct 100 --tp-mult 7 --sl-widen-mult 1.3 --partial-tp-r 3 --maxcon 15 --workers 4 --history-days 730 --po-wait-s 300 --be-escape --be-escape-move-r 0.30 --be-escape-min-profit-r 0.1  --no-dynamic-trail --heat-max 0.15 --capital 100 --history-days 730 --no-breakeven --opp-tp --no-be-escape-ema
 
+# [LIVE-PARITY-FIXES] applied
