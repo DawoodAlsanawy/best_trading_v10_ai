@@ -422,7 +422,7 @@ class Config:
     # Default False → preserves current ticker-based behavior.
     TRAIL_USE_SUBBARS_ONLY: bool = False
     TRAIL_ACTIVATE_MFE: float = 0.004    # activate after 0.4% MFE
-    TRAIL_DISTANCE: float = 0.002        # trail 0.3% below peak
+    TRAIL_DISTANCE: float = 0.0015        # trail 0.3% below peak
     TRAIL_MIN_STEP: float = 0.0005       # only move SL if improvement ≥ 0.05%
 
     # ══ [PORTFOLIO RISK BUDGET] ══
@@ -464,7 +464,7 @@ class Config:
     TF_SECONDS: int = 3600        # seconds per bar
     TF_HOURS: float = 1.0         # hours per bar
     # ══ [NOTIONAL CAP — anti-compounding] ══
-    MAX_ABS_NOTIONAL: float = 50_000.0     # tuned for alt liquidity
+    MAX_ABS_NOTIONAL: float = 20_000.0     # tuned for alt liquidity
     # ══ [DYNAMIC TRAILING — volatility-scaled] ══
     TRAIL_DYNAMIC: bool = True
     TRAIL_KAPPA: float = 0.30                # tuned to 1h timeframe
@@ -1542,7 +1542,7 @@ def _default_assets():
 #        "HBAR/USDT",   # هيدرا - رافعة 50x
 #        "VET/USDT",    # في تشين - رافعة 50x
         "STX/USDT",    # ستاكس - رافعة 50x
-#        "AAVE/USDT",   # آفي - رافعة 50x
+        "AAVE/USDT",   # آفي - رافعة 50x
         "ARB/USDT",    # أربيتروم - رافعة 50x
         "OP/USDT",     # أوبتيميزم - رافعة 50x
 #        "INJ/USDT",    # إنجكتيف - رافعة 50x
@@ -1584,7 +1584,7 @@ def _default_assets():
         "YFI/USDT",    # يرن فايننس - رافعة 50x
         "ZRX/USDT",    # زيرو إكس - رافعة 50x
         "BAT/USDT",    # باسيك أتنشن توكن - رافعة 50x
-#        "ENJ/USDT",    # إنجين - رافعة 50x
+        "ENJ/USDT",    # إنجين - رافعة 50x
         "ANKR/USDT",   # أنكر - رافعة 50x
 #        "OCEAN/USDT",  # أوشن بروتوكول - رافعة 50x
         "BAND/USDT",   # باند بروتوكول - رافعة 50x
