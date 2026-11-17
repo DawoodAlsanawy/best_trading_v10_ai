@@ -741,7 +741,7 @@ class Config:
     # often BELOW the SL distance. So SL moved above entry on tiny moves
     # and killed 52% of trades with a "profitable SL" that capped gains.
     # New design: trailing only activates after N × sl_dist_initial of MFE.
-    TRAIL_ACTIVATE_AT_R: float = 1.0    # activate at +1R of profit
+    TRAIL_ACTIVATE_AT_R: float = 0.8    # activate at +1R of profit
 
     # ══ [FIX 2 — REGIME FILTER] ══
     # Skip signals when EMA200 slope (over lookback) is too steep
@@ -781,8 +781,8 @@ class Config:
     #   • يُطلق فقط عند انعكاس مؤكد (إشارة معاكسة أو هبوط عميق 0.80R)
     #   • يخرج بهامش صغير موجب يغطي الرسوم (+0.15R)
     #   • BEEsc-Cancel يستخدم high لا close لكشف الارتداد الحقيقي
-    BREAKEVEN_ESCAPE_ENABLED: bool = False
-    BREAKEVEN_ESCAPE_PRICE_MOVE_R: float = 0.10      # كان 0.30
+    BREAKEVEN_ESCAPE_ENABLED: bool = True
+    BREAKEVEN_ESCAPE_PRICE_MOVE_R: float = 0.80      # كان 0.30
     BREAKEVEN_ESCAPE_REQUIRE_EMA_FLIP: bool = True
     BREAKEVEN_ESCAPE_EMA_LOOKBACK: int = 50
     BREAKEVEN_ESCAPE_SIGNAL_ENABLED: bool = True     # كان False
@@ -998,8 +998,8 @@ class Config:
     # ══ [PERF-FIX] KMeans tuning (5x speedup on the biggest hot spot) ══
     # n_init 15→3   : inertia diff <2% in practice, 5x faster
     # max_iter 500→100 : convergence typically at ~30-50 iterations
-    KMEANS_N_INIT: int = 1
-    KMEANS_MAX_ITER: int = 50
+    KMEANS_N_INIT: int = 3
+    KMEANS_MAX_ITER: int = 100
 
     # ══ [PERF-FIX] Parallel retrain via ThreadPoolExecutor ══
     # sklearn KMeans releases the GIL → concurrent calls scale on multi-core.
@@ -1542,7 +1542,7 @@ def _default_assets():
 #        "HBAR/USDT",   # هيدرا - رافعة 50x
 #        "VET/USDT",    # في تشين - رافعة 50x
         "STX/USDT",    # ستاكس - رافعة 50x
-        "AAVE/USDT",   # آفي - رافعة 50x
+#        "AAVE/USDT",   # آفي - رافعة 50x
         "ARB/USDT",    # أربيتروم - رافعة 50x
         "OP/USDT",     # أوبتيميزم - رافعة 50x
 #        "INJ/USDT",    # إنجكتيف - رافعة 50x
@@ -1584,7 +1584,7 @@ def _default_assets():
         "YFI/USDT",    # يرن فايننس - رافعة 50x
         "ZRX/USDT",    # زيرو إكس - رافعة 50x
         "BAT/USDT",    # باسيك أتنشن توكن - رافعة 50x
-        "ENJ/USDT",    # إنجين - رافعة 50x
+#        "ENJ/USDT",    # إنجين - رافعة 50x
         "ANKR/USDT",   # أنكر - رافعة 50x
 #        "OCEAN/USDT",  # أوشن بروتوكول - رافعة 50x
         "BAND/USDT",   # باند بروتوكول - رافعة 50x
@@ -4091,8 +4091,17 @@ def compute_dynamic_leverage(capital, cfg, symbol=None):
     [ccxt 4.x FIX] When `symbol` is given, snaps to that symbol's
     actual valid tiers (prevents -4028).
     """
-    C0 = cfg.INITIAL_CAPITAL
-    lev = cfg.LEVERAGE_BASE / np.sqrt(max(capital / C0, 1.0))
+    # [FIX-C6] Live leverage basis: use --live-capital or wallet
+    _mode_c6 = str(getattr(cfg, 'mode', 'backtest')).lower()
+    if _mode_c6 in ('live', 'testnet'):
+        _fixed_c6 = float(getattr(cfg, 'LIVE_TRADING_CAPITAL', 0.0))
+        if _fixed_c6 > 0:
+            C0 = _fixed_c6
+        else:
+            C0 = max(float(capital), 1.0)
+    else:
+        C0 = cfg.INITIAL_CAPITAL
+    lev = cfg.LEVERAGE_BASE / np.sqrt(max(capital / max(C0, 1e-9), 1.0))
     raw_lev = int(np.clip(round(lev), cfg.LEVERAGE_MIN, cfg.LEVERAGE_MAX))
     if symbol is None:
         return raw_lev
@@ -14130,6 +14139,12 @@ def _sweep_pending_once(exchange, sym: str) -> Optional[Dict]:
 def _promote_pending_to_position(exchange, sym: str, rec: Dict,
                                  open_pos_live: Dict) -> bool:
     """Convert a filled pending order into an open position record."""
+    # [FIX-L1] Prevent duplicate promote
+    if sym in open_pos_live:
+        _existing_qty = float(open_pos_live[sym].get('qty', 0) or 0)
+        if _existing_qty > 0:
+            log.warning(f"[FIX-L1] {sym} already has position qty={_existing_qty}, skipping duplicate promote")
+            return False
     filled_qty = float(rec.get('filled') or 0.0)
     total_qty = float(rec.get('qty') or 0.0)
     entry_price = float(rec.get('avg_price') or rec.get('price') or 0.0)
@@ -19568,17 +19583,27 @@ def run_live(cfg, exchange):
                 _LV_STATE['free'] = _bal_free
                 _LV_STATE['bal_ok'] = True
                 _last_known_cap = cap_live
+                # [FIX-C5] Track wallet separately for peak
+                _wallet_now = _bal_total if _bal_total > 0 else _bal_free
+                _LV_STATE['_wallet_now'] = _wallet_now
+                # [FIX-C5] Warn if --live-capital > wallet
+                if _fixed_cap > 0 and _bal_total > 0 and _fixed_cap > _bal_total * 1.1:
+                    log.warning(f"[FIX-C5] --live-capital (${_fixed_cap:.2f}) > wallet (${_bal_total:.2f}) x1.1 — over-risk!")
             except Exception as e:
                 log.warning(f"[Balance] fetch failed: {e}; "
                             f"using last known ${_last_known_cap:.2f}")
                 cap_live = _last_known_cap
 
+            # [FIX-C5] Peak uses wallet basis (not fixed cap_live)
+            _pk_basis = float(_LV_STATE.get('_wallet_now', cap_live))
+            if _pk_basis <= 0:
+                _pk_basis = cap_live
             if _LV_STATE.get('bal_ok') and not _LV_STATE.get('peak_init'):
-                peak_cap_live = max(_lv_load_peak(cfg.mode), cap_live)
+                peak_cap_live = max(_lv_load_peak(cfg.mode), _pk_basis)
                 _LV_STATE['peak_init'] = True
                 _lv_save_peak(cfg.mode, peak_cap_live)
             _lv_pk_prev = peak_cap_live
-            peak_cap_live = max(peak_cap_live, cap_live)
+            peak_cap_live = max(peak_cap_live, _pk_basis)
             if _LV_STATE.get('peak_init') and peak_cap_live > _lv_pk_prev + 1e-9:
                 _lv_save_peak(cfg.mode, peak_cap_live)
             # [PERF-FIX] كان int(time.time()/60)%5 ينفَّذ لكل دورة داخل الدقيقة
@@ -19777,6 +19802,53 @@ def run_live(cfg, exchange):
 
             _LV_ASSETS.clear()
             _LV_ASSETS.update(assets)
+            # [FIX-C1/C3] Post-restart validation (runs once per process)
+            if not _LV_STATE.get('_post_restart_validated', False) and open_pos_live:
+                _LV_STATE['_post_restart_validated'] = True
+                for _sym_v, _pos_v in list(open_pos_live.items()):
+                    _ad_v = assets.get(_sym_v)
+                    if _ad_v is None:
+                        continue
+                    try:
+                        _ci_old = int(_pos_v.get('_entry_ci', -1))
+                        if _ci_old < 0 or _ci_old >= len(_ad_v.closes):
+                            _ts_v = float(_pos_v.get('entry_ts', 0))
+                            if _ts_v > 0:
+                                _new_ci = int(np.searchsorted(
+                                    _ad_v.timestamps.asi8,
+                                    int(_ts_v * 1e9), side='right') - 1)
+                                _new_ci = max(0, min(_new_ci, len(_ad_v.closes) - 1))
+                            else:
+                                _new_ci = max(0, len(_ad_v.closes) - 100)
+                            _pos_v['_entry_ci'] = _new_ci
+                            log.warning(f"[FIX-C3] {_sym_v} _entry_ci {_ci_old} -> {_new_ci}")
+                            _ci_old = _new_ci
+                        if _ci_old >= 0 and _ci_old < len(_ad_v.closes):
+                            _action_v = str(_pos_v.get('action', 'BUY'))
+                            _entry_v = float(_pos_v.get('entry', 0))
+                            if _entry_v > 0:
+                                if _action_v == 'BUY':
+                                    _hi_r = float(np.max(_ad_v.highs[_ci_old:]))
+                                    _lo_r = float(np.min(_ad_v.lows[_ci_old:]))
+                                    _old_pk = float(_pos_v.get('peak_price', 0))
+                                    _new_pk = max(_old_pk, _hi_r)
+                                    if _new_pk > _old_pk:
+                                        log.info(f"[FIX-C1] {_sym_v} peak {_old_pk:.6f} -> {_new_pk:.6f}")
+                                        _pos_v['peak_price'] = _new_pk
+                                    _pos_v['_hi'] = max(float(_pos_v.get('_hi', 0)), _hi_r)
+                                    _pos_v['_lo'] = min(float(_pos_v.get('_lo', _entry_v)), _lo_r)
+                                else:
+                                    _lo_r = float(np.min(_ad_v.lows[_ci_old:]))
+                                    _hi_r = float(np.max(_ad_v.highs[_ci_old:]))
+                                    _old_pk = float(_pos_v.get('peak_price', 1e18))
+                                    _new_pk = min(_old_pk, _lo_r)
+                                    if _new_pk < _old_pk:
+                                        log.info(f"[FIX-C1] {_sym_v} peak {_old_pk:.6f} -> {_new_pk:.6f}")
+                                        _pos_v['peak_price'] = _new_pk
+                                    _pos_v['_lo'] = min(float(_pos_v.get('_lo', 1e18)), _lo_r)
+                                    _pos_v['_hi'] = max(float(_pos_v.get('_hi', _entry_v)), _hi_r)
+                    except Exception as _e_v:
+                        log.debug(f"[FIX-C1] {_sym_v} reconstruct failed: {_e_v}")
             # 1. مراقبة وإغلاق المراكز الحية
             for sym in list(open_pos_live.keys()):
                 pos = open_pos_live[sym]
@@ -20501,7 +20573,11 @@ def run_live(cfg, exchange):
             #   2. ضمان أنه إذا كان n_open < MAX، يبقى هناك دائماً
             #      مقعد واحد متاح على الأقل (للتعافي التدريجي).
             _n_open = len(open_pos_live)
-            dd_live = (peak_cap_live - cap_live) / (peak_cap_live + 1e-12)
+            # [FIX-C5] dd_live uses wallet basis (primary)
+            _dd_basis = float(_LV_STATE.get('_wallet_now', cap_live))
+            if _dd_basis <= 0:
+                _dd_basis = cap_live
+            dd_live = (peak_cap_live - _dd_basis) / (peak_cap_live + 1e-12)
 
             # منحنى متصل: 1.0 عند dd≤5% → 0.20 عند dd≥50%
             if dd_live <= 0.05:
@@ -20755,7 +20831,11 @@ def run_live(cfg, exchange):
                     # نحتاج peak_cap — نضيفه كمتغير خارجي
                     if 'peak_cap_live' not in dir():
                         pass  # placeholder
-                    dd_live = (peak_cap_live - cap_live) / (peak_cap_live + 1e-12)
+                    # [FIX-C5] dd_live uses wallet basis (entry)
+                    _dd_basis_e = float(_LV_STATE.get('_wallet_now', cap_live))
+                    if _dd_basis_e <= 0:
+                        _dd_basis_e = cap_live
+                    dd_live = (peak_cap_live - _dd_basis_e) / (peak_cap_live + 1e-12)
                     dd_mult = _get_risk_multiplier(dd_live)
 
                     # ══ [PORTFOLIO RISK BUDGET] ══

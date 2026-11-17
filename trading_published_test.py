@@ -515,8 +515,8 @@ class Config:
     #            السوق، وأعد بناء SL/TP من S_new = p - friction_drag.
     # عند UNIFIED_ENTRY_ENABLED=False، يعمل البوت كما كان (PO_FIXED_PRICE).
     UNIFIED_ENTRY_ENABLED: bool = True
-    UNIFIED_WAIT_BARS_1H: int = 8            # نافذة Stage 1 (بوحدات 1h)
-    UNIFIED_MAX_AGE_BARS_1H: int = 12        # أقصى عمر للإشارة (Stage 2)
+    UNIFIED_WAIT_BARS_1H: int = 1            # نافذة Stage 1 (بوحدات 1h)
+    UNIFIED_MAX_AGE_BARS_1H: int = 1        # أقصى عمر للإشارة (Stage 2)
     UNIFIED_MOMENTUM_KAPPA: float = 0.50     # عتبة الزخم المؤيد (× σ_bar)
     UNIFIED_REQUIRE_FRESH_SIGNAL: bool = True
     UNIFIED_FRESH_SCORE_FRAC: float = 0.85   # حداثة الإشارة (نسبة)
@@ -1542,7 +1542,7 @@ def _default_assets():
 #        "HBAR/USDT",   # هيدرا - رافعة 50x
 #        "VET/USDT",    # في تشين - رافعة 50x
         "STX/USDT",    # ستاكس - رافعة 50x
-        "AAVE/USDT",   # آفي - رافعة 50x
+#        "AAVE/USDT",   # آفي - رافعة 50x
         "ARB/USDT",    # أربيتروم - رافعة 50x
         "OP/USDT",     # أوبتيميزم - رافعة 50x
 #        "INJ/USDT",    # إنجكتيف - رافعة 50x
@@ -1584,7 +1584,7 @@ def _default_assets():
         "YFI/USDT",    # يرن فايننس - رافعة 50x
         "ZRX/USDT",    # زيرو إكس - رافعة 50x
         "BAT/USDT",    # باسيك أتنشن توكن - رافعة 50x
-        "ENJ/USDT",    # إنجين - رافعة 50x
+#        "ENJ/USDT",    # إنجين - رافعة 50x
         "ANKR/USDT",   # أنكر - رافعة 50x
 #        "OCEAN/USDT",  # أوشن بروتوكول - رافعة 50x
         "BAND/USDT",   # باند بروتوكول - رافعة 50x
