@@ -260,7 +260,7 @@ class Config:
     timeframe: str = "1h"
     history_days: int = 730
 
-    N: int = 6; W: int = 20; L: int = 10; K: int = 8
+    N: int = 3; W: int = 20; L: int = 10; K: int = 8
     EMA_SPAN: int = 200; ATR_PERIOD: int = 14
 
     W_CURV: float=1.0; W_VOL: float=1.0; W_ENTROPY: float=2.0
@@ -1642,6 +1642,17 @@ def _default_assets():
 #        "MEW/USDT",    # ميو - رافعة 50x
         "MERL/USDT",   # ميرلين - رافعة 50x
         "BANANA/USDT", # بانانا - رافعة 50x
+# السلع
+#        "XAU/USDT",
+#        "XAG/USDT"
+
+# الاسهم
+#        "SNDK/USDT",
+#        "ENSO/USDT",
+#        "BLESS/USDT",
+#        "SKDD/USDT",
+#        "SQQQ/USDT",
+#        "SOXS/USDT",
     ]
 
 def _robust_center_scale(x):
@@ -5992,8 +6003,8 @@ def build_signals(assets, mode="backtest"):
             P_activation = np.exp(-fric_val / (force_mag * T_info))
             
             # لا ندخل إلا إذا كان احتمال التفاعل والتغلب على الاحتكاك الحراري أكبر من 35%
-            if P_activation < 0.20: 
-                continue
+#            if P_activation < 0.08: 
+#                continue
 
             # ══ [ABLATION-1] Direction from mean-reversion in σ units ══
             _z_win = ad.closes[max(0, ci - CFG.N): ci]

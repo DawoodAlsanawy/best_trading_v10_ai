@@ -1,0 +1,74 @@
+==============================================================================
+ OPPOSITE-SIGNAL ANALYSIS REPORT
+==============================================================================
+
+Class distribution:
+  A (correct direction):      7726  ( 60.2%)
+  B (whipsaw):                2440  ( 19.0%)
+  C (trend against — flip):   2590  ( 20.2%)
+  Skipped:                      86
+
+==============================================================================
+ TOP 10 DISCRIMINATIVE FEATURES (by |AUC−0.5|)
+==============================================================================
+
+1. vol_ratio_20
+   AUC = 0.474   Cohen's d = +0.035   p = 3.43e-05
+   C:    mean=+2.5578  median=+0.9495  n=2590
+   A+B:  mean=+1.8623  median=+0.9995  n=10166
+
+2. hour
+   AUC = 0.474   Cohen's d = -0.090   p = 4.64e-05
+   C:    mean=+9.8950  median=+8.0000  n=2590
+   A+B:  mean=+10.4946  median=+12.0000  n=10166
+
+3. upper_wick
+   AUC = 0.525   Cohen's d = +0.086   p = 6.34e-05
+   C:    mean=+0.2620  median=+0.2222  n=2590
+   A+B:  mean=+0.2452  median=+0.2004  n=10166
+
+4. atr_pct
+   AUC = 0.479   Cohen's d = -0.072   p = 8.54e-04
+   C:    mean=+0.0266  median=+0.0244  n=2590
+   A+B:  mean=+0.0275  median=+0.0252  n=10166
+
+5. close_vs_mid
+   AUC = 0.518   Cohen's d = +0.061   p = 4.46e-03
+   C:    mean=-0.0369  median=-0.0635  n=2590
+   A+B:  mean=-0.0544  median=-0.0963  n=10166
+
+6. ema_slope_against
+   AUC = 0.517   Cohen's d = +0.067   p = 2.21e-03
+   C:    mean=+0.6112  median=+1.0000  n=2590
+   A+B:  mean=+0.5780  median=+1.0000  n=10166
+
+7. sl_sigma
+   AUC = 0.516   Cohen's d = +0.055   p = 1.18e-02
+   C:    mean=+0.4801  median=+0.5146  n=2590
+   A+B:  mean=+0.4683  median=+0.5017  n=10166
+
+8. body_ratio
+   AUC = 0.484   Cohen's d = -0.058   p = 1.18e-02
+   C:    mean=+0.4721  median=+0.4828  n=2590
+   A+B:  mean=+0.4865  median=+0.5000  n=10166
+
+9. C
+   AUC = 0.485   Cohen's d = -0.027   p = 1.61e-02
+   C:    mean=-0.0014  median=-0.0000  n=2590
+   A+B:  mean=-0.0011  median=-0.0000  n=10166
+
+10. btc_ema_slope_norm
+   AUC = 0.515   Cohen's d = +0.055   p = 1.72e-02
+   C:    mean=-1.1592  median=-0.7026  n=2590
+   A+B:  mean=-1.3542  median=-0.9707  n=10166
+
+==============================================================================
+ DISCOVERED PATTERNS (top 15)
+==============================================================================
+
+==============================================================================
+ RECOMMENDATIONS
+==============================================================================
+
+No patterns passed out-of-sample validation.
+Conclusion: no reliable flip signal found in this data.
