@@ -741,7 +741,7 @@ class Config:
     # often BELOW the SL distance. So SL moved above entry on tiny moves
     # and killed 52% of trades with a "profitable SL" that capped gains.
     # New design: trailing only activates after N × sl_dist_initial of MFE.
-    TRAIL_ACTIVATE_AT_R: float = 1.0    # activate at +1R of profit
+    TRAIL_ACTIVATE_AT_R: float = 1.5    # activate at +1R of profit
 
     # ══ [FIX 2 — REGIME FILTER] ══
     # Skip signals when EMA200 slope (over lookback) is too steep
